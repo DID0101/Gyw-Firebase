@@ -2,6 +2,7 @@ import { useClerk, useUser } from '@clerk/clerk-expo';
 import clsx from 'clsx';
 import { ImagePickerAsset } from 'expo-image-picker';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Text, TextInput, View } from 'react-native';
 import { useChatContext } from 'stream-chat-expo';
 
@@ -16,6 +17,7 @@ const ProfileScreen = () => {
   const { user } = useUser();
   const { client } = useChatContext();
   const clerk = useClerk();
+  const { t } = useTranslation();
   const streamUser = client.user;
   // Get username from Stream Chat (not Clerk, since username isn't enabled in Clerk)
   const streamUsername = (streamUser as any)?.username || '';
@@ -121,7 +123,7 @@ const ProfileScreen = () => {
         await updateUserImage(null);
       }
 
-      alert('Profile updated successfully!');
+      alert(t('profile.profileUpdated'));
     } catch (error) {
       getError(error);
       console.error(error);
@@ -144,25 +146,25 @@ const ProfileScreen = () => {
           }
         />
         <Text className="text-sm text-gray-400">
-          {savedUsername || (username && usernameNumber ? `${username}_${usernameNumber}` : 'Choose your username')}
+          {savedUsername || (username && usernameNumber ? `${username}_${usernameNumber}` : t('profile.chooseUsername'))}
         </Text>
       </View>
       <View className="gap-3">
         <TextField
           value={firstName}
-          placeholder="First name"
+          placeholder={t('auth.firstName')}
           onChangeText={onChangeFirstName}
         />
         <TextField
           value={lastName}
-          placeholder="Last name"
+          placeholder={t('auth.lastName')}
           onChangeText={onChangeLastName}
         />
         <View className="relative">
           <TextField
             autoCapitalize="none"
             value={username}
-            placeholder="Username"
+            placeholder={t('auth.username')}
             onChangeText={onChangeUsername}
             className="pr-12"
           />
@@ -183,25 +185,25 @@ const ProfileScreen = () => {
             )}
           >
             {numberError ||
-              'Usernames are always paired with a set of numbers.'}
+              t('profile.usernameHint')}
           </Text>
         </View>
         <TextField
           value={phoneNumber}
-          placeholder="Phone number (e.g., +1234567890)"
+          placeholder={t('auth.phoneNumber') + ' (e.g., +1234567890)'}
           onChangeText={onChangePhoneNumber}
           keyboardType="phone-pad"
         />
         <TextField
           autoCapitalize="none"
           value={emailAddress}
-          placeholder="Email address"
+          placeholder={t('auth.emailAddress')}
           onChangeText={onChangeEmailAddress}
           keyboardType="email-address"
         />
       </View>
       <Button onPress={updateProfile} disabled={submitDisabled}>
-        Save
+        {t('common.save')}
       </Button>
     </Screen>
   );

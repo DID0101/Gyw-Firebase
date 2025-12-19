@@ -1,6 +1,7 @@
 import { Entypo, Feather, MaterialIcons } from '@expo/vector-icons';
 import { Link, useRouter } from 'expo-router';
 import { Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useChatContext } from 'stream-chat-expo';
 
 import Button from '@/components/Button';
@@ -13,6 +14,7 @@ const NewMessageScreen = () => {
   const router = useRouter();
   const { client } = useChatContext();
   const { contacts, loadingContacts } = useContacts(client);
+  const { t } = useTranslation();
 
   const onSelectUser = async (userId: string) => {
     const channel = client.getChannelByMembers('messaging', {
@@ -36,7 +38,7 @@ const NewMessageScreen = () => {
               <MaterialIcons name="people-outline" size={24} color="black" />
             </View>
             <View className="flex-row flex-grow items-center justify-between gap-2 border-b border-gray-200">
-              <Text>New Group</Text>
+              <Text>{t('chats.newGroup')}</Text>
               <View className="p-2">
                 <Entypo name="chevron-small-right" size={24} color="gray" />
               </View>
@@ -52,7 +54,7 @@ const NewMessageScreen = () => {
               <Feather name="at-sign" size={24} color="black" />
             </View>
             <View className="flex-row flex-grow items-center justify-between gap-2 border-b border-gray-200">
-              <Text>Find by Username</Text>
+              <Text>{t('chats.findByUsername')}</Text>
               <View className="p-2">
                 <Entypo name="chevron-small-right" size={24} color="gray" />
               </View>
@@ -68,7 +70,7 @@ const NewMessageScreen = () => {
               <MaterialIcons name="contact-phone" size={24} color="black" />
             </View>
             <View className="flex-row flex-grow items-center justify-between gap-2">
-              <Text>Find by Phone/Email</Text>
+              <Text>{t('chats.findByContact')}</Text>
               <View className="p-2">
                 <Entypo name="chevron-small-right" size={24} color="gray" />
               </View>

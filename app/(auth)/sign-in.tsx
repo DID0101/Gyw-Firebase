@@ -1,6 +1,7 @@
 import { useSignIn } from '@clerk/clerk-expo';
 import { Link, useRouter } from 'expo-router';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Text, View } from 'react-native';
 
 import Button from '@/components/Button';
@@ -12,6 +13,7 @@ import { getError } from '@/lib/utils';
 const SignInScreen = () => {
   const { signIn, setActive, isLoaded } = useSignIn();
   const router = useRouter();
+  const { t } = useTranslation();
 
   const { emailAddress, password, onChangeEmailAddress, onChangePassword } =
     useUserForm();
@@ -36,48 +38,72 @@ const SignInScreen = () => {
       } else {
         // Handle incomplete states - check what verification is needed
         if (signInAttempt.status === 'needs_first_factor') {
+          // Clerk is requiring verification even though user signed up
+          // This usually happens if Clerk settings require verification on sign-in
           // Check if email or phone verification is needed
           const emailFactor = signInAttempt.supportedFirstFactors?.find(factor => factor.strategy === 'email_code');
           const phoneFactor = signInAttempt.supportedFirstFactors?.find(factor => factor.strategy === 'phone_code');
           
-          if (emailFactor) {
-            await signIn.prepareFirstFactor({ 
-              strategy: 'email_code',
-              emailAddressId: emailFactor.emailAddressId 
-            });
-            setVerificationMethod('email');
-            setPendingVerification(true);
-          } else if (phoneFactor) {
-            await signIn.prepareFirstFactor({ 
-              strategy: 'phone_code',
-              phoneNumberId: phoneFactor.phoneNumberId 
-            });
-            setVerificationMethod('phone');
-            setPendingVerification(true);
+          // Check if user's email/phone is already verified
+          const unverifiedEmailAddresses = signInAttempt.unverifiedFields?.emailAddress || [];
+          const unverifiedPhoneNumbers = signInAttempt.unverifiedFields?.phoneNumber || [];
+          
+          // If email/phone is already verified, Clerk might still require verification due to settings
+          // This happens when "Require email verification on sign-in" is enabled in Clerk Dashboard
+          if (unverifiedEmailAddresses.length === 0 && unverifiedPhoneNumbers.length === 0) {
+            // Email and phone are verified, but Clerk still requires verification
+            // This is a Clerk security setting - user needs to complete verification
+            // To disable: Clerk Dashboard → User & Authentication → Email, Phone, Username → 
+            //            Disable "Require email verification on sign-in"
+            if (emailFactor) {
+              await signIn.prepareFirstFactor({ 
+                strategy: 'email_code',
+                emailAddressId: emailFactor.emailAddressId 
+              });
+              setVerificationMethod('email');
+              setPendingVerification(true);
+            } else if (phoneFactor) {
+              await signIn.prepareFirstFactor({ 
+                strategy: 'phone_code',
+                phoneNumberId: phoneFactor.phoneNumberId 
+              });
+              setVerificationMethod('phone');
+              setPendingVerification(true);
+            } else {
+              alert('Verification required. Please check your email or phone for a code.');
+            }
           } else {
-            alert('Additional verification required. Please check your email or phone.');
+            // Email/phone needs verification
+            if (emailFactor) {
+              await signIn.prepareFirstFactor({ 
+                strategy: 'email_code',
+                emailAddressId: emailFactor.emailAddressId 
+              });
+              setVerificationMethod('email');
+              setPendingVerification(true);
+            } else if (phoneFactor) {
+              await signIn.prepareFirstFactor({ 
+                strategy: 'phone_code',
+                phoneNumberId: phoneFactor.phoneNumberId 
+              });
+              setVerificationMethod('phone');
+              setPendingVerification(true);
+            } else {
+              alert('Additional verification required. Please check your email or phone.');
+            }
           }
         } else if (signInAttempt.status === 'needs_second_factor') {
-          // Two-factor authentication is required by Clerk
-          // To disable 2FA: Go to Clerk Dashboard → User & Authentication → Multi-factor Authentication → Set to "Optional" or disable
-          alert(
-            'Two-factor authentication is required.\n\n' +
-            'To disable 2FA:\n' +
-            '1. Go to Clerk Dashboard\n' +
-            '2. User & Authentication → Multi-factor Authentication\n' +
-            '3. Set to "Optional" or disable\n\n' +
-            'Or complete 2FA verification below.'
-          );
-          
-          // Still allow 2FA verification if user wants to proceed
+          // Two-factor authentication is required
           const totpFactor = signInAttempt.supportedSecondFactors?.find(factor => factor.strategy === 'totp');
           const phoneFactor = signInAttempt.supportedSecondFactors?.find(factor => factor.strategy === 'phone_code');
           
           if (totpFactor) {
+            // TOTP (authenticator app) - no need to prepare, just show input
             setVerificationMethod('totp');
             setNeedsSecondFactor(true);
             setPendingVerification(true);
           } else if (phoneFactor) {
+            // Phone code - prepare and send code
             await signIn.prepareSecondFactor({ 
               strategy: 'phone_code',
               phoneNumberId: phoneFactor.phoneNumberId 
@@ -85,6 +111,8 @@ const SignInScreen = () => {
             setVerificationMethod('phone');
             setNeedsSecondFactor(true);
             setPendingVerification(true);
+          } else {
+            alert('Two-factor authentication is required. Please set up 2FA in your account settings.');
           }
         } else {
           console.log('Sign-in status:', signInAttempt.status);
@@ -168,14 +196,16 @@ const SignInScreen = () => {
     let description = '';
     
     if (needsSecondFactor) {
+      // Two-factor authentication
       if (verificationMethod === 'totp') {
         title = 'Two-Factor Authentication';
-        description = 'Enter the code from your authenticator app';
+        description = 'Enter the 6-digit code from your authenticator app';
       } else {
-        title = 'Verify Phone Number';
+        title = 'Two-Factor Authentication';
         description = 'Enter the code we sent to your phone';
       }
     } else {
+      // First factor verification (email/phone verification)
       title = verificationMethod === 'email' ? 'Verify Email Address' : 'Verify Phone Number';
       description = verificationMethod === 'email' 
         ? `Enter the code we sent to ${emailAddress.toLowerCase()}`
@@ -201,17 +231,17 @@ const SignInScreen = () => {
               setVerificationMethod(null);
             }}
           >
-            Back to sign in
+            {t('common.back')} {t('auth.signIn').toLowerCase()}
           </Button>
         </View>
         <TextField
           value={code}
-          placeholder={verificationMethod === 'totp' ? 'Enter 6-digit code' : 'Enter your verification code'}
+          placeholder={verificationMethod === 'totp' ? t('auth.enterCode') + ' (6 digits)' : t('auth.enterCode')}
           keyboardType="numeric"
           onChangeText={(code) => setCode(code)}
           maxLength={verificationMethod === 'totp' ? 6 : undefined}
         />
-        <Button onPress={onVerifyPress}>Verify</Button>
+        <Button onPress={onVerifyPress}>{t('common.verify')}</Button>
       </Screen>
     );
   }
@@ -219,28 +249,28 @@ const SignInScreen = () => {
   return (
     <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
       <View className="gap-3">
-        <Text className="text-center text-3xl font-semibold">Sign in</Text>
+        <Text className="text-center text-3xl font-semibold">{t('auth.signIn')}</Text>
         <Text className="text-center text-base text-gray-500">
-          Enter your email address and password to sign in.
+          {t('auth.enterEmail')} {t('common.and')} {t('auth.password')} {t('auth.toSignIn')}
         </Text>
       </View>
       <TextField
         autoCapitalize="none"
         value={emailAddress}
-        placeholder="Enter email"
+        placeholder={t('auth.enterEmail')}
         onChangeText={onChangeEmailAddress}
       />
       <TextField
         value={password}
-        placeholder="Enter password"
+        placeholder={t('auth.enterPassword')}
         secureTextEntry={true}
         onChangeText={onChangePassword}
       />
-      <Button onPress={onSignInPress}>Continue</Button>
+      <Button onPress={onSignInPress}>{t('common.continue')}</Button>
       <View className="flex-row gap-[3px]">
-        <Text>Don&apos;t have an account?</Text>
+        <Text>{t('auth.dontHaveAccount')}</Text>
         <Link href="/sign-up">
-          <Text className="text-blue-600">Sign up</Text>
+          <Text className="text-blue-600">{t('auth.signUp')}</Text>
         </Link>
       </View>
     </Screen>

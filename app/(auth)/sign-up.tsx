@@ -4,8 +4,10 @@ import clsx from 'clsx';
 import { Link, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import Button from '@/components/Button';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
 import useUserForm from '@/hooks/useUserForm';
@@ -16,6 +18,7 @@ type SignUpMethod = 'email' | 'phone';
 const SignUpScreen = () => {
   const { isLoaded, signUp, setActive } = useSignUp();
   const router = useRouter();
+  const { t } = useTranslation();
   const {
     firstName,
     lastName,
@@ -131,38 +134,44 @@ const SignUpScreen = () => {
     
     return (
       <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
+        <View className="absolute top-10 right-10">
+          <LanguageSwitcher />
+        </View>
         <View className="gap-3">
           <Text className="text-center text-3xl font-semibold">
-            Verify {verificationMethod === 'email' ? 'email address' : 'phone number'}
+            {verificationMethod === 'email' ? t('auth.verifyEmail') : t('auth.verifyPhone')}
           </Text>
           <Text className="text-center text-base text-gray-500">
-            Enter the code we sent to {verificationTarget}
+            {t('auth.enterCode')} {verificationTarget}
           </Text>
           <Button
             variant="text"
             className="text-base text-blue-600"
             onPress={() => setPendingVerification(false)}
           >
-            Wrong {verificationMethod === 'email' ? 'email' : 'phone number'}?
+            {verificationMethod === 'email' ? t('auth.wrongEmail') : t('auth.wrongPhone')}
           </Button>
         </View>
         <TextField
           value={code}
-          placeholder="Enter your verification code"
+          placeholder={t('auth.enterCode')}
           keyboardType="numeric"
           onChangeText={(code) => setCode(code)}
         />
-        <Button onPress={onVerifyPress}>Verify</Button>
+        <Button onPress={onVerifyPress}>{t('common.verify')}</Button>
       </Screen>
     );
   }
 
   return (
     <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
+      <View className="absolute top-10 right-10">
+        <LanguageSwitcher />
+      </View>
       <View className="gap-3">
-        <Text className="text-center text-3xl font-semibold">Sign up</Text>
+        <Text className="text-center text-3xl font-semibold">{t('auth.signUp')}</Text>
         <Text className="text-center text-base text-gray-500">
-          Create an account to get started
+          {t('auth.createAccount')}
         </Text>
       </View>
       
@@ -179,7 +188,7 @@ const SignUpScreen = () => {
             'text-base font-medium',
             signUpMethod === 'email' ? 'text-white' : 'text-gray-700'
           )}>
-            Email
+            {t('auth.email')}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -193,7 +202,7 @@ const SignUpScreen = () => {
             'text-base font-medium',
             signUpMethod === 'phone' ? 'text-white' : 'text-gray-700'
           )}>
-            Phone
+            {t('auth.phone')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -201,19 +210,19 @@ const SignUpScreen = () => {
       <View className="gap-3">
         <TextField
           value={firstName}
-          placeholder="First name"
+          placeholder={t('auth.firstName')}
           onChangeText={onChangeFirstName}
         />
         <TextField
           value={lastName}
-          placeholder="Last name"
+          placeholder={t('auth.lastName')}
           onChangeText={onChangeLastName}
         />
         <View className="relative">
           <TextField
             autoCapitalize="none"
             value={username}
-            placeholder="Username"
+            placeholder={t('auth.username')}
             onChangeText={onChangeUsername}
             className="pr-12"
           />
@@ -234,37 +243,37 @@ const SignUpScreen = () => {
             )}
           >
             {numberError ||
-              'Usernames are always paired with a set of numbers.'}
+              t('profile.usernameHint')}
           </Text>
         </View>
         {signUpMethod === 'email' ? (
           <TextField
             autoCapitalize="none"
             value={emailAddress}
-            placeholder="Email address"
+            placeholder={t('auth.emailAddress')}
             onChangeText={onChangeEmailAddress}
             keyboardType="email-address"
           />
         ) : (
           <TextField
             value={phoneNumber}
-            placeholder="Phone number (e.g., +1234567890)"
+            placeholder={t('auth.phoneNumber') + ' (e.g., +1234567890)'}
             onChangeText={onChangePhoneNumber}
             keyboardType="phone-pad"
           />
         )}
         <TextField
           value={password}
-          placeholder="Password"
+          placeholder={t('auth.password')}
           secureTextEntry={true}
           onChangeText={onChangePassword}
         />
       </View>
-      <Button onPress={onSignUpPress}>Continue</Button>
+      <Button onPress={onSignUpPress}>{t('common.continue')}</Button>
       <View className="flex-row gap-[3px]">
-        <Text>Already have an account?</Text>
+        <Text>{t('auth.alreadyHaveAccount')}</Text>
         <Link href="/sign-in">
-          <Text className="text-blue-600">Sign in</Text>
+          <Text className="text-blue-600">{t('auth.signIn')}</Text>
         </Link>
       </View>
     </Screen>

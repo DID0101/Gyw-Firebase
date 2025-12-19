@@ -3,15 +3,18 @@ import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { getError } from '../lib/utils';
 import Avatar from './Avatar';
 import Button from './Button';
+import LanguageSwitcher from './LanguageSwitcher';
 
 const AppMenu = () => {
   const { signOut } = useClerk();
   const router = useRouter();
   const { user } = useUser();
+  const { t } = useTranslation();
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const avatarRef = useRef<View>(null);
@@ -73,15 +76,16 @@ const AppMenu = () => {
               className="flex-row items-center justify-between py-2 px-3 border-b border-gray-200"
               onPress={goToProfile}
             >
-              <Text>Profile</Text>
+              <Text>{t('profile.title')}</Text>
               <Feather name="user" size={20} color="black" />
             </Button>
+            <LanguageSwitcher variant="menu" />
             <Button
               variant="plain"
               className="flex-row items-center justify-between py-2 px-3"
               onPress={handleSignOut}
             >
-              <Text className="text-red-600">Sign Out</Text>
+              <Text className="text-red-600">{t('auth.signOut')}</Text>
               <Feather name="log-out" size={20} color="red" />
             </Button>
           </View>
