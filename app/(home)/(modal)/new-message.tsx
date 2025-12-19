@@ -46,13 +46,29 @@ const NewMessageScreen = () => {
         <Link href="/find-by-username" asChild>
           <Button
             variant="plain"
-            className="bg-white flex-row items-center justify-between rounded-b-lg pb-0.5"
+            className="bg-white flex-row items-center justify-between pb-0.5"
           >
             <View className="px-4">
               <Feather name="at-sign" size={24} color="black" />
             </View>
-            <View className="flex-row flex-grow items-center justify-between gap-2">
+            <View className="flex-row flex-grow items-center justify-between gap-2 border-b border-gray-200">
               <Text>Find by Username</Text>
+              <View className="p-2">
+                <Entypo name="chevron-small-right" size={24} color="gray" />
+              </View>
+            </View>
+          </Button>
+        </Link>
+        <Link href="/find-by-contact" asChild>
+          <Button
+            variant="plain"
+            className="bg-white flex-row items-center justify-between rounded-b-lg pb-0.5"
+          >
+            <View className="px-4">
+              <MaterialIcons name="contact-phone" size={24} color="black" />
+            </View>
+            <View className="flex-row flex-grow items-center justify-between gap-2">
+              <Text>Find by Phone/Email</Text>
               <View className="p-2">
                 <Entypo name="chevron-small-right" size={24} color="gray" />
               </View>

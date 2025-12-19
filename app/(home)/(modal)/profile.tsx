@@ -1,7 +1,7 @@
 import { useClerk, useUser } from '@clerk/clerk-expo';
 import clsx from 'clsx';
 import { ImagePickerAsset } from 'expo-image-picker';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
 import { useChatContext } from 'stream-chat-expo';
 
@@ -16,12 +16,17 @@ const ProfileScreen = () => {
   const { user } = useUser();
   const { client } = useChatContext();
   const clerk = useClerk();
-  const usernameParts = user?.username?.split('_')!;
+  const streamUser = client.user;
+  // Get username from Stream Chat (not Clerk, since username isn't enabled in Clerk)
+  const streamUsername = (streamUser as any)?.username || '';
+  const usernameParts = streamUsername ? streamUsername.split('_') : ['', ''];
   const initialFormValues = {
-    firstName: user?.firstName!,
-    lastName: user?.lastName!,
-    username: usernameParts[0],
-    usernameNumber: usernameParts[1],
+    firstName: user?.firstName ?? '',
+    lastName: user?.lastName ?? '',
+    username: usernameParts[0] ?? '',
+    usernameNumber: usernameParts[1] ?? '',
+    phoneNumber: (streamUser as any)?.phone || user?.primaryPhoneNumber?.phoneNumber || '',
+    emailAddress: (streamUser as any)?.email || user?.primaryEmailAddress?.emailAddress || '',
   };
   const defaultImage: ImagePickerAsset = {
     uri: user?.hasImage ? user?.imageUrl : '',
@@ -35,14 +40,27 @@ const ProfileScreen = () => {
     username,
     usernameNumber,
     numberError,
+    phoneNumber,
+    emailAddress,
     onChangeFirstName,
     onChangeLastName,
     onChangeUsername,
     onChangeNumber,
+    onChangePhoneNumber,
+    onChangeEmailAddress,
   } = useUserForm(initialFormValues);
   const [profileImage, setProfileImage] =
     useState<ImagePickerAsset>(defaultImage);
   const [loading, setLoading] = useState(false);
+  const [savedUsername, setSavedUsername] = useState<string>('');
+
+  // Update saved username when Stream Chat user data is available
+  useEffect(() => {
+    const streamUsername = (streamUser as any)?.username || '';
+    if (streamUsername) {
+      setSavedUsername(streamUsername);
+    }
+  }, [streamUser]);
 
   const submitDisabled =
     loading || !username || !usernameNumber || !firstName || !lastName;
@@ -51,16 +69,25 @@ const ProfileScreen = () => {
     try {
       setLoading(true);
       const finalUsername = `${username}_${usernameNumber}`;
+      // Only update firstName and lastName (username not enabled in Clerk)
       const result = await user?.update({
         firstName,
         lastName,
-        username: finalUsername,
       });
+      // Update Stream Chat user with username, phone, and email
       await client.upsertUser({
         id: result?.id!,
         name: result?.fullName!,
-        username: result?.username!,
-      });
+        username: finalUsername,
+        ...(phoneNumber && { phone: phoneNumber }),
+        ...(emailAddress && { email: emailAddress.toLowerCase() }),
+      } as any);
+
+      // Update saved username for immediate display
+      setSavedUsername(finalUsername);
+
+      // Refresh the user data to reflect changes
+      await client.queryUsers({ id: { $eq: result?.id! } });
 
       const updateUserImage = async (data: string | null) => {
         try {
@@ -70,7 +97,12 @@ const ProfileScreen = () => {
           await client.upsertUser({
             id: result?.id!,
             image: imageResult ? imageResult.publicUrl! : undefined,
-          });
+            username: finalUsername,
+            ...(phoneNumber && { phone: phoneNumber }),
+            ...(emailAddress && { email: emailAddress.toLowerCase() }),
+          } as any);
+          // Refresh user data again after image update
+          await client.queryUsers({ id: { $eq: result?.id! } });
         } catch (error) {
           console.error('Error updating user image:', error);
         }
@@ -112,7 +144,7 @@ const ProfileScreen = () => {
           }
         />
         <Text className="text-sm text-gray-400">
-          {username ? `${username}_${usernameNumber}` : 'Choose your username'}
+          {savedUsername || (username && usernameNumber ? `${username}_${usernameNumber}` : 'Choose your username')}
         </Text>
       </View>
       <View className="gap-3">
@@ -154,6 +186,19 @@ const ProfileScreen = () => {
               'Usernames are always paired with a set of numbers.'}
           </Text>
         </View>
+        <TextField
+          value={phoneNumber}
+          placeholder="Phone number (e.g., +1234567890)"
+          onChangeText={onChangePhoneNumber}
+          keyboardType="phone-pad"
+        />
+        <TextField
+          autoCapitalize="none"
+          value={emailAddress}
+          placeholder="Email address"
+          onChangeText={onChangeEmailAddress}
+          keyboardType="email-address"
+        />
       </View>
       <Button onPress={updateProfile} disabled={submitDisabled}>
         Save

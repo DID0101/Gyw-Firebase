@@ -1,4 +1,5 @@
 import { useUser } from '@clerk/clerk-expo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   StreamVideo,
   StreamVideoClient,
@@ -114,15 +115,53 @@ const HomeLayout = () => {
       try {
         const chatClient = StreamChat.getInstance(API_KEY);
         const clerkUser = user!;
-        const chatUser = {
+        
+        // Get pending username and contact info from sign-up if exists
+        const pendingUsername = await AsyncStorage.getItem('pendingUsername');
+        const pendingEmail = await AsyncStorage.getItem('pendingEmail');
+        const pendingPhone = await AsyncStorage.getItem('pendingPhone');
+        
+        const chatUser: any = {
           id: clerkUser.id,
-          name: clerkUser.fullName!,
+          name: clerkUser.fullName || clerkUser.firstName || 'User',
           image: clerkUser.hasImage ? clerkUser.imageUrl : undefined,
-          username: clerkUser.username!,
+          ...(pendingUsername && { username: pendingUsername }),
         };
+
+        // Store phone and email for searching (prioritize pending from sign-up, then Clerk)
+        if (pendingPhone) {
+          chatUser.phone = pendingPhone;
+          await AsyncStorage.removeItem('pendingPhone');
+        } else if (clerkUser.primaryPhoneNumber) {
+          chatUser.phone = clerkUser.primaryPhoneNumber;
+        }
+        
+        if (pendingEmail) {
+          chatUser.email = pendingEmail;
+          await AsyncStorage.removeItem('pendingEmail');
+        } else if (clerkUser.primaryEmailAddress) {
+          chatUser.email = clerkUser.primaryEmailAddress;
+        }
 
         if (!chatClient.user) {
           await chatClient.connectUser(chatUser, customProvider);
+          // Clear pending username after successful connection
+          if (pendingUsername) {
+            await AsyncStorage.removeItem('pendingUsername');
+          }
+        } else {
+          // User already connected - update their info if we have pending data
+          if (pendingEmail || pendingPhone || pendingUsername) {
+            await chatClient.upsertUser({
+              id: clerkUser.id,
+              ...(pendingUsername && { username: pendingUsername }),
+              ...(pendingPhone && { phone: pendingPhone }),
+              ...(pendingEmail && { email: pendingEmail }),
+            } as any);
+            if (pendingUsername) {
+              await AsyncStorage.removeItem('pendingUsername');
+            }
+          }
         }
 
         setChatClient(chatClient);

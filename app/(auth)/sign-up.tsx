@@ -1,14 +1,17 @@
 import { useSignUp } from '@clerk/clerk-expo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import clsx from 'clsx';
 import { Link, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Text, TextInput, View } from 'react-native';
+import { Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import Button from '@/components/Button';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
 import useUserForm from '@/hooks/useUserForm';
 import { getError } from '@/lib/utils';
+
+type SignUpMethod = 'email' | 'phone';
 
 const SignUpScreen = () => {
   const { isLoaded, signUp, setActive } = useSignUp();
@@ -20,33 +23,61 @@ const SignUpScreen = () => {
     usernameNumber,
     numberError,
     emailAddress,
+    phoneNumber,
     password,
     onChangeFirstName,
     onChangeLastName,
     onChangeUsername,
     onChangeNumber,
     onChangeEmailAddress,
+    onChangePhoneNumber,
     onChangePassword,
   } = useUserForm();
+  const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>('email');
   const [pendingVerification, setPendingVerification] = useState(false);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [verificationMethod, setVerificationMethod] = useState<'email' | 'phone'>('email');
 
   const onSignUpPress = async () => {
     if (!isLoaded || numberError) return;
+    
+    // Validate required fields based on sign-up method
+    if (signUpMethod === 'email' && !emailAddress) {
+      alert('Please enter your email address');
+      return;
+    }
+    if (signUpMethod === 'phone' && !phoneNumber) {
+      alert('Please enter your phone number');
+      return;
+    }
+    
     setLoading(true);
     try {
-      const finalUsername = `${username}_${usernameNumber}`;
-      await signUp.create({
+      const signUpData: any = {
         firstName,
         lastName,
-        username: finalUsername,
-        emailAddress: emailAddress.toLowerCase(),
         password,
-      });
-      await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
+      };
+
+      if (signUpMethod === 'email') {
+        signUpData.emailAddress = emailAddress.toLowerCase();
+      } else {
+        signUpData.phoneNumber = phoneNumber;
+      }
+
+      await signUp.create(signUpData);
+      
+      if (signUpMethod === 'email') {
+        await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
+        setVerificationMethod('email');
+      } else {
+        await signUp.preparePhoneNumberVerification({ strategy: 'phone_code' });
+        setVerificationMethod('phone');
+      }
+      
       setPendingVerification(true);
-    } catch (err) {
+    } catch (err: any) {
       getError(err);
     } finally {
       setLoading(false);
@@ -57,11 +88,30 @@ const SignUpScreen = () => {
     if (!isLoaded) return;
     setLoading(true);
     try {
-      const signUpAttempt = await signUp.attemptEmailAddressVerification({
-        code,
-      });
+      let signUpAttempt;
+      
+      if (verificationMethod === 'email') {
+        signUpAttempt = await signUp.attemptEmailAddressVerification({
+          code,
+        });
+      } else {
+        signUpAttempt = await signUp.attemptPhoneNumberVerification({
+          code,
+        });
+      }
 
       if (signUpAttempt.status === 'complete') {
+        // Store username and contact info for Stream Chat setup
+        const finalUsername = `${username}_${usernameNumber}`;
+        await AsyncStorage.setItem('pendingUsername', finalUsername);
+        
+        // Store phone or email for Stream Chat
+        if (verificationMethod === 'email') {
+          await AsyncStorage.setItem('pendingEmail', emailAddress.toLowerCase());
+        } else {
+          await AsyncStorage.setItem('pendingPhone', phoneNumber);
+        }
+        
         await setActive({ session: signUpAttempt.createdSessionId });
         router.replace('/chats');
       } else {
@@ -75,21 +125,25 @@ const SignUpScreen = () => {
   };
 
   if (pendingVerification) {
+    const verificationTarget = verificationMethod === 'email' 
+      ? emailAddress.toLowerCase() 
+      : phoneNumber;
+    
     return (
       <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
         <View className="gap-3">
           <Text className="text-center text-3xl font-semibold">
-            Verify email address
+            Verify {verificationMethod === 'email' ? 'email address' : 'phone number'}
           </Text>
           <Text className="text-center text-base text-gray-500">
-            Enter the code we sent to {emailAddress.toLowerCase()}
+            Enter the code we sent to {verificationTarget}
           </Text>
           <Button
             variant="text"
             className="text-base text-blue-600"
             onPress={() => setPendingVerification(false)}
           >
-            Wrong email?
+            Wrong {verificationMethod === 'email' ? 'email' : 'phone number'}?
           </Button>
         </View>
         <TextField
@@ -111,6 +165,39 @@ const SignUpScreen = () => {
           Create an account to get started
         </Text>
       </View>
+      
+      {/* Sign-up method selector */}
+      <View className="flex-row gap-2 mb-2 bg-gray-100 rounded-[13px] p-1">
+        <TouchableOpacity
+          className={clsx(
+            'flex-1 rounded-[10px] py-3 items-center justify-center',
+            signUpMethod === 'email' ? 'bg-blue-600' : 'bg-transparent'
+          )}
+          onPress={() => setSignUpMethod('email')}
+        >
+          <Text className={clsx(
+            'text-base font-medium',
+            signUpMethod === 'email' ? 'text-white' : 'text-gray-700'
+          )}>
+            Email
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          className={clsx(
+            'flex-1 rounded-[10px] py-3 items-center justify-center',
+            signUpMethod === 'phone' ? 'bg-blue-600' : 'bg-transparent'
+          )}
+          onPress={() => setSignUpMethod('phone')}
+        >
+          <Text className={clsx(
+            'text-base font-medium',
+            signUpMethod === 'phone' ? 'text-white' : 'text-gray-700'
+          )}>
+            Phone
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <View className="gap-3">
         <TextField
           value={firstName}
@@ -150,12 +237,22 @@ const SignUpScreen = () => {
               'Usernames are always paired with a set of numbers.'}
           </Text>
         </View>
-        <TextField
-          autoCapitalize="none"
-          value={emailAddress}
-          placeholder="Email address"
-          onChangeText={onChangeEmailAddress}
-        />
+        {signUpMethod === 'email' ? (
+          <TextField
+            autoCapitalize="none"
+            value={emailAddress}
+            placeholder="Email address"
+            onChangeText={onChangeEmailAddress}
+            keyboardType="email-address"
+          />
+        ) : (
+          <TextField
+            value={phoneNumber}
+            placeholder="Phone number (e.g., +1234567890)"
+            onChangeText={onChangePhoneNumber}
+            keyboardType="phone-pad"
+          />
+        )}
         <TextField
           value={password}
           placeholder="Password"

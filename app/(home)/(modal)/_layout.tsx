@@ -21,7 +21,7 @@ const ModalLayout = () => {
           headerLeft: () => (
             <Button
               variant="plain"
-              onPress={() => router.back()}
+              onPress={() => router.dismiss()}
               className="right-4"
             >
               <Feather name="chevron-left" size={32} />
@@ -34,7 +34,7 @@ const ModalLayout = () => {
         options={{
           title: 'New Message',
           headerLeft: () => (
-            <Button variant="text" onPress={() => router.back()}>
+            <Button variant="text" onPress={() => router.dismiss()}>
               Cancel
             </Button>
           ),
@@ -44,12 +44,45 @@ const ModalLayout = () => {
         name="new-group"
         options={{
           title: 'Select Members',
+          headerLeft: () => (
+            <Button
+              variant="plain"
+              onPress={() => router.dismiss()}
+              className="right-4"
+            >
+              <Feather name="chevron-left" size={32} />
+            </Button>
+          ),
         }}
       />
       <Stack.Screen
         name="find-by-username"
         options={{
           title: 'Find by Username',
+          headerLeft: () => (
+            <Button
+              variant="plain"
+              onPress={() => router.dismiss()}
+              className="right-4"
+            >
+              <Feather name="chevron-left" size={32} />
+            </Button>
+          ),
+        }}
+      />
+      <Stack.Screen
+        name="find-by-contact"
+        options={{
+          title: 'Find by Contact',
+          headerLeft: () => (
+            <Button
+              variant="plain"
+              onPress={() => router.dismiss()}
+              className="right-4"
+            >
+              <Feather name="chevron-left" size={32} />
+            </Button>
+          ),
         }}
       />
     </Stack>
