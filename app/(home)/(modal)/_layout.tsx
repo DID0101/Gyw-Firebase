@@ -1,10 +1,12 @@
 import { Feather } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 
 import Button from '@/components/Button';
 
 const ModalLayout = () => {
   const router = useRouter();
+  const { t } = useTranslation();
   return (
     <Stack
       screenOptions={{
@@ -17,7 +19,7 @@ const ModalLayout = () => {
       <Stack.Screen
         name="profile"
         options={{
-          title: 'Profile',
+          title: t('profile.title'),
           headerLeft: () => (
             <Button
               variant="plain"
@@ -32,10 +34,10 @@ const ModalLayout = () => {
       <Stack.Screen
         name="new-message"
         options={{
-          title: 'New Message',
+          title: t('chats.newMessage'),
           headerLeft: () => (
             <Button variant="text" onPress={() => router.dismiss()}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           ),
         }}
@@ -43,7 +45,7 @@ const ModalLayout = () => {
       <Stack.Screen
         name="new-group"
         options={{
-          title: 'Select Members',
+          title: t('groups.selectMembers'),
           headerLeft: () => (
             <Button
               variant="plain"
@@ -58,7 +60,7 @@ const ModalLayout = () => {
       <Stack.Screen
         name="find-by-username"
         options={{
-          title: 'Find by Username',
+          title: t('chats.findByUsername'),
           headerLeft: () => (
             <Button
               variant="plain"
@@ -73,7 +75,7 @@ const ModalLayout = () => {
       <Stack.Screen
         name="find-by-contact"
         options={{
-          title: 'Find by Contact',
+          title: t('chats.findByContactTitle'),
           headerLeft: () => (
             <Button
               variant="plain"
@@ -83,6 +85,13 @@ const ModalLayout = () => {
               <Feather name="chevron-left" size={32} />
             </Button>
           ),
+        }}
+      />
+      <Stack.Screen
+        name="story-viewer"
+        options={{
+          headerShown: false,
+          presentation: 'fullScreenModal',
         }}
       />
     </Stack>
