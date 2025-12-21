@@ -4,11 +4,13 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCalls } from '@stream-io/video-react-native-sdk';
 import { Tabs, useRouter } from 'expo-router';
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { HapticTab } from '@/components/HapticTab';
 
 const TabsLayout = () => {
   const router = useRouter();
+  const { t } = useTranslation();
   const calls = useCalls().filter((call) => call.ringing);
 
   const ringingCall = calls[0];
@@ -43,7 +45,7 @@ const TabsLayout = () => {
       <Tabs.Screen
         name="chats"
         options={{
-          title: 'Chats',
+          title: t('chats.title'),
           tabBarIcon: ({ color }) => (
             <Ionicons name="chatbubble-sharp" size={24} color={color} />
           ),
@@ -52,7 +54,7 @@ const TabsLayout = () => {
       <Tabs.Screen
         name="calls"
         options={{
-          title: 'Calls',
+          title: t('calls.title'),
           tabBarIcon: ({ color }) => (
             <FontAwesome name="phone" size={28} color={color} />
           ),
@@ -61,7 +63,7 @@ const TabsLayout = () => {
       <Tabs.Screen
         name="stories"
         options={{
-          title: 'Stories',
+          title: t('stories.title'),
           tabBarIcon: ({ color }) => (
             <MaterialIcons name="web-stories" size={28} color={color} />
           ),

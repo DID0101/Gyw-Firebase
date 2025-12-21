@@ -22,30 +22,32 @@ const ChatsScreen = () => {
   };
 
   return (
-    <Screen className="bg-white" viewClassName="px-4">
-      <View className="flex flex-row items-center justify-between w-full h-10">
+    <Screen className="bg-white" viewClassName="flex-1 px-2 sm:px-4">
+      <View className="flex flex-row items-center justify-between w-full min-h-[40px] flex-shrink-0">
         <AppMenu />
-        <View className="flex flex-row items-center gap-4">
+        <View className="flex flex-row items-center gap-2 sm:gap-4">
           <Button variant="plain">
             <Feather name="camera" size={20} />
           </Button>
           <Link href="/new-message" asChild>
-            <Button variant="plain" className="pl-4 py-1">
+            <Button variant="plain" className="pl-2 sm:pl-4 py-1">
               <Feather name="edit" size={18} />
             </Button>
           </Link>
         </View>
       </View>
-      <ChannelList
-        filters={{
-          type: 'messaging',
-          members: { $in: [client.userID!] },
-        }}
-        sort={{ last_message_at: -1 }}
-        onSelect={goToChannel}
-        LoadingIndicator={ScreenLoading}
-        PreviewAvatar={PreviewAvatar}
-      />
+      <View className="flex-1 min-h-0">
+        <ChannelList
+          filters={{
+            type: 'messaging',
+            members: { $in: [client.userID!] },
+          }}
+          sort={{ last_message_at: -1 }}
+          onSelect={goToChannel}
+          LoadingIndicator={ScreenLoading}
+          PreviewAvatar={PreviewAvatar}
+        />
+      </View>
     </Screen>
   );
 };

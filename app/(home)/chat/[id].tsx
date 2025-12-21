@@ -15,6 +15,7 @@ import {
 
 import AttachButton from '@/components/AttachButton';
 import Button from '@/components/Button';
+import CallMessageSimple from '@/components/CallMessageSimple';
 import ChannelTitle from '@/components/ChannelTitle';
 import CustomMessageInput from '@/components/CustomMessageInput';
 import MessageAvatar from '@/components/MessageAvatar';
@@ -79,16 +80,18 @@ const ChatScreen = () => {
   }
 
   return (
-    <Screen className="flex-1 bg-white" viewClassName="pb-safe">
-      <View className="pl-1 pr-4 pb-1 flex flex-row items-center justify-between w-full h-10">
-        <View className="flex flex-row items-center gap-4">
+    <Screen className="flex-1 bg-white" viewClassName="flex-1 pb-safe">
+      <View className="pl-1 pr-2 pb-1 flex flex-row items-center justify-between w-full min-h-[40px] flex-shrink-0">
+        <View className="flex flex-row items-center gap-2 flex-1 min-w-0">
           <Button variant="plain" onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color="black" />
           </Button>
           <PreviewAvatar channel={channel!} size={28} fontSize={14} />
-          <ChannelTitle channel={channel!} />
+          <View className="flex-1 min-w-0">
+            <ChannelTitle channel={channel!} className="truncate" />
+          </View>
         </View>
-        <View className="flex flex-row items-center gap-6">
+        <View className="flex flex-row items-center gap-3 flex-shrink-0">
           <Button
             variant="plain"
             onPress={startVideoCall}
@@ -105,21 +108,24 @@ const ChatScreen = () => {
           </Button>
         </View>
       </View>
-      <Channel
-        myMessageTheme={myMessageTheme}
-        channel={channel!}
-        keyboardVerticalOffset={60}
-        keyboardBehavior="padding"
-        hasCommands={false}
-        AttachButton={AttachButton}
-        SendButton={SendButton}
-        EmptyStateIndicator={MessageListHeader}
-        MessageAvatar={MessageAvatar}
-        reactionListPosition="bottom"
-      >
-        <MessageList FooterComponent={MessageListHeader} />
-        <CustomMessageInput />
-      </Channel>
+      <View className="flex-1 min-h-0">
+        <Channel
+          myMessageTheme={myMessageTheme}
+          channel={channel!}
+          keyboardVerticalOffset={60}
+          keyboardBehavior="padding"
+          hasCommands={false}
+          AttachButton={AttachButton}
+          SendButton={SendButton}
+          EmptyStateIndicator={MessageListHeader}
+          MessageAvatar={MessageAvatar}
+          MessageSimple={CallMessageSimple}
+          reactionListPosition="bottom"
+        >
+          <MessageList FooterComponent={MessageListHeader} />
+          <CustomMessageInput />
+        </Channel>
+      </View>
     </Screen>
   );
 };

@@ -1,7 +1,7 @@
 import { Entypo, Feather, MaterialIcons } from '@expo/vector-icons';
 import { Link, useRouter } from 'expo-router';
-import { Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
+import { Text, View } from 'react-native';
 import { useChatContext } from 'stream-chat-expo';
 
 import Button from '@/components/Button';
@@ -27,8 +27,8 @@ const NewMessageScreen = () => {
   };
 
   return (
-    <Screen viewClassName="pt-1 px-4">
-      <View className="w-full">
+    <Screen viewClassName="flex-1 pt-1 px-2 sm:px-4">
+      <View className="w-full flex-shrink-0">
         <Link href="/new-group" asChild>
           <Button
             variant="plain"
@@ -84,7 +84,7 @@ const NewMessageScreen = () => {
         </View>
       )}
       {!loadingContacts && contacts.length > 0 && (
-        <View className="flex flex-col gap-2 mt-4">
+        <View className="flex flex-col gap-2 mt-4 flex-1">
           {contacts.map((contact) => (
             <UserCard
               key={contact.id}

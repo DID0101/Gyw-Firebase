@@ -1,5 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, Pressable } from 'react-native';
 
 import { Feather } from '@expo/vector-icons';
@@ -12,6 +13,8 @@ interface ImageInputProps {
 }
 
 function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
+  const { t } = useTranslation();
+
   useEffect(() => {
     requestPermission();
   }, []);
@@ -21,7 +24,7 @@ function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
       const { granted } =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!granted)
-        alert('You need to enable permission to access the library');
+        alert(t('common.enablePermission'));
     } catch (error) {
       console.error('Error requesting media library permissions:', error);
     }
@@ -30,12 +33,12 @@ function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
   const handlePress = () => {
     if (!imageUri) selectImage();
     else
-      Alert.alert('Delete', 'Are you sure you want to delete this image?', [
+      Alert.alert(t('common.delete'), t('common.confirmDeleteImage'), [
         {
-          text: 'Yes',
+          text: t('common.yes'),
           onPress: () => onChangeImage(null),
         },
-        { text: 'No' },
+        { text: t('common.no') },
       ]);
     return;
   };

@@ -1,6 +1,7 @@
 import { getRandomBytesAsync } from 'expo-crypto';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, View } from 'react-native';
 import { UserResponse } from 'stream-chat';
 import { useChatContext } from 'stream-chat-expo';
@@ -15,6 +16,7 @@ import useContacts from '@/hooks/useContacts';
 const NewGroupScreen = () => {
   const { client } = useChatContext();
   const router = useRouter();
+  const { t } = useTranslation();
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [query, setQuery] = useState('');
   const [groupName, setGroupName] = useState('');
@@ -57,11 +59,11 @@ const NewGroupScreen = () => {
 
   const createNewGroup = async () => {
     if (!groupName) {
-      alert('Please enter a group name.');
+      alert(t('groups.enterGroupName'));
       return;
     }
     if (selectedUsers.length === 0) {
-      alert('Please select at least one user.');
+      alert(t('groups.selectAtLeastOne'));
       return;
     }
 
@@ -83,7 +85,7 @@ const NewGroupScreen = () => {
       leave();
     } catch (error) {
       console.error(error);
-      alert('Error creating group');
+      alert(t('groups.errorCreating'));
     } finally {
       setCreatingGroup(false);
     }
@@ -110,18 +112,18 @@ const NewGroupScreen = () => {
   );
 
   return (
-    <Screen viewClassName="pt-1 px-4 gap-4">
+    <Screen viewClassName="flex-1 pt-1 px-2 sm:px-4 gap-4">
       <TextField
         id="groupName"
-        label="Group Name"
-        placeholder="Group Name"
+        label={t('groups.groupName')}
+        placeholder={t('groups.groupName')}
         value={groupName}
         onChangeText={(value) => setGroupName(value)}
       />
       <TextField
         id="users"
-        label="Add Members"
-        placeholder="Who would you like to add?"
+        label={t('groups.addMembers')}
+        placeholder={t('groups.addMembersPlaceholder')}
         value={query}
         onChangeText={(value) => handleUserSearch(value)}
         autoCapitalize="none"
@@ -132,7 +134,7 @@ const NewGroupScreen = () => {
         </View>
       )}
       {!loadingContacts && users.length > 0 && (
-        <View className="flex flex-col gap-2 mt-2">
+        <View className="flex flex-col gap-2 mt-2 flex-1">
           {sortedUsers.map((user) => (
             <UserCheckbox
               key={user.id}
@@ -144,11 +146,11 @@ const NewGroupScreen = () => {
         </View>
       )}
       <Button
-        className="mt-auto"
+        className="mt-auto flex-shrink-0"
         onPress={createNewGroup}
         disabled={creatingGroup}
       >
-        {!creatingGroup && 'Create group'}
+        {!creatingGroup && t('groups.createGroup')}
         {creatingGroup && <ActivityIndicator />}
       </Button>
     </Screen>

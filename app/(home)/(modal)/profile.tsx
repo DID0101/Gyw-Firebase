@@ -134,7 +134,7 @@ const ProfileScreen = () => {
 
   return (
     <Screen
-      viewClassName="pt-3 px-4 items-center gap-6"
+      viewClassName="flex-1 pt-3 px-2 sm:px-4 items-center gap-4 sm:gap-6"
       loadingOverlay={loading}
     >
       <View className="items-center gap-3">

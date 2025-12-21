@@ -1,5 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 import { UserResponse } from 'stream-chat';
 import { useChatContext } from 'stream-chat-expo';
@@ -13,6 +14,7 @@ import useContacts from '@/hooks/useContacts';
 const FindByUsernameScreen = () => {
   const { client } = useChatContext();
   const router = useRouter();
+  const { t } = useTranslation();
   const [username, setUsername] = useState('');
   const [user, setUser] = useState<UserResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,10 +67,10 @@ const FindByUsernameScreen = () => {
   };
 
   return (
-    <Screen viewClassName="pt-1 px-4 gap-4">
+    <Screen viewClassName="flex-1 pt-1 px-2 sm:px-4 gap-4">
       <TextField
         id="username"
-        placeholder="Username"
+        placeholder={t('auth.username')}
         value={username}
         onChangeText={(value) => handleUserSearch(value)}
         autoCapitalize="none"

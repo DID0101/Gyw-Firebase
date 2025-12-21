@@ -45,9 +45,13 @@ const chatTheme: ChatDeepPartial<ChatTheme> = {
     },
   },
   messageList: {
+    container: {
+      flex: 1,
+    },
     contentContainer: {
       justifyContent: 'flex-end',
       flexGrow: 1,
+      flexShrink: 1,
     },
   },
   inlineDateSeparator: {
@@ -71,13 +75,17 @@ const chatTheme: ChatDeepPartial<ChatTheme> = {
   messageInput: {
     container: {
       borderTopWidth: 0,
+      flexShrink: 0,
+      minHeight: 60,
     },
     inputBoxContainer: {
       backgroundColor: '#eeeeef',
       borderRadius: 20,
-      paddingHorizontal: 0,
+      paddingHorizontal: 12,
       paddingVertical: 6,
       borderColor: '#eeeeef',
+      flex: 1,
+      minHeight: 40,
     },
     audioRecordingButton: {
       micIcon: {

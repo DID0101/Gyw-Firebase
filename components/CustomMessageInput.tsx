@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { TextComposerState } from 'stream-chat';
 import {
   MessageInput,
@@ -11,12 +12,18 @@ const textComposerStateSelector = (state: TextComposerState) => ({
 });
 
 const CustomMessageInput = () => {
+  const { t } = useTranslation();
   const { textComposer } = useMessageComposer();
   const { text } = useStateStore(textComposer.state, textComposerStateSelector);
   const { attachments } = useAttachmentManagerState();
 
   const audioRecordingEnabled = !text && attachments.length === 0;
-  return <MessageInput audioRecordingEnabled={audioRecordingEnabled} />;
+  return (
+    <MessageInput
+      audioRecordingEnabled={audioRecordingEnabled}
+      placeholder={t('messages.typeMessage')}
+    />
+  );
 };
 
 export default CustomMessageInput;
