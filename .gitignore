@@ -37,8 +37,6 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
-
-# Nested clone (avoid adding as submodule)
 signal-clone/
 
 android/
