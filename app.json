@@ -1,20 +1,26 @@
 {
   "expo": {
-    "name": "signal-clone",
-    "slug": "signal-clone",
+    "name": "GYW",
+    "slug": "gyw",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "signalclone",
+    "scheme": "gyw",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.tropicolx.signal-clone"
+      "bundleIdentifier": "com.tropicolx.signal-clone",
+      "bitcode": false,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio", "remote-notification", "voip"],
+        "NSMicrophoneUsageDescription": "$(PRODUCT_NAME) needs microphone access for voice and video calls.",
+        "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -23,24 +29,38 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.WAKE_LOCK",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.FOREGROUND_SERVICE_CAMERA"
       ],
-      "package": "com.tropicolx.signalclone"
+      "package": "com.gyw1.chat",
+      "versionCode": 2,
+      "privacyPolicy": "https://serverless-token-api.vercel.app/privacy-policy",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "bundler": "metro",
-      "output": "server",
-      "favicon": "./assets/images/favicon.png"
+      "output": "static",
+      "favicon": "./assets/images/icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -62,31 +82,24 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "$(PRODUCT_NAME) would like to use your camera to share image in a message.",
-          "photosPermission": "$(PRODUCT_NAME) would like to use your device gallery to attach image in a message."
+          "cameraPermission": "$(PRODUCT_NAME) would like to use your camera to share image or video in a message.",
+          "photosPermission": "$(PRODUCT_NAME) would like to use your device gallery to attach image or video in a message."
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "$(PRODUCT_NAME) would like access to your photo gallery to share image in a message.",
-          "savePhotosPermission": "$(PRODUCT_NAME) would like to save photos to your photo gallery after downloading from a message."
+          "photosPermission": "$(PRODUCT_NAME) would like access to your photo gallery to share image or video in a message.",
+          "savePhotosPermission": "$(PRODUCT_NAME) would like to save photos and videos to your photo gallery after downloading from a message."
         }
       ],
-      "expo-dev-client",
       [
         "expo-build-properties",
         {
           "android": {
-            "minSdkVersion": 24
+            "minSdkVersion": 24,
+            "enableProguardInReleaseBuilds": true
           }
-        }
-      ],
-      [
-        "@stream-io/video-react-native-sdk",
-        {
-          "iOSEnableMultitaskingCameraAccess": true,
-          "androidPictureInPicture": true
         }
       ],
       [
@@ -96,7 +109,38 @@
           "microphonePermission": "$(PRODUCT_NAME) requires microphone access in order to capture and transmit audio"
         }
       ],
-      "expo-web-browser"
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#ffffff",
+          "sounds": ["./assets/sounds/ringtone.wav"],
+          "mode": "production"
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "@react-native-firebase/messaging",
+      "expo-web-browser",
+      [
+        "@config-plugins/react-native-callkeep",
+        {
+          "ios": {
+            "appName": "GYW"
+          },
+          "android": {
+            "alertTitle": "In-app calls",
+            "alertDescription": "This app needs permission to show in-app voice and video call UI only (not regular phone calls).",
+            "cancelButton": "Cancel",
+            "okButton": "OK",
+            "foregroundService": {
+              "channelId": "incoming_calls",
+              "channelName": "Incoming Calls"
+            }
+          }
+        }
+      ],
+      "./plugins/android-manifest-merger-fix.js"
     ],
     "experiments": {
       "typedRoutes": true
@@ -104,9 +148,8 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "72a69280-8159-425a-a36b-503031bbedcc"
+        "projectId": "4d1aa22a-7531-4d6c-8967-62d6d176abeb"
       }
-    },
-    "owner": "tropicolx"
+    }
   }
 }

@@ -15,18 +15,19 @@ const TextField = ({
   return (
     <View
       style={{ width }}
-      className="relative px-4 flex-row bg-white items-center justify-between rounded-xl py-3 android:py-0 border border-white"
+      className="relative px-4 flex-row bg-white dark:bg-gray-800 items-center justify-between rounded-xl py-3 android:py-0 border border-white dark:border-gray-700"
     >
       {label && (
         <View>
-          <Text className="w-[108px] font-medium">{label}</Text>
+          <Text className="w-[108px] font-medium text-black dark:text-white">{label}</Text>
         </View>
       )}
       <TextInput
         className={clsx(
-          'flex-1 placeholder:text-gray-400 text-black',
+          'flex-1 placeholder:text-gray-400 dark:placeholder:text-gray-500 text-black dark:text-white',
           className
         )}
+        placeholderTextColor={className?.includes('dark:') ? '#9CA3AF' : '#9CA3AF'}
         {...otherProps}
       />
     </View>

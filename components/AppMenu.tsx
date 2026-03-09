@@ -1,23 +1,31 @@
-import { useClerk, useUser } from '@clerk/clerk-expo';
 import { Feather } from '@expo/vector-icons';
+import clsx from 'clsx';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { useAuth } from '@/contexts/AuthContext';
+import { useTheme } from '@/contexts/ThemeContext';
+import { useThemeClassName } from '@/lib/themeUtils';
 import { getError } from '../lib/utils';
 import Avatar from './Avatar';
 import Button from './Button';
 import LanguageSwitcher from './LanguageSwitcher';
+import ThemeToggle from './ThemeToggle';
 
 const AppMenu = () => {
-  const { signOut } = useClerk();
+  const { user, signOut } = useAuth();
   const router = useRouter();
-  const { user } = useUser();
   const { t } = useTranslation();
+  const { colorScheme } = useTheme();
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const avatarRef = useRef<View>(null);
+  
+  const menuBg = useThemeClassName('bg-white', 'bg-gray-900');
+  const textColor = useThemeClassName('text-gray-900', 'text-gray-100');
+  const iconBg = useThemeClassName('bg-gray-100', 'bg-gray-800');
 
   const toggleMenu = () => {
     if (menuVisible) {
@@ -41,7 +49,7 @@ const AppMenu = () => {
     setMenuVisible(false);
     try {
       await signOut();
-      router.replace('/');
+      router.replace('/sign-in');
     } catch (err) {
       getError(err);
     }
@@ -51,10 +59,10 @@ const AppMenu = () => {
     <>
       <Button variant="plain" ref={avatarRef} onPress={toggleMenu}>
         <Avatar
-          imageUrl={user?.imageUrl}
+          imageUrl={user?.photoURL || undefined}
           size={28}
           fontSize={12}
-          name={user?.fullName!}
+          name={user?.displayName || user?.phoneNumber || 'User'}
         />
       </Button>
       <Modal
@@ -69,25 +77,39 @@ const AppMenu = () => {
         >
           <View
             style={{ top: menuPosition.top, left: menuPosition.left }}
-            className="absolute bg-white rounded-lg shadow-md shadow-gray-100 min-w-[250px]"
+            className={clsx('absolute rounded-2xl shadow-2xl min-w-[200px] overflow-hidden py-2', menuBg)}
           >
-            <Button
-              variant="plain"
-              className="flex-row items-center justify-between py-2 px-3 border-b border-gray-200"
+            <Pressable
+              className="flex-row items-center gap-4 py-3.5 px-5"
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.7 : 1,
+              })}
               onPress={goToProfile}
             >
-              <Text>{t('profile.title')}</Text>
-              <Feather name="user" size={20} color="black" />
-            </Button>
+              <View className={clsx('w-9 h-9 rounded-full items-center justify-center', iconBg)}>
+                <Feather name="user" size={18} color="#337E84" />
+              </View>
+              <Text className={clsx('flex-1 text-[15px] font-medium', textColor)}>{t('profile.title')}</Text>
+            </Pressable>
+            
             <LanguageSwitcher variant="menu" />
-            <Button
-              variant="plain"
-              className="flex-row items-center justify-between py-2 px-3"
+            
+            <ThemeToggle variant="menu" />
+            
+            <View className={clsx('h-[1px] mx-3 my-1', colorScheme === 'dark' ? 'bg-gray-700' : 'bg-gray-200')} />
+            
+            <Pressable
+              className="flex-row items-center gap-4 py-3.5 px-5"
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.7 : 1,
+              })}
               onPress={handleSignOut}
             >
-              <Text className="text-red-600">{t('auth.signOut')}</Text>
-              <Feather name="log-out" size={20} color="red" />
-            </Button>
+              <View className={clsx('w-9 h-9 rounded-full items-center justify-center', colorScheme === 'dark' ? 'bg-red-900/30' : 'bg-red-50')}>
+                <Feather name="log-out" size={18} color="#ef4444" />
+              </View>
+              <Text className="flex-1 text-red-600 dark:text-red-400 text-[15px] font-medium">{t('auth.signOut')}</Text>
+            </Pressable>
           </View>
         </Pressable>
       </Modal>

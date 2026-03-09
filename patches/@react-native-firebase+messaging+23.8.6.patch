@@ -1,0 +1,1266 @@
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/results.bin b/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/results.bin
+new file mode 100644
+index 0000000..0d259dd
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/results.bin
+@@ -0,0 +1 @@
++o/classes
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/transformed/classes/classes_dex/classes.dex b/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/transformed/classes/classes_dex/classes.dex
+new file mode 100644
+index 0000000..53a8eb1
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/.transforms/46bba4959461302a4f729771d8079683/transformed/classes/classes_dex/classes.dex differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/results.bin b/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/results.bin
+new file mode 100644
+index 0000000..0d259dd
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/results.bin
+@@ -0,0 +1 @@
++o/classes
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/transformed/classes/classes_dex/classes.dex b/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/transformed/classes/classes_dex/classes.dex
+new file mode 100644
+index 0000000..53a8eb1
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/.transforms/5bad460a5898afe298995e4b161f63b3/transformed/classes/classes_dex/classes.dex differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/generated/source/buildConfig/debug/io/invertase/firebase/messaging/BuildConfig.java b/node_modules/@react-native-firebase/messaging/android/build/generated/source/buildConfig/debug/io/invertase/firebase/messaging/BuildConfig.java
+new file mode 100644
+index 0000000..05c96b0
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/generated/source/buildConfig/debug/io/invertase/firebase/messaging/BuildConfig.java
+@@ -0,0 +1,12 @@
++/**
++ * Automatically generated file. DO NOT MODIFY
++ */
++package io.invertase.firebase.messaging;
++
++public final class BuildConfig {
++  public static final boolean DEBUG = Boolean.parseBoolean("true");
++  public static final String LIBRARY_PACKAGE_NAME = "io.invertase.firebase.messaging";
++  public static final String BUILD_TYPE = "debug";
++  // Field from default config.
++  public static final String FIREBASE_JSON_RAW = "{}";
++}
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/AndroidManifest.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/AndroidManifest.xml
+new file mode 100644
+index 0000000..463cd09
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/AndroidManifest.xml
+@@ -0,0 +1,49 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++    package="io.invertase.firebase.messaging" >
++
++    <uses-sdk android:minSdkVersion="24" />
++
++    <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="android.permission.WAKE_LOCK" />
++    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++
++    <application>
++        <service
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingHeadlessService"
++            android:exported="false" />
++        <service
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService"
++            android:exported="false" >
++            <intent-filter>
++                <action android:name="com.google.firebase.MESSAGING_EVENT" />
++            </intent-filter>
++        </service>
++
++        <receiver
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingReceiver"
++            android:exported="true"
++            android:permission="com.google.android.c2dm.permission.SEND" >
++            <intent-filter>
++                <action android:name="com.google.android.c2dm.intent.RECEIVE" />
++            </intent-filter>
++        </receiver>
++
++        <meta-data
++            android:name="delivery_metrics_exported_to_big_query_enabled"
++            android:value="false" />
++        <meta-data
++            android:name="firebase_messaging_auto_init_enabled"
++            android:value="true" />
++        <meta-data
++            android:name="firebase_messaging_notification_delegation_enabled"
++            android:value="false" />
++        <meta-data
++            android:name="com.google.firebase.messaging.default_notification_channel_id"
++            android:value="" />
++        <meta-data
++            android:name="com.google.firebase.messaging.default_notification_color"
++            android:resource="@color/white" />
++    </application>
++
++</manifest>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/output-metadata.json b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/output-metadata.json
+new file mode 100644
+index 0000000..ff221ff
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aapt_friendly_merged_manifests/debug/processDebugManifest/aapt/output-metadata.json
+@@ -0,0 +1,18 @@
++{
++  "version": 3,
++  "artifactType": {
++    "type": "AAPT_FRIENDLY_MERGED_MANIFESTS",
++    "kind": "Directory"
++  },
++  "applicationId": "io.invertase.firebase.messaging",
++  "variantName": "debug",
++  "elements": [
++    {
++      "type": "SINGLE",
++      "filters": [],
++      "attributes": [],
++      "outputFile": "AndroidManifest.xml"
++    }
++  ],
++  "elementType": "File"
++}
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/aar_metadata/debug/writeDebugAarMetadata/aar-metadata.properties b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aar_metadata/debug/writeDebugAarMetadata/aar-metadata.properties
+new file mode 100644
+index 0000000..1211b1e
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/aar_metadata/debug/writeDebugAarMetadata/aar-metadata.properties
+@@ -0,0 +1,6 @@
++aarFormatVersion=1.0
++aarMetadataVersion=1.0
++minCompileSdk=1
++minCompileSdkExtension=0
++minAndroidGradlePluginVersion=1.0.0
++coreLibraryDesugaringEnabled=false
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json b/node_modules/@react-native-firebase/messaging/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json
+new file mode 100644
+index 0000000..9e26dfe
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json
+@@ -0,0 +1 @@
++{}
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar
+new file mode 100644
+index 0000000..edfbc07
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_r_class_jar/debug/generateDebugRFile/R.jar b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_r_class_jar/debug/generateDebugRFile/R.jar
+new file mode 100644
+index 0000000..ee4d34b
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_r_class_jar/debug/generateDebugRFile/R.jar differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_symbol_list/debug/generateDebugRFile/R.txt b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_symbol_list/debug/generateDebugRFile/R.txt
+new file mode 100644
+index 0000000..6ab7871
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/compile_symbol_list/debug/generateDebugRFile/R.txt
+@@ -0,0 +1,140 @@
++int color aliceblue 0x0
++int color antiquewhite 0x0
++int color aqua 0x0
++int color aquamarine 0x0
++int color azure 0x0
++int color beige 0x0
++int color bisque 0x0
++int color black 0x0
++int color blanchedalmond 0x0
++int color blue 0x0
++int color blueviolet 0x0
++int color brown 0x0
++int color burlywood 0x0
++int color cadetblue 0x0
++int color chartreuse 0x0
++int color chocolate 0x0
++int color coral 0x0
++int color cornflowerblue 0x0
++int color cornsilk 0x0
++int color crimson 0x0
++int color cyan 0x0
++int color darkblue 0x0
++int color darkcyan 0x0
++int color darkgoldenrod 0x0
++int color darkgray 0x0
++int color darkgreen 0x0
++int color darkkhaki 0x0
++int color darkmagenta 0x0
++int color darkolivegreen 0x0
++int color darkorange 0x0
++int color darkorchid 0x0
++int color darkred 0x0
++int color darksalmon 0x0
++int color darkseagreen 0x0
++int color darkslateblue 0x0
++int color darkslategray 0x0
++int color darkturquoise 0x0
++int color darkviolet 0x0
++int color deeppink 0x0
++int color deepskyblue 0x0
++int color dimgray 0x0
++int color dodgerblue 0x0
++int color firebrick 0x0
++int color floralwhite 0x0
++int color forestgreen 0x0
++int color fuchsia 0x0
++int color gainsboro 0x0
++int color ghostwhite 0x0
++int color gold 0x0
++int color goldenrod 0x0
++int color gray 0x0
++int color green 0x0
++int color greenyellow 0x0
++int color honeydew 0x0
++int color hotpink 0x0
++int color indianred 0x0
++int color indigo 0x0
++int color ivory 0x0
++int color khaki 0x0
++int color lavender 0x0
++int color lavenderblush 0x0
++int color lawngreen 0x0
++int color lemonchiffon 0x0
++int color lightblue 0x0
++int color lightcoral 0x0
++int color lightcyan 0x0
++int color lightgoldenrodyellow 0x0
++int color lightgreen 0x0
++int color lightgrey 0x0
++int color lightpink 0x0
++int color lightsalmon 0x0
++int color lightseagreen 0x0
++int color lightskyblue 0x0
++int color lightslategray 0x0
++int color lightsteelblue 0x0
++int color lightyellow 0x0
++int color lime 0x0
++int color limegreen 0x0
++int color linen 0x0
++int color magenta 0x0
++int color maroon 0x0
++int color mediumaquamarine 0x0
++int color mediumblue 0x0
++int color mediumorchid 0x0
++int color mediumpurple 0x0
++int color mediumseagreen 0x0
++int color mediumslateblue 0x0
++int color mediumspringgreen 0x0
++int color mediumturquoise 0x0
++int color mediumvioletred 0x0
++int color midnightblue 0x0
++int color mintcream 0x0
++int color mistyrose 0x0
++int color moccasin 0x0
++int color navajowhite 0x0
++int color navy 0x0
++int color oldlace 0x0
++int color olive 0x0
++int color olivedrab 0x0
++int color orange 0x0
++int color orangered 0x0
++int color orchid 0x0
++int color palegoldenrod 0x0
++int color palegreen 0x0
++int color paleturquoise 0x0
++int color palevioletred 0x0
++int color papayawhip 0x0
++int color peachpuff 0x0
++int color peru 0x0
++int color pink 0x0
++int color plum 0x0
++int color powderblue 0x0
++int color purple 0x0
++int color red 0x0
++int color rosybrown 0x0
++int color royalblue 0x0
++int color saddlebrown 0x0
++int color salmon 0x0
++int color sandybrown 0x0
++int color seagreen 0x0
++int color seashell 0x0
++int color sienna 0x0
++int color silver 0x0
++int color skyblue 0x0
++int color slateblue 0x0
++int color slategray 0x0
++int color snow 0x0
++int color springgreen 0x0
++int color steelblue 0x0
++int color tan 0x0
++int color teal 0x0
++int color thistle 0x0
++int color tomato 0x0
++int color turquoise 0x0
++int color violet 0x0
++int color wheat 0x0
++int color white 0x0
++int color whitesmoke 0x0
++int color yellow 0x0
++int color yellowgreen 0x0
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties
+new file mode 100644
+index 0000000..48d25be
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/compile-file-map.properties
+@@ -0,0 +1 @@
++#Sun Mar 01 07:13:25 TRT 2026
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merged.dir/values/values.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merged.dir/values/values.xml
+new file mode 100644
+index 0000000..711c9ae
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merged.dir/values/values.xml
+@@ -0,0 +1,143 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <color name="aliceblue">#F0F8FF</color>
++    <color name="antiquewhite">#FAEBD7</color>
++    <color name="aqua">#00FFFF</color>
++    <color name="aquamarine">#7FFFD4</color>
++    <color name="azure">#F0FFFF</color>
++    <color name="beige">#F5F5DC</color>
++    <color name="bisque">#FFE4C4</color>
++    <color name="black">#000000</color>
++    <color name="blanchedalmond">#FFEBCD</color>
++    <color name="blue">#0000FF</color>
++    <color name="blueviolet">#8A2BE2</color>
++    <color name="brown">#A52A2A</color>
++    <color name="burlywood">#DEB887</color>
++    <color name="cadetblue">#5F9EA0</color>
++    <color name="chartreuse">#7FFF00</color>
++    <color name="chocolate">#D2691E</color>
++    <color name="coral">#FF7F50</color>
++    <color name="cornflowerblue">#6495ED</color>
++    <color name="cornsilk">#FFF8DC</color>
++    <color name="crimson">#DC143C</color>
++    <color name="cyan">#00FFFF</color>
++    <color name="darkblue">#00008B</color>
++    <color name="darkcyan">#008B8B</color>
++    <color name="darkgoldenrod">#B8860B</color>
++    <color name="darkgray">#A9A9A9</color>
++    <color name="darkgreen">#006400</color>
++    <color name="darkkhaki">#BDB76B</color>
++    <color name="darkmagenta">#8B008B</color>
++    <color name="darkolivegreen">#556B2F</color>
++    <color name="darkorange">#FF8C00</color>
++    <color name="darkorchid">#9932CC</color>
++    <color name="darkred">#8B0000</color>
++    <color name="darksalmon">#E9967A</color>
++    <color name="darkseagreen">#8FBC8F</color>
++    <color name="darkslateblue">#483D8B</color>
++    <color name="darkslategray">#2F4F4F</color>
++    <color name="darkturquoise">#00CED1</color>
++    <color name="darkviolet">#9400D3</color>
++    <color name="deeppink">#FF1493</color>
++    <color name="deepskyblue">#00BFFF</color>
++    <color name="dimgray">#696969</color>
++    <color name="dodgerblue">#1E90FF</color>
++    <color name="firebrick">#B22222</color>
++    <color name="floralwhite">#FFFAF0</color>
++    <color name="forestgreen">#228B22</color>
++    <color name="fuchsia">#FF00FF</color>
++    <color name="gainsboro">#DCDCDC</color>
++    <color name="ghostwhite">#F8F8FF</color>
++    <color name="gold">#FFD700</color>
++    <color name="goldenrod">#DAA520</color>
++    <color name="gray">#808080</color>
++    <color name="green">#008000</color>
++    <color name="greenyellow">#ADFF2F</color>
++    <color name="honeydew">#F0FFF0</color>
++    <color name="hotpink">#FF69B4</color>
++    <color name="indianred">#CD5C5C</color>
++    <color name="indigo">#4B0082</color>
++    <color name="ivory">#FFFFF0</color>
++    <color name="khaki">#F0E68C</color>
++    <color name="lavender">#E6E6FA</color>
++    <color name="lavenderblush">#FFF0F5</color>
++    <color name="lawngreen">#7CFC00</color>
++    <color name="lemonchiffon">#FFFACD</color>
++    <color name="lightblue">#ADD8E6</color>
++    <color name="lightcoral">#F08080</color>
++    <color name="lightcyan">#E0FFFF</color>
++    <color name="lightgoldenrodyellow">#FAFAD2</color>
++    <color name="lightgreen">#90EE90</color>
++    <color name="lightgrey">#D3D3D3</color>
++    <color name="lightpink">#FFB6C1</color>
++    <color name="lightsalmon">#FFA07A</color>
++    <color name="lightseagreen">#20B2AA</color>
++    <color name="lightskyblue">#87CEFA</color>
++    <color name="lightslategray">#778899</color>
++    <color name="lightsteelblue">#B0C4DE</color>
++    <color name="lightyellow">#FFFFE0</color>
++    <color name="lime">#00FF00</color>
++    <color name="limegreen">#32CD32</color>
++    <color name="linen">#FAF0E6</color>
++    <color name="magenta">#FF00FF</color>
++    <color name="maroon">#800000</color>
++    <color name="mediumaquamarine">#66CDAA</color>
++    <color name="mediumblue">#0000CD</color>
++    <color name="mediumorchid">#BA55D3</color>
++    <color name="mediumpurple">#9370DB</color>
++    <color name="mediumseagreen">#3CB371</color>
++    <color name="mediumslateblue">#7B68EE</color>
++    <color name="mediumspringgreen">#00FA9A</color>
++    <color name="mediumturquoise">#48D1CC</color>
++    <color name="mediumvioletred">#C71585</color>
++    <color name="midnightblue">#191970</color>
++    <color name="mintcream">#F5FFFA</color>
++    <color name="mistyrose">#FFE4E1</color>
++    <color name="moccasin">#FFE4B5</color>
++    <color name="navajowhite">#FFDEAD</color>
++    <color name="navy">#000080</color>
++    <color name="oldlace">#FDF5E6</color>
++    <color name="olive">#808000</color>
++    <color name="olivedrab">#6B8E23</color>
++    <color name="orange">#FFA500</color>
++    <color name="orangered">#FF4500</color>
++    <color name="orchid">#DA70D6</color>
++    <color name="palegoldenrod">#EEE8AA</color>
++    <color name="palegreen">#98FB98</color>
++    <color name="paleturquoise">#AFEEEE</color>
++    <color name="palevioletred">#DB7093</color>
++    <color name="papayawhip">#FFEFD5</color>
++    <color name="peachpuff">#FFDAB9</color>
++    <color name="peru">#CD853F</color>
++    <color name="pink">#FFC0CB</color>
++    <color name="plum">#DDA0DD</color>
++    <color name="powderblue">#B0E0E6</color>
++    <color name="purple">#800080</color>
++    <color name="red">#FF0000</color>
++    <color name="rosybrown">#BC8F8F</color>
++    <color name="royalblue">#4169E1</color>
++    <color name="saddlebrown">#8B4513</color>
++    <color name="salmon">#FA8072</color>
++    <color name="sandybrown">#F4A460</color>
++    <color name="seagreen">#2E8B57</color>
++    <color name="seashell">#FFF5EE</color>
++    <color name="sienna">#A0522D</color>
++    <color name="silver">#C0C0C0</color>
++    <color name="skyblue">#87CEEB</color>
++    <color name="slateblue">#6A5ACD</color>
++    <color name="slategray">#708090</color>
++    <color name="snow">#FFFAFA</color>
++    <color name="springgreen">#00FF7F</color>
++    <color name="steelblue">#4682B4</color>
++    <color name="tan">#D2B48C</color>
++    <color name="teal">#008080</color>
++    <color name="thistle">#D8BFD8</color>
++    <color name="tomato">#FF6347</color>
++    <color name="turquoise">#40E0D0</color>
++    <color name="violet">#EE82EE</color>
++    <color name="wheat">#F5DEB3</color>
++    <color name="white">#FFFFFF</color>
++    <color name="whitesmoke">#F5F5F5</color>
++    <color name="yellow">#FFFF00</color>
++    <color name="yellowgreen">#9ACD32</color>
++</resources>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merger.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merger.xml
+new file mode 100644
+index 0000000..b64dc4a
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/debug/packageDebugResources/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main" generated-set="main$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\res"><file path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\res\values\colors.xml" qualifiers=""><color name="white">#FFFFFF</color><color name="ivory">#FFFFF0</color><color name="lightyellow">#FFFFE0</color><color name="yellow">#FFFF00</color><color name="snow">#FFFAFA</color><color name="floralwhite">#FFFAF0</color><color name="lemonchiffon">#FFFACD</color><color name="cornsilk">#FFF8DC</color><color name="seashell">#FFF5EE</color><color name="lavenderblush">#FFF0F5</color><color name="papayawhip">#FFEFD5</color><color name="blanchedalmond">#FFEBCD</color><color name="mistyrose">#FFE4E1</color><color name="bisque">#FFE4C4</color><color name="moccasin">#FFE4B5</color><color name="navajowhite">#FFDEAD</color><color name="peachpuff">#FFDAB9</color><color name="gold">#FFD700</color><color name="pink">#FFC0CB</color><color name="lightpink">#FFB6C1</color><color name="orange">#FFA500</color><color name="lightsalmon">#FFA07A</color><color name="darkorange">#FF8C00</color><color name="coral">#FF7F50</color><color name="hotpink">#FF69B4</color><color name="tomato">#FF6347</color><color name="orangered">#FF4500</color><color name="deeppink">#FF1493</color><color name="fuchsia">#FF00FF</color><color name="magenta">#FF00FF</color><color name="red">#FF0000</color><color name="oldlace">#FDF5E6</color><color name="lightgoldenrodyellow">#FAFAD2</color><color name="linen">#FAF0E6</color><color name="antiquewhite">#FAEBD7</color><color name="salmon">#FA8072</color><color name="ghostwhite">#F8F8FF</color><color name="mintcream">#F5FFFA</color><color name="whitesmoke">#F5F5F5</color><color name="beige">#F5F5DC</color><color name="wheat">#F5DEB3</color><color name="sandybrown">#F4A460</color><color name="azure">#F0FFFF</color><color name="honeydew">#F0FFF0</color><color name="aliceblue">#F0F8FF</color><color name="khaki">#F0E68C</color><color name="lightcoral">#F08080</color><color name="palegoldenrod">#EEE8AA</color><color name="violet">#EE82EE</color><color name="darksalmon">#E9967A</color><color name="lavender">#E6E6FA</color><color name="lightcyan">#E0FFFF</color><color name="burlywood">#DEB887</color><color name="plum">#DDA0DD</color><color name="gainsboro">#DCDCDC</color><color name="crimson">#DC143C</color><color name="palevioletred">#DB7093</color><color name="goldenrod">#DAA520</color><color name="orchid">#DA70D6</color><color name="thistle">#D8BFD8</color><color name="lightgrey">#D3D3D3</color><color name="tan">#D2B48C</color><color name="chocolate">#D2691E</color><color name="peru">#CD853F</color><color name="indianred">#CD5C5C</color><color name="mediumvioletred">#C71585</color><color name="silver">#C0C0C0</color><color name="darkkhaki">#BDB76B</color><color name="rosybrown">#BC8F8F</color><color name="mediumorchid">#BA55D3</color><color name="darkgoldenrod">#B8860B</color><color name="firebrick">#B22222</color><color name="powderblue">#B0E0E6</color><color name="lightsteelblue">#B0C4DE</color><color name="paleturquoise">#AFEEEE</color><color name="greenyellow">#ADFF2F</color><color name="lightblue">#ADD8E6</color><color name="darkgray">#A9A9A9</color><color name="brown">#A52A2A</color><color name="sienna">#A0522D</color><color name="yellowgreen">#9ACD32</color><color name="darkorchid">#9932CC</color><color name="palegreen">#98FB98</color><color name="darkviolet">#9400D3</color><color name="mediumpurple">#9370DB</color><color name="lightgreen">#90EE90</color><color name="darkseagreen">#8FBC8F</color><color name="saddlebrown">#8B4513</color><color name="darkmagenta">#8B008B</color><color name="darkred">#8B0000</color><color name="blueviolet">#8A2BE2</color><color name="lightskyblue">#87CEFA</color><color name="skyblue">#87CEEB</color><color name="gray">#808080</color><color name="olive">#808000</color><color name="purple">#800080</color><color name="maroon">#800000</color><color name="aquamarine">#7FFFD4</color><color name="chartreuse">#7FFF00</color><color name="lawngreen">#7CFC00</color><color name="mediumslateblue">#7B68EE</color><color name="lightslategray">#778899</color><color name="slategray">#708090</color><color name="olivedrab">#6B8E23</color><color name="slateblue">#6A5ACD</color><color name="dimgray">#696969</color><color name="mediumaquamarine">#66CDAA</color><color name="cornflowerblue">#6495ED</color><color name="cadetblue">#5F9EA0</color><color name="darkolivegreen">#556B2F</color><color name="indigo">#4B0082</color><color name="mediumturquoise">#48D1CC</color><color name="darkslateblue">#483D8B</color><color name="steelblue">#4682B4</color><color name="royalblue">#4169E1</color><color name="turquoise">#40E0D0</color><color name="mediumseagreen">#3CB371</color><color name="limegreen">#32CD32</color><color name="darkslategray">#2F4F4F</color><color name="seagreen">#2E8B57</color><color name="forestgreen">#228B22</color><color name="lightseagreen">#20B2AA</color><color name="dodgerblue">#1E90FF</color><color name="midnightblue">#191970</color><color name="aqua">#00FFFF</color><color name="cyan">#00FFFF</color><color name="springgreen">#00FF7F</color><color name="lime">#00FF00</color><color name="mediumspringgreen">#00FA9A</color><color name="darkturquoise">#00CED1</color><color name="deepskyblue">#00BFFF</color><color name="darkcyan">#008B8B</color><color name="teal">#008080</color><color name="green">#008000</color><color name="darkgreen">#006400</color><color name="blue">#0000FF</color><color name="mediumblue">#0000CD</color><color name="darkblue">#00008B</color><color name="navy">#000080</color><color name="black">#000000</color></file></source></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="debug$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\debug\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="debug" generated-set="debug$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\debug\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\build\generated\res\resValues\debug"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated" generated-set="generated$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\build\generated\res\resValues\debug"/></dataSet><mergedItems/></merger>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml
+new file mode 100644
+index 0000000..bc11438
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\jniLibs"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\debug\jniLibs"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugShaders/merger.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugShaders/merger.xml
+new file mode 100644
+index 0000000..e5b203e
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/mergeDebugShaders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\shaders"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\debug\shaders"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/packageDebugAssets/merger.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/packageDebugAssets/merger.xml
+new file mode 100644
+index 0000000..b4935ae
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/incremental/packageDebugAssets/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\assets"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\debug\assets"/></dataSet><dataSet config="generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\build\intermediates\shader_assets\debug\compileDebugShaders\out"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/BuildConfig.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/BuildConfig.class
+new file mode 100644
+index 0000000..fe7651e
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/BuildConfig.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert$1.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert$1.class
+new file mode 100644
+index 0000000..90e1404
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert$1.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert.class
+new file mode 100644
+index 0000000..6be3f65
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/JsonConvert.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingHeadlessService.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingHeadlessService.class
+new file mode 100644
+index 0000000..9c198e3
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingHeadlessService.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingModule.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingModule.class
+new file mode 100644
+index 0000000..4f6ba32
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingModule.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingPackage.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingPackage.class
+new file mode 100644
+index 0000000..236eb0e
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingPackage.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingReceiver.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingReceiver.class
+new file mode 100644
+index 0000000..2c2f850
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingReceiver.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingSerializer.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingSerializer.class
+new file mode 100644
+index 0000000..205a0c9
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingSerializer.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingService.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingService.class
+new file mode 100644
+index 0000000..c940960
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingService.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStore.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStore.class
+new file mode 100644
+index 0000000..a9fb5b7
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStore.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreHelper.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreHelper.class
+new file mode 100644
+index 0000000..42535e7
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreHelper.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreImpl.class b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreImpl.class
+new file mode 100644
+index 0000000..e215654
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/io/invertase/firebase/messaging/ReactNativeFirebaseMessagingStoreImpl.class differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt b/node_modules/@react-native-firebase/messaging/android/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt
+new file mode 100644
+index 0000000..34d21d0
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt
+@@ -0,0 +1,142 @@
++R_DEF: Internal format may change without notice
++local
++color aliceblue
++color antiquewhite
++color aqua
++color aquamarine
++color azure
++color beige
++color bisque
++color black
++color blanchedalmond
++color blue
++color blueviolet
++color brown
++color burlywood
++color cadetblue
++color chartreuse
++color chocolate
++color coral
++color cornflowerblue
++color cornsilk
++color crimson
++color cyan
++color darkblue
++color darkcyan
++color darkgoldenrod
++color darkgray
++color darkgreen
++color darkkhaki
++color darkmagenta
++color darkolivegreen
++color darkorange
++color darkorchid
++color darkred
++color darksalmon
++color darkseagreen
++color darkslateblue
++color darkslategray
++color darkturquoise
++color darkviolet
++color deeppink
++color deepskyblue
++color dimgray
++color dodgerblue
++color firebrick
++color floralwhite
++color forestgreen
++color fuchsia
++color gainsboro
++color ghostwhite
++color gold
++color goldenrod
++color gray
++color green
++color greenyellow
++color honeydew
++color hotpink
++color indianred
++color indigo
++color ivory
++color khaki
++color lavender
++color lavenderblush
++color lawngreen
++color lemonchiffon
++color lightblue
++color lightcoral
++color lightcyan
++color lightgoldenrodyellow
++color lightgreen
++color lightgrey
++color lightpink
++color lightsalmon
++color lightseagreen
++color lightskyblue
++color lightslategray
++color lightsteelblue
++color lightyellow
++color lime
++color limegreen
++color linen
++color magenta
++color maroon
++color mediumaquamarine
++color mediumblue
++color mediumorchid
++color mediumpurple
++color mediumseagreen
++color mediumslateblue
++color mediumspringgreen
++color mediumturquoise
++color mediumvioletred
++color midnightblue
++color mintcream
++color mistyrose
++color moccasin
++color navajowhite
++color navy
++color oldlace
++color olive
++color olivedrab
++color orange
++color orangered
++color orchid
++color palegoldenrod
++color palegreen
++color paleturquoise
++color palevioletred
++color papayawhip
++color peachpuff
++color peru
++color pink
++color plum
++color powderblue
++color purple
++color red
++color rosybrown
++color royalblue
++color saddlebrown
++color salmon
++color sandybrown
++color seagreen
++color seashell
++color sienna
++color silver
++color skyblue
++color slateblue
++color slategray
++color snow
++color springgreen
++color steelblue
++color tan
++color teal
++color thistle
++color tomato
++color turquoise
++color violet
++color wheat
++color white
++color whitesmoke
++color yellow
++color yellowgreen
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/manifest_merge_blame_file/debug/processDebugManifest/manifest-merger-blame-debug-report.txt b/node_modules/@react-native-firebase/messaging/android/build/intermediates/manifest_merge_blame_file/debug/processDebugManifest/manifest-merger-blame-debug-report.txt
+new file mode 100644
+index 0000000..378aced
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/manifest_merge_blame_file/debug/processDebugManifest/manifest-merger-blame-debug-report.txt
+@@ -0,0 +1,82 @@
++1<?xml version="1.0" encoding="utf-8"?>
++2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++3    package="io.invertase.firebase.messaging" >
++4
++5    <uses-sdk android:minSdkVersion="24" />
++6
++7    <uses-permission android:name="android.permission.INTERNET" />
++7-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:5:3-64
++7-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:5:20-62
++8    <uses-permission android:name="android.permission.WAKE_LOCK" />
++8-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:6:3-65
++8-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:6:20-63
++9    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++9-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:7:3-76
++9-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:7:20-74
++10
++11    <application>
++11-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:9:3-42:17
++12        <service
++12-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:10:5-11:42
++13            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingHeadlessService"
++13-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:10:14-73
++14            android:exported="false" />
++14-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:11:15-39
++15        <service
++15-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:12:5-17:15
++16            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService"
++16-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:12:14-65
++17            android:exported="false" >
++17-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:13:14-38
++18            <intent-filter>
++18-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:14:7-16:23
++19                <action android:name="com.google.firebase.MESSAGING_EVENT" />
++19-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:15:9-69
++19-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:15:17-67
++20            </intent-filter>
++21        </service>
++22
++23        <receiver
++23-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:18:5-25:16
++24            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingReceiver"
++24-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:19:7-59
++25            android:exported="true"
++25-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:20:7-30
++26            android:permission="com.google.android.c2dm.permission.SEND" >
++26-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:21:7-67
++27            <intent-filter>
++27-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:22:7-24:23
++28                <action android:name="com.google.android.c2dm.intent.RECEIVE" />
++28-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:23:9-73
++28-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:23:17-70
++29            </intent-filter>
++30        </receiver>
++31
++32        <meta-data
++33            android:name="delivery_metrics_exported_to_big_query_enabled"
++33-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:28:7-69
++34            android:value="false" />
++34-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:29:7-66
++35        <meta-data
++36            android:name="firebase_messaging_auto_init_enabled"
++36-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:31:7-58
++37            android:value="true" />
++37-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:32:7-53
++38        <meta-data
++39            android:name="firebase_messaging_notification_delegation_enabled"
++39-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:34:7-72
++40            android:value="false" />
++40-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:35:7-67
++41        <meta-data
++42            android:name="com.google.firebase.messaging.default_notification_channel_id"
++42-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:37:7-83
++43            android:value="" />
++43-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:38:7-59
++44        <meta-data
++45            android:name="com.google.firebase.messaging.default_notification_color"
++45-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:40:7-78
++46            android:resource="@color/white" />
++46-->C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:41:7-58
++47    </application>
++48
++49</manifest>
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml
+new file mode 100644
+index 0000000..463cd09
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml
+@@ -0,0 +1,49 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++    package="io.invertase.firebase.messaging" >
++
++    <uses-sdk android:minSdkVersion="24" />
++
++    <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="android.permission.WAKE_LOCK" />
++    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++
++    <application>
++        <service
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingHeadlessService"
++            android:exported="false" />
++        <service
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService"
++            android:exported="false" >
++            <intent-filter>
++                <action android:name="com.google.firebase.MESSAGING_EVENT" />
++            </intent-filter>
++        </service>
++
++        <receiver
++            android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingReceiver"
++            android:exported="true"
++            android:permission="com.google.android.c2dm.permission.SEND" >
++            <intent-filter>
++                <action android:name="com.google.android.c2dm.intent.RECEIVE" />
++            </intent-filter>
++        </receiver>
++
++        <meta-data
++            android:name="delivery_metrics_exported_to_big_query_enabled"
++            android:value="false" />
++        <meta-data
++            android:name="firebase_messaging_auto_init_enabled"
++            android:value="true" />
++        <meta-data
++            android:name="firebase_messaging_notification_delegation_enabled"
++            android:value="false" />
++        <meta-data
++            android:name="com.google.firebase.messaging.default_notification_channel_id"
++            android:value="" />
++        <meta-data
++            android:name="com.google.firebase.messaging.default_notification_color"
++            android:resource="@color/white" />
++    </application>
++
++</manifest>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/navigation_json/debug/extractDeepLinksDebug/navigation.json b/node_modules/@react-native-firebase/messaging/android/build/intermediates/navigation_json/debug/extractDeepLinksDebug/navigation.json
+new file mode 100644
+index 0000000..0637a08
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/navigation_json/debug/extractDeepLinksDebug/navigation.json
+@@ -0,0 +1 @@
++[]
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/nested_resources_validation_report/debug/generateDebugResources/nestedResourcesValidationReport.txt b/node_modules/@react-native-firebase/messaging/android/build/intermediates/nested_resources_validation_report/debug/generateDebugResources/nestedResourcesValidationReport.txt
+new file mode 100644
+index 0000000..08f4ebe
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/nested_resources_validation_report/debug/generateDebugResources/nestedResourcesValidationReport.txt
+@@ -0,0 +1 @@
++0 Warning/Error
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/packaged_res/debug/packageDebugResources/values/values.xml b/node_modules/@react-native-firebase/messaging/android/build/intermediates/packaged_res/debug/packageDebugResources/values/values.xml
+new file mode 100644
+index 0000000..711c9ae
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/packaged_res/debug/packageDebugResources/values/values.xml
+@@ -0,0 +1,143 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <color name="aliceblue">#F0F8FF</color>
++    <color name="antiquewhite">#FAEBD7</color>
++    <color name="aqua">#00FFFF</color>
++    <color name="aquamarine">#7FFFD4</color>
++    <color name="azure">#F0FFFF</color>
++    <color name="beige">#F5F5DC</color>
++    <color name="bisque">#FFE4C4</color>
++    <color name="black">#000000</color>
++    <color name="blanchedalmond">#FFEBCD</color>
++    <color name="blue">#0000FF</color>
++    <color name="blueviolet">#8A2BE2</color>
++    <color name="brown">#A52A2A</color>
++    <color name="burlywood">#DEB887</color>
++    <color name="cadetblue">#5F9EA0</color>
++    <color name="chartreuse">#7FFF00</color>
++    <color name="chocolate">#D2691E</color>
++    <color name="coral">#FF7F50</color>
++    <color name="cornflowerblue">#6495ED</color>
++    <color name="cornsilk">#FFF8DC</color>
++    <color name="crimson">#DC143C</color>
++    <color name="cyan">#00FFFF</color>
++    <color name="darkblue">#00008B</color>
++    <color name="darkcyan">#008B8B</color>
++    <color name="darkgoldenrod">#B8860B</color>
++    <color name="darkgray">#A9A9A9</color>
++    <color name="darkgreen">#006400</color>
++    <color name="darkkhaki">#BDB76B</color>
++    <color name="darkmagenta">#8B008B</color>
++    <color name="darkolivegreen">#556B2F</color>
++    <color name="darkorange">#FF8C00</color>
++    <color name="darkorchid">#9932CC</color>
++    <color name="darkred">#8B0000</color>
++    <color name="darksalmon">#E9967A</color>
++    <color name="darkseagreen">#8FBC8F</color>
++    <color name="darkslateblue">#483D8B</color>
++    <color name="darkslategray">#2F4F4F</color>
++    <color name="darkturquoise">#00CED1</color>
++    <color name="darkviolet">#9400D3</color>
++    <color name="deeppink">#FF1493</color>
++    <color name="deepskyblue">#00BFFF</color>
++    <color name="dimgray">#696969</color>
++    <color name="dodgerblue">#1E90FF</color>
++    <color name="firebrick">#B22222</color>
++    <color name="floralwhite">#FFFAF0</color>
++    <color name="forestgreen">#228B22</color>
++    <color name="fuchsia">#FF00FF</color>
++    <color name="gainsboro">#DCDCDC</color>
++    <color name="ghostwhite">#F8F8FF</color>
++    <color name="gold">#FFD700</color>
++    <color name="goldenrod">#DAA520</color>
++    <color name="gray">#808080</color>
++    <color name="green">#008000</color>
++    <color name="greenyellow">#ADFF2F</color>
++    <color name="honeydew">#F0FFF0</color>
++    <color name="hotpink">#FF69B4</color>
++    <color name="indianred">#CD5C5C</color>
++    <color name="indigo">#4B0082</color>
++    <color name="ivory">#FFFFF0</color>
++    <color name="khaki">#F0E68C</color>
++    <color name="lavender">#E6E6FA</color>
++    <color name="lavenderblush">#FFF0F5</color>
++    <color name="lawngreen">#7CFC00</color>
++    <color name="lemonchiffon">#FFFACD</color>
++    <color name="lightblue">#ADD8E6</color>
++    <color name="lightcoral">#F08080</color>
++    <color name="lightcyan">#E0FFFF</color>
++    <color name="lightgoldenrodyellow">#FAFAD2</color>
++    <color name="lightgreen">#90EE90</color>
++    <color name="lightgrey">#D3D3D3</color>
++    <color name="lightpink">#FFB6C1</color>
++    <color name="lightsalmon">#FFA07A</color>
++    <color name="lightseagreen">#20B2AA</color>
++    <color name="lightskyblue">#87CEFA</color>
++    <color name="lightslategray">#778899</color>
++    <color name="lightsteelblue">#B0C4DE</color>
++    <color name="lightyellow">#FFFFE0</color>
++    <color name="lime">#00FF00</color>
++    <color name="limegreen">#32CD32</color>
++    <color name="linen">#FAF0E6</color>
++    <color name="magenta">#FF00FF</color>
++    <color name="maroon">#800000</color>
++    <color name="mediumaquamarine">#66CDAA</color>
++    <color name="mediumblue">#0000CD</color>
++    <color name="mediumorchid">#BA55D3</color>
++    <color name="mediumpurple">#9370DB</color>
++    <color name="mediumseagreen">#3CB371</color>
++    <color name="mediumslateblue">#7B68EE</color>
++    <color name="mediumspringgreen">#00FA9A</color>
++    <color name="mediumturquoise">#48D1CC</color>
++    <color name="mediumvioletred">#C71585</color>
++    <color name="midnightblue">#191970</color>
++    <color name="mintcream">#F5FFFA</color>
++    <color name="mistyrose">#FFE4E1</color>
++    <color name="moccasin">#FFE4B5</color>
++    <color name="navajowhite">#FFDEAD</color>
++    <color name="navy">#000080</color>
++    <color name="oldlace">#FDF5E6</color>
++    <color name="olive">#808000</color>
++    <color name="olivedrab">#6B8E23</color>
++    <color name="orange">#FFA500</color>
++    <color name="orangered">#FF4500</color>
++    <color name="orchid">#DA70D6</color>
++    <color name="palegoldenrod">#EEE8AA</color>
++    <color name="palegreen">#98FB98</color>
++    <color name="paleturquoise">#AFEEEE</color>
++    <color name="palevioletred">#DB7093</color>
++    <color name="papayawhip">#FFEFD5</color>
++    <color name="peachpuff">#FFDAB9</color>
++    <color name="peru">#CD853F</color>
++    <color name="pink">#FFC0CB</color>
++    <color name="plum">#DDA0DD</color>
++    <color name="powderblue">#B0E0E6</color>
++    <color name="purple">#800080</color>
++    <color name="red">#FF0000</color>
++    <color name="rosybrown">#BC8F8F</color>
++    <color name="royalblue">#4169E1</color>
++    <color name="saddlebrown">#8B4513</color>
++    <color name="salmon">#FA8072</color>
++    <color name="sandybrown">#F4A460</color>
++    <color name="seagreen">#2E8B57</color>
++    <color name="seashell">#FFF5EE</color>
++    <color name="sienna">#A0522D</color>
++    <color name="silver">#C0C0C0</color>
++    <color name="skyblue">#87CEEB</color>
++    <color name="slateblue">#6A5ACD</color>
++    <color name="slategray">#708090</color>
++    <color name="snow">#FFFAFA</color>
++    <color name="springgreen">#00FF7F</color>
++    <color name="steelblue">#4682B4</color>
++    <color name="tan">#D2B48C</color>
++    <color name="teal">#008080</color>
++    <color name="thistle">#D8BFD8</color>
++    <color name="tomato">#FF6347</color>
++    <color name="turquoise">#40E0D0</color>
++    <color name="violet">#EE82EE</color>
++    <color name="wheat">#F5DEB3</color>
++    <color name="white">#FFFFFF</color>
++    <color name="whitesmoke">#F5F5F5</color>
++    <color name="yellow">#FFFF00</color>
++    <color name="yellowgreen">#9ACD32</color>
++</resources>
+\ No newline at end of file
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar b/node_modules/@react-native-firebase/messaging/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar
+new file mode 100644
+index 0000000..1968895
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/intermediates/symbol_list_with_package_name/debug/generateDebugRFile/package-aware-r.txt b/node_modules/@react-native-firebase/messaging/android/build/intermediates/symbol_list_with_package_name/debug/generateDebugRFile/package-aware-r.txt
+new file mode 100644
+index 0000000..b3c8ff6
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/intermediates/symbol_list_with_package_name/debug/generateDebugRFile/package-aware-r.txt
+@@ -0,0 +1,141 @@
++io.invertase.firebase.messaging
++color aliceblue
++color antiquewhite
++color aqua
++color aquamarine
++color azure
++color beige
++color bisque
++color black
++color blanchedalmond
++color blue
++color blueviolet
++color brown
++color burlywood
++color cadetblue
++color chartreuse
++color chocolate
++color coral
++color cornflowerblue
++color cornsilk
++color crimson
++color cyan
++color darkblue
++color darkcyan
++color darkgoldenrod
++color darkgray
++color darkgreen
++color darkkhaki
++color darkmagenta
++color darkolivegreen
++color darkorange
++color darkorchid
++color darkred
++color darksalmon
++color darkseagreen
++color darkslateblue
++color darkslategray
++color darkturquoise
++color darkviolet
++color deeppink
++color deepskyblue
++color dimgray
++color dodgerblue
++color firebrick
++color floralwhite
++color forestgreen
++color fuchsia
++color gainsboro
++color ghostwhite
++color gold
++color goldenrod
++color gray
++color green
++color greenyellow
++color honeydew
++color hotpink
++color indianred
++color indigo
++color ivory
++color khaki
++color lavender
++color lavenderblush
++color lawngreen
++color lemonchiffon
++color lightblue
++color lightcoral
++color lightcyan
++color lightgoldenrodyellow
++color lightgreen
++color lightgrey
++color lightpink
++color lightsalmon
++color lightseagreen
++color lightskyblue
++color lightslategray
++color lightsteelblue
++color lightyellow
++color lime
++color limegreen
++color linen
++color magenta
++color maroon
++color mediumaquamarine
++color mediumblue
++color mediumorchid
++color mediumpurple
++color mediumseagreen
++color mediumslateblue
++color mediumspringgreen
++color mediumturquoise
++color mediumvioletred
++color midnightblue
++color mintcream
++color mistyrose
++color moccasin
++color navajowhite
++color navy
++color oldlace
++color olive
++color olivedrab
++color orange
++color orangered
++color orchid
++color palegoldenrod
++color palegreen
++color paleturquoise
++color palevioletred
++color papayawhip
++color peachpuff
++color peru
++color pink
++color plum
++color powderblue
++color purple
++color red
++color rosybrown
++color royalblue
++color saddlebrown
++color salmon
++color sandybrown
++color seagreen
++color seashell
++color sienna
++color silver
++color skyblue
++color slateblue
++color slategray
++color snow
++color springgreen
++color steelblue
++color tan
++color teal
++color thistle
++color tomato
++color turquoise
++color violet
++color wheat
++color white
++color whitesmoke
++color yellow
++color yellowgreen
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/outputs/logs/manifest-merger-debug-report.txt b/node_modules/@react-native-firebase/messaging/android/build/outputs/logs/manifest-merger-debug-report.txt
+new file mode 100644
+index 0000000..3fbc211
+--- /dev/null
++++ b/node_modules/@react-native-firebase/messaging/android/build/outputs/logs/manifest-merger-debug-report.txt
+@@ -0,0 +1,98 @@
++-- Merging decision tree log ---
++meta-data#delivery_metrics_exported_to_big_query_enabled
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:27:5-29:68
++	android:value
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:29:7-66
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:28:7-69
++meta-data#firebase_messaging_auto_init_enabled
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:30:5-32:55
++	android:value
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:32:7-53
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:31:7-58
++meta-data#firebase_messaging_notification_delegation_enabled
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:33:5-35:69
++	android:value
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:35:7-67
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:34:7-72
++meta-data#com.google.firebase.messaging.default_notification_channel_id
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:36:5-38:62
++	android:value
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:38:7-59
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:37:7-83
++meta-data#com.google.firebase.messaging.default_notification_color
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:39:5-41:61
++	android:resource
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:41:7-58
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:40:7-78
++manifest
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:2:1-43:12
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:2:1-43:12
++	package
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:3:11-52
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++	xmlns:android
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:2:11-69
++uses-permission#android.permission.INTERNET
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:5:3-64
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:5:20-62
++uses-permission#android.permission.WAKE_LOCK
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:6:3-65
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:6:20-63
++uses-permission#android.permission.ACCESS_NETWORK_STATE
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:7:3-76
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:7:20-74
++application
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:9:3-42:17
++service#io.invertase.firebase.messaging.ReactNativeFirebaseMessagingHeadlessService
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:10:5-11:42
++	android:exported
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:11:15-39
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:10:14-73
++service#io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:12:5-17:15
++	android:exported
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:13:14-38
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:12:14-65
++intent-filter#action:name:com.google.firebase.MESSAGING_EVENT
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:14:7-16:23
++action#com.google.firebase.MESSAGING_EVENT
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:15:9-69
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:15:17-67
++receiver#io.invertase.firebase.messaging.ReactNativeFirebaseMessagingReceiver
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:18:5-25:16
++	android:exported
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:20:7-30
++	android:permission
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:21:7-67
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:19:7-59
++intent-filter#action:name:com.google.android.c2dm.intent.RECEIVE
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:22:7-24:23
++action#com.google.android.c2dm.intent.RECEIVE
++ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:23:9-73
++	android:name
++		ADDED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml:23:17-70
++uses-sdk
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml reason: use-sdk injection requested
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++	android:targetSdkVersion
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
++	android:minSdkVersion
++		INJECTED from C:\Users\dpurl\Desktop\signal-clone - Copy\node_modules\@react-native-firebase\messaging\android\src\main\AndroidManifest.xml
+diff --git a/node_modules/@react-native-firebase/messaging/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin b/node_modules/@react-native-firebase/messaging/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin
+new file mode 100644
+index 0000000..94e8f98
+Binary files /dev/null and b/node_modules/@react-native-firebase/messaging/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin differ
+diff --git a/node_modules/@react-native-firebase/messaging/android/src/main/AndroidManifest.xml b/node_modules/@react-native-firebase/messaging/android/src/main/AndroidManifest.xml
+index 60f0208..271902c 100644
+--- a/node_modules/@react-native-firebase/messaging/android/src/main/AndroidManifest.xml
++++ b/node_modules/@react-native-firebase/messaging/android/src/main/AndroidManifest.xml
+@@ -36,8 +36,5 @@
+     <meta-data
+       android:name="com.google.firebase.messaging.default_notification_channel_id"
+       android:value="${firebaseJsonNotificationChannelId}" />
+-    <meta-data
+-      android:name="com.google.firebase.messaging.default_notification_color"
+-      android:resource="${firebaseJsonNotificationColor}" />
+   </application>
+ </manifest>

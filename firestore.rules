@@ -1,0 +1,215 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      // Allow read if authenticated
+      allow read: if request.auth != null;
+      
+      // Allow create if authenticated user matches the document ID
+      allow create: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow update if authenticated user matches the document ID
+      allow update: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow delete if authenticated user matches the document ID
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    match /chats/{chatId} {
+      // Allow read if user is a participant and document exists
+      allow read: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        request.auth.uid in resource.data.participants;
+      
+      // Allow create if user is in the participants array of the new document
+      allow create: if request.auth != null && 
+        request.resource.data.participants != null &&
+        request.auth.uid in request.resource.data.participants;
+      
+      // Allow update if user is a participant
+      allow update: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        request.auth.uid in resource.data.participants;
+      
+      // Allow delete if user is a participant
+      allow delete: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        request.auth.uid in resource.data.participants;
+      
+      match /messages/{messageId} {
+        // Allow read if chat exists and user is a chat participant
+        allow read: if request.auth != null && 
+          exists(/databases/$(database)/documents/chats/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        
+        // Allow create if chat exists, user is a participant, and either:
+        // - user is the sender (normal messages), OR
+        // - type is 'call' (call log - either participant can create; senderId is caller for display)
+        allow create: if request.auth != null && 
+          exists(/databases/$(database)/documents/chats/$(chatId)) &&
+          request.resource.data.senderId != null &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
+          (
+            request.auth.uid == request.resource.data.senderId ||
+            request.resource.data.type == 'call'
+          );
+        
+        // Allow update if:
+        // 1. User is the sender (can update anything), OR
+        // 2. User is a participant (can update reactions - we only check immutable fields)
+        allow update: if request.auth != null && 
+          resource != null &&
+          resource.data != null &&
+          resource.data.senderId != null &&
+          exists(/databases/$(database)/documents/chats/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
+          (
+            // User is the sender (can update anything)
+            request.auth.uid == resource.data.senderId ||
+            // OR user is a participant - only check immutable fields (senderId, type, chatId)
+            // Reactions and updatedAt can be changed by any participant
+            (
+              request.resource.data.senderId == resource.data.senderId &&
+              request.resource.data.type == resource.data.type &&
+              request.resource.data.chatId == resource.data.chatId
+            )
+          );
+        
+        // Allow delete if user is the sender
+        allow delete: if request.auth != null && 
+          resource != null &&
+          resource.data != null &&
+          resource.data.senderId != null &&
+          request.auth.uid == resource.data.senderId;
+      }
+    }
+    
+    // Call documents
+    match /calls/{callId} {
+      // Allow read only if user is caller or receiver (participant)
+      allow read: if request.auth != null &&
+        resource != null &&
+        resource.data != null &&
+        (request.auth.uid == resource.data.callerId ||
+         request.auth.uid == resource.data.receiverId);
+      
+      // Allow create if user is the caller and required fields are present
+      allow create: if request.auth != null && 
+        request.resource.data.callerId != null &&
+        request.resource.data.receiverId != null &&
+        request.auth.uid == request.resource.data.callerId &&
+        request.resource.data.keys().hasAll(['callerId', 'receiverId', 'type', 'status', 'createdAt']);
+      
+      // Allow update/delete if user is caller or receiver
+      allow update, delete: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        (request.auth.uid == resource.data.callerId || 
+         request.auth.uid == resource.data.receiverId);
+    }
+    
+    // Call signaling subcollection for WebRTC offers/answers/ICE candidates
+    match /callSignaling/{callId}/messages/{messageId} {
+      // Allow read if call exists and user is a participant
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/calls/$(callId)) &&
+        (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId ||
+         request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.receiverId);
+      
+      // Allow write (create/update/delete) if call exists and user is a participant
+      allow write: if request.auth != null && 
+        exists(/databases/$(database)/documents/calls/$(callId)) &&
+        (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId ||
+         request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.receiverId);
+    }
+    
+    // Call links collection
+    match /callLinks/{linkId} {
+      // Allow read if authenticated (anyone can read to join)
+      allow read: if request.auth != null;
+      
+      // Allow create if authenticated and user is the creator
+      allow create: if request.auth != null && 
+        request.resource.data.creatorId != null &&
+        request.auth.uid == request.resource.data.creatorId;
+      
+      // Allow update if user is the creator or is joining (adding themselves to participants)
+      allow update: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        (
+          // Creator can update anything
+          request.auth.uid == resource.data.creatorId ||
+          // Anyone can add themselves to participants (joining the call)
+          (request.resource.data.participants != null && 
+           request.auth.uid in request.resource.data.participants)
+        );
+      
+      // Allow delete if user is the creator
+      allow delete: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        request.auth.uid == resource.data.creatorId;
+    }
+    
+    // Reports (e.g. from Discover)
+    match /reports/{reportId} {
+      allow create: if request.auth != null &&
+        request.resource.data.reporterId == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
+    // Random (Omegle-style) matchmaking queue
+    // Document ID = request.auth.uid (one entry per user)
+    // Client: setDoc(uid), updateDoc(heartbeat), deleteDoc
+    // Cloud Function reads via Admin SDK (bypasses rules)
+    match /randomQueue/{queueId} {
+      allow create, update, delete: if request.auth != null &&
+        request.auth.uid == queueId;
+      allow read: if request.auth != null && request.auth.uid == queueId;
+    }
+
+    // Stories collection
+    match /stories/{storyId} {
+      // Allow read if authenticated (anyone can view active stories)
+      allow read: if request.auth != null;
+      
+      // Allow create if authenticated and user is the story owner
+      allow create: if request.auth != null && 
+        request.resource.data.userId != null &&
+        request.auth.uid == request.resource.data.userId &&
+        request.resource.data.keys().hasAll(['userId', 'mediaUrl', 'mediaType', 'createdAt', 'expiresAt', 'viewers', 'likes']);
+      
+      // Allow update if:
+      // 1. User is the story owner (can update anything), OR
+      // 2. User is adding themselves to viewers or likes (can only update viewers/likes arrays)
+      allow update: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        (
+          // Story owner can update anything
+          request.auth.uid == resource.data.userId ||
+          // Anyone can add themselves to viewers or likes
+          (
+            // Only viewers and likes arrays can be modified
+            request.resource.data.userId == resource.data.userId &&
+            request.resource.data.mediaUrl == resource.data.mediaUrl &&
+            request.resource.data.mediaType == resource.data.mediaType &&
+            request.resource.data.createdAt == resource.data.createdAt &&
+            request.resource.data.expiresAt == resource.data.expiresAt
+          )
+        );
+      
+      // Allow delete if user is the story owner
+      allow delete: if request.auth != null && 
+        resource != null &&
+        resource.data != null &&
+        request.auth.uid == resource.data.userId;
+    }
+
+  }
+}
+

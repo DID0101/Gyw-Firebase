@@ -1,0 +1,122 @@
+{
+  "project_info": {
+    "project_number": "1039699232254",
+    "project_id": "gyw1-146d7",
+    "storage_bucket": "gyw1-146d7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1039699232254:android:23349a6e09a7bd22786caf",
+        "android_client_info": {
+          "package_name": "com.gyw.chat"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1039699232254-5s2srtqqbrp48784i0o457ph69me4qaq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw.chat",
+            "certificate_hash": "6c5ed3631c7b94c0650294d3b02d36b4a247295b"
+          }
+        },
+        {
+          "client_id": "1039699232254-mjttmgphe76ana9mp6rmfq5e71vhvrbo.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBctdX2zyTERwPQGPdfWzhNmZKBJtxiuns"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1039699232254-mjttmgphe76ana9mp6rmfq5e71vhvrbo.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1039699232254-338jlr69te4bgu6sjp35rb63vrsm2vgd.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.gyw.chat"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1039699232254:android:0e04f4d81f1c4a3b786caf",
+        "android_client_info": {
+          "package_name": "com.gyw1.chat"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1039699232254-l6sekr5vqdvqhlrrtkl8aj6h4ar9ku3g.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw1.chat",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "1039699232254-ojeuqkbtg84ot0ki5pg52hdajm6m1r1m.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw1.chat",
+            "certificate_hash": "6c5ed3631c7b94c0650294d3b02d36b4a247295b"
+          }
+        },
+        {
+          "client_id": "1039699232254-r4tkpbjulr0j781sidocfkees9olqjdo.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw1.chat",
+            "certificate_hash": "f2b3e80124f17d6af0808f56e341b85791992eb9"
+          }
+        },
+        {
+          "client_id": "1039699232254-tjtmpc47md7n4qu1b8c5pk99s1cphdfe.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw1.chat",
+            "certificate_hash": "0f6e4ad72480d134a7c4c503a5a0fa4546ae40ec"
+          }
+        },
+        {
+          "client_id": "1039699232254-mjttmgphe76ana9mp6rmfq5e71vhvrbo.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBctdX2zyTERwPQGPdfWzhNmZKBJtxiuns"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1039699232254-mjttmgphe76ana9mp6rmfq5e71vhvrbo.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1039699232254-338jlr69te4bgu6sjp35rb63vrsm2vgd.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.gyw.chat"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

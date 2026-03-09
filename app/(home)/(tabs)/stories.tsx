@@ -1,60 +1,116 @@
-import { useUser } from '@clerk/clerk-expo';
+import { useAuth } from '@/contexts/AuthContext';
 import { Feather } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import clsx from 'clsx';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 
 import AppMenu from '@/components/AppMenu';
-import Avatar from '@/components/Avatar';
-import Button from '@/components/Button';
 import Screen from '@/components/Screen';
 import StoryPickerModal from '@/components/StoryPickerModal';
+import { useTheme } from '@/contexts/ThemeContext';
+import { useThemeClassName } from '@/lib/themeUtils';
+import { useStories } from '@/lib/hooks/useStories';
+import { useUsersData } from '@/lib/hooks/useUsersData';
+import { createStory } from '@/lib/services/storyService';
+import { Story } from '@/lib/services/storyService';
+import { useStoryStore } from '@/store/storyStore';
 
-interface Story {
-  id: string;
-  uri: string;
-  type: 'image' | 'video';
-  timestamp: string;
+interface StoryGroup {
   userId: string;
   userName?: string;
   userImage?: string;
+  stories: Story[];
+  hasUnseen: boolean;
 }
 
 const StoriesScreen = () => {
-  const { user } = useUser();
+  const { user } = useAuth();
   const { t } = useTranslation();
+  const { colorScheme } = useTheme();
   const router = useRouter();
-  const [stories, setStories] = useState<Story[]>([]);
-  const [myStories, setMyStories] = useState<Story[]>([]);
+  const textColor = useThemeClassName('text-black', 'text-white');
+  const textSecondaryColor = useThemeClassName('text-gray-500', 'text-gray-400');
+  const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
+  const { stories, loading: storiesLoading } = useStories();
   const [showPicker, setShowPicker] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
-  const loadStories = async () => {
-    try {
-      const storedStories = await AsyncStorage.getItem('stories');
-      if (storedStories) {
-        const parsedStories = JSON.parse(storedStories);
-        setStories(parsedStories);
-        
-        // Filter my stories
-        const my = parsedStories.filter((s: Story) => s.userId === user?.id);
-        setMyStories(my);
-      }
-    } catch (error) {
-      console.error('Error loading stories:', error);
+  // Get unique user IDs from stories
+  const userIds = useMemo(() => {
+    const ids = new Set<string>();
+    stories.forEach((story) => ids.add(story.userId));
+    return Array.from(ids);
+  }, [stories]);
+
+  const { usersData } = useUsersData(userIds);
+
+  // Group stories by user
+  const storyGroups = useMemo(() => {
+    const groupsMap = new Map<string, StoryGroup>();
+    
+    // Add my stories first
+    const myStories = stories.filter((s) => s.userId === user?.uid);
+    if (myStories.length > 0 || user?.uid) {
+      const userData = user?.uid ? usersData[user.uid] : null;
+      groupsMap.set(user?.uid || '', {
+        userId: user?.uid || '',
+        userName: userData ? `${userData.firstName} ${userData.lastName}`.trim() : user?.displayName || t('stories.myStories'),
+        userImage: userData?.avatar || user?.photoURL,
+        stories: myStories,
+        hasUnseen: false, // Own stories are always "seen"
+      });
     }
-  };
-
-  useEffect(() => {
-    loadStories();
-  }, [user?.id]);
+    
+    // Add other users' stories
+    stories.forEach((story) => {
+      if (story.userId !== user?.uid) {
+        const existing = groupsMap.get(story.userId);
+        const userData = usersData[story.userId];
+        const userName = userData 
+          ? `${userData.firstName} ${userData.lastName}`.trim() 
+          : 'Unknown';
+        const userImage = userData?.avatar;
+        
+        if (existing) {
+          existing.stories.push(story);
+          // Check if any story is unseen (not in viewers)
+          if (!existing.hasUnseen) {
+            const isViewed = story.viewers.some((v) => v.userId === user?.uid);
+            if (!isViewed) {
+              existing.hasUnseen = true;
+            }
+          }
+        } else {
+          const isViewed = story.viewers.some((v) => v.userId === user?.uid);
+          groupsMap.set(story.userId, {
+            userId: story.userId,
+            userName,
+            userImage,
+            stories: [story],
+            hasUnseen: !isViewed,
+          });
+        }
+      }
+    });
+    
+    // Sort stories within each group by createdAt (newest first)
+    groupsMap.forEach((group) => {
+      group.stories.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+    });
+    
+    return Array.from(groupsMap.values());
+  }, [stories, usersData, user?.uid, t]);
 
   useFocusEffect(
     useCallback(() => {
-      loadStories();
-    }, [user?.id])
+      // Reset uploading state when screen comes into focus
+      setUploading(false);
+    }, [])
   );
 
   const requestPermissions = async () => {
@@ -92,7 +148,6 @@ const StoriesScreen = () => {
         await saveStory(result.assets[0]);
       }
     } catch (error) {
-      console.error('Error taking photo/video:', error);
       Alert.alert(t('common.error'), t('stories.errorTakingMedia'));
     }
   };
@@ -113,182 +168,219 @@ const StoriesScreen = () => {
         await saveStory(result.assets[0]);
       }
     } catch (error) {
-      console.error('Error selecting media:', error);
       Alert.alert(t('common.error'), t('stories.errorSelectingMedia'));
     }
   };
 
   const saveStory = async (asset: ImagePicker.ImagePickerAsset) => {
+    if (!user?.uid) return;
+    
+    setUploading(true);
+    setShowPicker(false); // Close modal
+    
     try {
-      const story: Story = {
-        id: `${user?.id}-${Date.now()}`,
-        uri: asset.uri,
-        type: asset.type === 'video' ? 'video' : 'image',
-        timestamp: new Date().toISOString(),
-        userId: user?.id || '',
-        userName: user?.fullName || '',
-        userImage: user?.imageUrl || '',
-      };
-
-      const existingStories = await AsyncStorage.getItem('stories');
-      const allStories = existingStories ? JSON.parse(existingStories) : [];
+      const mediaType = asset.type === 'video' ? 'video' : 'image';
+      const storyId = await createStory(user.uid, asset.uri, mediaType);
       
-      // Add new story at the beginning
-      allStories.unshift(story);
+      // Reset uploading state before navigation
+      setUploading(false);
       
-      // Keep only last 100 stories
-      const recentStories = allStories.slice(0, 100);
-      
-      await AsyncStorage.setItem('stories', JSON.stringify(recentStories));
-      await loadStories();
-      
-      // Navigate to story viewer
+      // Navigate to story viewer with the newly created story
       setTimeout(() => {
-        router.push(`/(home)/(modal)/story-viewer?storyId=${story.id}`);
+        router.push(`/(home)/(modal)/story-viewer?storyId=${storyId}&userId=${user.uid}`);
       }, 300);
-    } catch (error) {
-      console.error('Error saving story:', error);
-      Alert.alert(t('common.error'), t('stories.errorSavingStory'));
+    } catch (error: any) {
+      const errorMessage = error?.message || t('stories.errorSavingStory');
+      Alert.alert(t('common.error'), errorMessage);
+      setUploading(false); // Reset uploading state on error
     }
   };
 
-  const handleDeleteStory = async (storyId: string) => {
-    try {
-      const storedStories = await AsyncStorage.getItem('stories');
-      if (storedStories) {
-        const stories = JSON.parse(storedStories);
-        const updatedStories = stories.filter((s: Story) => s.id !== storyId);
-        await AsyncStorage.setItem('stories', JSON.stringify(updatedStories));
-        await loadStories();
-        Alert.alert(t('common.success'), t('stories.storyDeleted'));
-      }
-    } catch (error) {
-      console.error('Error deleting story:', error);
-      Alert.alert(t('common.error'), t('stories.errorDeletingStory'));
-    }
-  };
+  const STORY_SIZE = 72;
+  const STORY_BORDER_WIDTH = 3;
 
-  const onLongPressStory = (story: Story) => {
-    // Only allow deleting own stories
-    if (story.userId !== user?.id) {
-      return;
-    }
-
-    Alert.alert(
-      t('stories.deleteStory'),
-      t('stories.confirmDeleteStory'),
-      [
-        {
-          text: t('common.cancel'),
-          style: 'cancel',
-        },
-        {
-          text: t('common.delete'),
-          style: 'destructive',
-          onPress: () => handleDeleteStory(story.id),
-        },
-      ]
-    );
-  };
-
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffHours < 1) return t('stories.justNow');
-    if (diffHours < 24) return `${diffHours}${t('stories.hoursAgo')}`;
-    if (diffDays < 7) return `${diffDays}${t('stories.daysAgo')}`;
-    return date.toLocaleDateString();
-  };
-
-  return (
-    <Screen className="bg-white" viewClassName="flex-1 px-2 sm:px-4 pt-1">
-      <View className="flex flex-row items-center justify-between w-full min-h-[32px] flex-shrink-0">
-        <AppMenu />
-        <View className="flex flex-row items-center gap-4 sm:gap-8">
-          <TouchableOpacity onPress={openCamera} activeOpacity={0.7}>
-            <Feather name="camera" size={20} color="black" />
-          </TouchableOpacity>
-        </View>
-      </View>
-      
-      <Button 
-        variant="plain" 
-        className="flex-row items-center gap-2 sm:gap-3 mt-4 w-full"
-        onPress={showStoryOptions}
+  const renderStoryItem = useCallback(({ item }: { item: StoryGroup }) => {
+    const isMyStory = item.userId === user?.uid;
+    const hasUnseen = item.hasUnseen;
+    const latestStory = item.stories[0];
+    
+    return (
+      <TouchableOpacity
+        key={item.userId}
+        onPress={() => {
+          if (item.stories.length > 0) {
+            router.push(`/(home)/(modal)/story-viewer?storyId=${latestStory.id}&userId=${item.userId}`);
+          } else if (isMyStory) {
+            showStoryOptions();
+          }
+        }}
+        className="items-center mx-2"
+        activeOpacity={0.8}
       >
-        <View className="relative w-10 h-10 flex-shrink-0">
-          <Avatar
-            imageUrl={user?.imageUrl}
-            size={40}
-            fontSize={16}
-            name={user?.fullName!}
-          />
-          <View className="absolute -bottom-1 -right-1 w-[22px] h-[22px] rounded-full border-[3px] border-white bg-blue-600 flex items-center justify-center">
-            <Feather name="plus" size={14} color="white" />
-          </View>
-        </View>
-        <View className="flex-1 min-w-0">
-          <Text className="font-semibold text-sm sm:text-base">{t('stories.myStories')}</Text>
-          <Text className="text-xs text-gray-500">
-            {myStories.length > 0 
-              ? `${myStories.length} ${myStories.length === 1 ? t('stories.story') : t('stories.stories')}`
-              : t('stories.tapToAdd')
-            }
-          </Text>
-        </View>
-      </Button>
-
-      {stories.length > 0 ? (
-        <ScrollView className="flex-1 mt-4" showsVerticalScrollIndicator={false}>
-          <View className="flex flex-col gap-3">
-            {stories.map((story) => (
-              <TouchableOpacity
-                key={story.id}
-                className="flex flex-row items-center gap-3 p-3 bg-gray-50 rounded-xl active:bg-gray-100"
-                onPress={() => {
-                  router.push(`/(home)/(modal)/story-viewer?storyId=${story.id}`);
+        <View
+          style={{
+            width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+            height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+            borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
+            padding: STORY_BORDER_WIDTH,
+            backgroundColor: '#FFFFFF',
+            borderWidth: hasUnseen ? 0 : STORY_BORDER_WIDTH,
+            borderColor: hasUnseen ? 'transparent' : (isMyStory ? '#086da0' : '#9E9E9E'),
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          {/* Gradient border effect for unviewed stories */}
+          {hasUnseen && (
+            <View
+              style={{
+                position: 'absolute',
+                width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+                height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+                borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
+                backgroundColor: '#833AB4', // Purple gradient base
+                padding: STORY_BORDER_WIDTH,
+              }}
+            >
+              <View
+                style={{
+                  width: STORY_SIZE,
+                  height: STORY_SIZE,
+                  borderRadius: STORY_SIZE / 2,
+                  backgroundColor: colorScheme === 'dark' ? '#1F1F1F' : '#FFFFFF',
                 }}
-                onLongPress={() => onLongPressStory(story)}
-              >
-                <View className="relative">
-                  {story.type === 'image' ? (
+              />
+            </View>
+          )}
+          
+          {/* Story content */}
+          <View
+            style={{
+              width: STORY_SIZE,
+              height: STORY_SIZE,
+              borderRadius: STORY_SIZE / 2,
+              overflow: 'hidden',
+              backgroundColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0',
+              borderWidth: hasUnseen ? 3 : 0,
+              borderColor: '#FFFFFF',
+            }}
+          >
+            {latestStory ? (
+              latestStory.mediaType === 'image' ? (
+                <Image
+                  source={{ uri: latestStory.mediaUrl }}
+                  style={{ width: STORY_SIZE, height: STORY_SIZE }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+                  {latestStory.thumbnailUrl ? (
                     <Image
-                      source={{ uri: story.uri }}
-                      className="w-16 h-16 rounded-full"
+                      source={{ uri: latestStory.thumbnailUrl }}
+                      style={{ width: STORY_SIZE, height: STORY_SIZE }}
                       resizeMode="cover"
                     />
                   ) : (
-                    <View className="w-16 h-16 rounded-full bg-gray-300 items-center justify-center">
-                      <Feather name="video" size={24} color="black" />
-                    </View>
-                  )}
-                  {story.type === 'video' && (
-                    <View className="absolute bottom-0 right-0 bg-blue-600 rounded-full p-1">
-                      <Feather name="play" size={12} color="white" />
-                    </View>
+                    <Feather name="video" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
                   )}
                 </View>
-                <View className="flex-1">
-                  <Text className="font-semibold text-base">
-                    {story.userName || t('stories.unknown')}
-                  </Text>
-                  <Text className="text-xs text-gray-500">
-                    {formatTime(story.timestamp)}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
+              )
+            ) : (
+              <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+                <Feather name="plus" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
+              </View>
+            )}
           </View>
-        </ScrollView>
+          
+          {/* Plus icon for my story */}
+          {isMyStory && (
+            <View
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 24,
+                height: 24,
+                borderRadius: 12,
+                backgroundColor: '#086da0',
+                borderWidth: 3,
+                borderColor: '#FFFFFF',
+                justifyContent: 'center',
+                alignItems: 'center',
+              }}
+            >
+              <Feather name="plus" size={14} color="white" />
+            </View>
+          )}
+        </View>
+        
+        {/* Username below story */}
+        <Text
+          className={clsx('text-xs mt-2 max-w-[80px]', textColor)}
+          numberOfLines={1}
+          style={{ textAlign: 'center' }}
+        >
+          {isMyStory ? t('stories.myStories') : (item.userName || t('stories.unknown'))}
+        </Text>
+      </TouchableOpacity>
+    );
+  }, [user?.uid, router, colorScheme, textColor, t]);
+
+  if (storiesLoading) {
+    return (
+      <Screen viewClassName="flex-1">
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color={iconColor} />
+        </View>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen viewClassName="flex-1">
+      <View className="flex flex-row items-center justify-between w-full min-h-[32px] flex-shrink-0 px-4 pt-2">
+        <AppMenu />
+        <TouchableOpacity onPress={showStoryOptions} activeOpacity={0.7} disabled={uploading}>
+          {uploading ? (
+            <ActivityIndicator size="small" color={iconColor} />
+          ) : (
+            <Feather name="camera" size={20} color={iconColor} />
+          )}
+        </TouchableOpacity>
+      </View>
+      
+      {/* Horizontal scrollable stories */}
+      {storyGroups.length > 0 ? (
+        <View className="py-4 border-b" style={{ borderBottomColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0' }}>
+          <FlatList
+            data={storyGroups}
+            renderItem={renderStoryItem}
+            keyExtractor={(item) => item.userId}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 8 }}
+            initialNumToRender={6}
+            windowSize={5}
+            removeClippedSubviews={true}
+          />
+        </View>
       ) : (
-        <View className="flex-1 items-center justify-center mt-8">
-          <Text className="text-gray-500 text-center">
+        <View className="py-8 items-center border-b" style={{ borderBottomColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0' }}>
+          <Text className={clsx('text-center', textSecondaryColor)}>
             {t('stories.noStories')}
           </Text>
+          <TouchableOpacity
+            onPress={showStoryOptions}
+            className="mt-4 px-6 py-3 rounded-full"
+            style={{ backgroundColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0' }}
+            disabled={uploading}
+          >
+            {uploading ? (
+              <ActivityIndicator size="small" color={iconColor} />
+            ) : (
+              <Text className={clsx('font-semibold', textColor)}>{t('stories.tapToAdd')}</Text>
+            )}
+          </TouchableOpacity>
         </View>
       )}
 

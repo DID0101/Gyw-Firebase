@@ -1,0 +1,84 @@
+═══════════════════════════════════════════════════════════════
+  SIMPLE GUIDE: Upload AAB to Google Play Console
+═══════════════════════════════════════════════════════════════
+
+ERROR MEANS: The AAB file is NOT uploaded in your release yet.
+
+═══════════════════════════════════════════════════════════════
+STEP 1: DOWNLOAD THE FILE
+═══════════════════════════════════════════════════════════════
+
+1. Open this link in your browser:
+   https://expo.dev/artifacts/eas/mW6EDWu4NxxvH9vnGZhP2p.aab
+
+2. The file will download (save it to Desktop)
+
+3. File name will be something like: mW6EDWu4NxxvH9vnGZhP2p.aab
+
+═══════════════════════════════════════════════════════════════
+STEP 2: GO TO GOOGLE PLAY CONSOLE
+═══════════════════════════════════════════════════════════════
+
+1. Open: https://play.google.com/console
+2. Sign in with your Google account
+3. Click on your app (or create one if you don't have it)
+
+═══════════════════════════════════════════════════════════════
+STEP 3: CREATE A RELEASE
+═══════════════════════════════════════════════════════════════
+
+1. In the LEFT SIDEBAR, find "Release" section
+2. Click on "Production" (or "Testing" → "Internal testing")
+3. Click "Create new release" button (big blue/green button)
+
+═══════════════════════════════════════════════════════════════
+STEP 4: UPLOAD THE AAB FILE
+═══════════════════════════════════════════════════════════════
+
+1. You'll see a section called "App bundles and APKs"
+2. Click the "UPLOAD" button (or drag & drop area)
+3. Select the .aab file you downloaded
+4. WAIT for upload to finish (may take 2-5 minutes)
+5. You MUST see the file listed with "Ready" status
+
+   ✅ CORRECT: File shows in list with "Ready" status
+   ❌ WRONG: No file shown, or file shows "Processing" or "Error"
+
+═══════════════════════════════════════════════════════════════
+STEP 5: FILL RELEASE INFO
+═══════════════════════════════════════════════════════════════
+
+1. "Release name": Type "1.0.0"
+2. "Release notes": Type "Initial release"
+3. Click "SAVE" button at bottom
+
+═══════════════════════════════════════════════════════════════
+VERIFY IT WORKED
+═══════════════════════════════════════════════════════════════
+
+After saving, you should see:
+✅ AAB file listed in the release
+✅ Release name filled
+✅ Release notes filled
+✅ No errors about missing AAB
+
+If you still see errors, the file wasn't uploaded correctly.
+
+═══════════════════════════════════════════════════════════════
+TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════
+
+Problem: Upload button doesn't work
+Solution: Try Chrome browser, disable ad blockers
+
+Problem: File uploads but disappears
+Solution: Wait longer, refresh page, check for error messages
+
+Problem: "Invalid file" error
+Solution: Make sure you downloaded .aab file (not .apk)
+
+Problem: Still see "You need to upload an APK" error
+Solution: The file isn't actually in the release. Upload again.
+
+═══════════════════════════════════════════════════════════════
+

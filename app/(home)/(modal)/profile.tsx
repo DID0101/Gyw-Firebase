@@ -1,37 +1,52 @@
-import { useClerk, useUser } from '@clerk/clerk-expo';
 import clsx from 'clsx';
 import { ImagePickerAsset } from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Text, TextInput, View } from 'react-native';
-import { useChatContext } from 'stream-chat-expo';
+import { Alert, Platform, Text, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { updateProfile as updateFirebaseProfile, deleteUser } from 'firebase/auth';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import Button from '@/components/Button';
 import ImageInput from '@/components/ImageInput';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
+import ThemeToggle from '@/components/ThemeToggle';
+import { useAuth } from '@/contexts/AuthContext';
 import useUserForm from '@/hooks/useUserForm';
+import { useThemeClassName } from '@/lib/themeUtils';
+import { db, storage } from '@/lib/firebase';
+import { getUserDocNative, hasNativeFirestore, updateUserDocNative } from '@/lib/firestoreNative';
+import { getRnAuth, getRnStorage } from '@/lib/rnFirebase';
 import { getError } from '@/lib/utils';
 
 const ProfileScreen = () => {
-  const { user } = useUser();
-  const { client } = useChatContext();
-  const clerk = useClerk();
+  const { user, signOut } = useAuth();
+  const router = useRouter();
   const { t } = useTranslation();
-  const streamUser = client.user;
-  // Get username from Stream Chat (not Clerk, since username isn't enabled in Clerk)
-  const streamUsername = (streamUser as any)?.username || '';
-  const usernameParts = streamUsername ? streamUsername.split('_') : ['', ''];
+  const insets = useSafeAreaInsets();
+  const textSecondaryColor = useThemeClassName('text-gray-400', 'text-gray-500');
+  const usernameTextColor = useThemeClassName('text-gray-700', 'text-gray-300');
+  
+  const [userData, setUserData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  
+  // Get username from Firestore user document
+  const usernameParts = userData?.username ? userData.username.split('_') : ['', ''];
   const initialFormValues = {
-    firstName: user?.firstName ?? '',
-    lastName: user?.lastName ?? '',
-    username: usernameParts[0] ?? '',
-    usernameNumber: usernameParts[1] ?? '',
-    phoneNumber: (streamUser as any)?.phone || user?.primaryPhoneNumber?.phoneNumber || '',
-    emailAddress: (streamUser as any)?.email || user?.primaryEmailAddress?.emailAddress || '',
+    firstName: userData?.firstName || user?.displayName?.split(' ')[0] || '',
+    lastName: userData?.lastName || user?.displayName?.split(' ').slice(1).join(' ') || '',
+    username: usernameParts[0] || '',
+    usernameNumber: usernameParts[1] || '',
+    phoneNumber: userData?.phoneNumber || user?.phoneNumber || '',
+    bio: userData?.bio || '',
   };
+
   const defaultImage: ImagePickerAsset = {
-    uri: user?.hasImage ? user?.imageUrl : '',
+    uri: user?.photoURL || userData?.avatar || '',
     width: 100,
     height: 100,
   };
@@ -39,91 +54,157 @@ const ProfileScreen = () => {
   const {
     firstName,
     lastName,
-    username,
-    usernameNumber,
-    numberError,
     phoneNumber,
-    emailAddress,
+    bio,
     onChangeFirstName,
     onChangeLastName,
-    onChangeUsername,
-    onChangeNumber,
     onChangePhoneNumber,
-    onChangeEmailAddress,
+    onChangeBio,
   } = useUserForm(initialFormValues);
-  const [profileImage, setProfileImage] =
-    useState<ImagePickerAsset>(defaultImage);
-  const [loading, setLoading] = useState(false);
+  const [profileImage, setProfileImage] = useState<ImagePickerAsset>(defaultImage);
   const [savedUsername, setSavedUsername] = useState<string>('');
+  const [uploadingImage, setUploadingImage] = useState(false);
 
-  // Update saved username when Stream Chat user data is available
+  // Load user data from Firestore
   useEffect(() => {
-    const streamUsername = (streamUser as any)?.username || '';
-    if (streamUsername) {
-      setSavedUsername(streamUsername);
-    }
-  }, [streamUser]);
+    const loadUserData = async () => {
+      if (!user) return;
 
-  const submitDisabled =
-    loading || !username || !usernameNumber || !firstName || !lastName;
+      try {
+        let data: any = null;
+        if (Platform.OS !== 'web' && hasNativeFirestore) {
+          const raw = await getUserDocNative(user.uid);
+          if (raw) data = { uid: raw.id, ...raw };
+        } else {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (userDoc.exists()) data = userDoc.data();
+        }
+        if (data) {
+          setUserData(data);
+          setSavedUsername(data.username || '');
+          const avatarUri = data.avatar || user?.photoURL || '';
+          setProfileImage((prev) => ({ ...prev, uri: avatarUri }));
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadUserData();
+  }, [user?.uid]);
+
+  // Update saved username when user data is available
+  useEffect(() => {
+    if (userData?.username) {
+      setSavedUsername(userData.username);
+    }
+  }, [userData]);
+
+  const submitDisabled = loading || !firstName?.trim();
+
+  /** Upload profile image immediately when user selects, or clear when deleted (auto-save) */
+  const handleImageSelect = async (asset: ImagePickerAsset | null) => {
+    if (!user) return;
+    if (!asset?.uri) {
+      setProfileImage({ uri: '', width: 100, height: 100 });
+      setUploadingImage(true);
+      try {
+        const emptyAvatar = '';
+        if (Platform.OS === 'web') {
+          await updateFirebaseProfile(user, { photoURL: '' });
+        } else {
+          const rnAuth = getRnAuth();
+          const nativeUser = rnAuth?.currentUser;
+          if (nativeUser?.updateProfile) await nativeUser.updateProfile({ photoURL: '' });
+        }
+        if (Platform.OS !== 'web' && hasNativeFirestore) {
+          await updateUserDocNative(user.uid, { avatar: emptyAvatar, updatedAt: new Date().toISOString() });
+        } else {
+          await updateDoc(doc(db, 'users', user.uid), { avatar: emptyAvatar, updatedAt: new Date().toISOString() });
+        }
+        setUserData((prev: any) => (prev ? { ...prev, avatar: emptyAvatar } : prev));
+      } catch (error) {
+        console.error('Error clearing image:', error);
+      } finally {
+        setUploadingImage(false);
+      }
+      return;
+    }
+    setUploadingImage(true);
+    try {
+      let avatarUrl: string;
+      if (Platform.OS !== 'web') {
+        const rnStorage = getRnStorage();
+        const { ref: rnRef, putFile, getDownloadURL: rnGetDownloadURL } = require('@react-native-firebase/storage');
+        const storageRef = rnRef(rnStorage, `avatars/${user.uid}/avatar.jpg`);
+        await putFile(storageRef, asset.uri);
+        avatarUrl = await rnGetDownloadURL(storageRef);
+      } else {
+        const response = await fetch(asset.uri);
+        const blob = await response.blob();
+        const imageRef = ref(storage, `avatars/${user.uid}/avatar.jpg`);
+        await uploadBytes(imageRef, blob);
+        avatarUrl = await getDownloadURL(imageRef);
+      }
+      if (Platform.OS === 'web') {
+        await updateFirebaseProfile(user, { photoURL: avatarUrl });
+      } else {
+        const rnAuth = getRnAuth();
+        const nativeUser = rnAuth?.currentUser;
+        if (nativeUser?.updateProfile) await nativeUser.updateProfile({ photoURL: avatarUrl });
+      }
+      if (Platform.OS !== 'web' && hasNativeFirestore) {
+        await updateUserDocNative(user.uid, { avatar: avatarUrl, updatedAt: new Date().toISOString() });
+      } else {
+        await updateDoc(doc(db, 'users', user.uid), { avatar: avatarUrl, updatedAt: new Date().toISOString() });
+      }
+      setProfileImage({ ...asset, uri: avatarUrl });
+      setUserData((prev: any) => (prev ? { ...prev, avatar: avatarUrl } : prev));
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      Alert.alert(t('common.error'), t('profile.errorUpdatingProfile'));
+    } finally {
+      setUploadingImage(false);
+    }
+  };
 
   const updateProfile = async () => {
+    if (!user) return;
+    
     try {
       setLoading(true);
-      const finalUsername = `${username}_${usernameNumber}`;
-      // Only update firstName and lastName (username not enabled in Clerk)
-      const result = await user?.update({
-        firstName,
-        lastName,
-      });
-      // Update Stream Chat user with username, phone, and email
-      await client.upsertUser({
-        id: result?.id!,
-        name: result?.fullName!,
-        username: finalUsername,
-        ...(phoneNumber && { phone: phoneNumber }),
-        ...(emailAddress && { email: emailAddress.toLowerCase() }),
-      } as any);
-
-      // Update saved username for immediate display
-      setSavedUsername(finalUsername);
-
-      // Refresh the user data to reflect changes
-      await client.queryUsers({ id: { $eq: result?.id! } });
-
-      const updateUserImage = async (data: string | null) => {
-        try {
-          const imageResult = await clerk.user?.setProfileImage({
-            file: data,
-          });
-          await client.upsertUser({
-            id: result?.id!,
-            image: imageResult ? imageResult.publicUrl! : undefined,
-            username: finalUsername,
-            ...(phoneNumber && { phone: phoneNumber }),
-            ...(emailAddress && { email: emailAddress.toLowerCase() }),
-          } as any);
-          // Refresh user data again after image update
-          await client.queryUsers({ id: { $eq: result?.id! } });
-        } catch (error) {
-          console.error('Error updating user image:', error);
-        }
-      };
-
-      if (profileImage.uri) {
-        const response = await fetch(profileImage.uri);
-        const blob = await response.blob();
-        const reader = new FileReader();
-        reader.readAsDataURL(blob);
-        reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          await updateUserImage(base64data);
-        };
+      const displayName = lastName?.trim() ? `${firstName} ${lastName}` : firstName;
+      if (Platform.OS === 'web') {
+        await updateFirebaseProfile(user, { displayName });
       } else {
-        await updateUserImage(null);
+        const rnAuth = getRnAuth();
+        const nativeUser = rnAuth?.currentUser;
+        if (nativeUser?.updateProfile) await nativeUser.updateProfile({ displayName });
       }
 
-      alert(t('profile.profileUpdated'));
+      // Update Firestore user document (do NOT include username - immutable after signup)
+      const updateData: Record<string, any> = {
+        firstName,
+        lastName: lastName || '',
+        bio: bio || '',
+        updatedAt: new Date().toISOString(),
+      };
+      if (Platform.OS !== 'web' && hasNativeFirestore) {
+        await updateUserDocNative(user.uid, updateData);
+      } else {
+        await updateDoc(doc(db, 'users', user.uid), updateData);
+      }
+
+      setUserData((prev: any) => ({
+        ...prev,
+        firstName,
+        lastName: lastName || '',
+        bio: bio || '',
+      }));
+
+      Alert.alert(t('common.success'), t('profile.profileUpdated'));
     } catch (error) {
       getError(error);
       console.error(error);
@@ -132,22 +213,104 @@ const ProfileScreen = () => {
     }
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      t('profile.deleteAccount'),
+      t('profile.confirmDeleteAccount'),
+      [
+        {
+          text: t('common.cancel'),
+          style: 'cancel',
+        },
+        {
+          text: t('profile.deleteAccount'),
+          style: 'destructive',
+          onPress: deleteAccount,
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const deleteAccount = async () => {
+    if (!user) return;
+    
+    try {
+      setLoading(true);
+      
+      // Clear all local storage
+      try {
+        await AsyncStorage.clear();
+        console.log('Local storage cleared');
+      } catch (storageError) {
+        console.error('Error clearing storage:', storageError);
+      }
+
+      // Delete user from Firestore (mark as deleted rather than actually deleting)
+      const deleteData = { deleted: true, deletedAt: new Date().toISOString() };
+      if (Platform.OS !== 'web' && hasNativeFirestore) {
+        await updateUserDocNative(user.uid, deleteData);
+      } else {
+        await updateDoc(doc(db, 'users', user.uid), deleteData);
+      }
+
+      // Delete Firebase Auth account
+      try {
+        if (Platform.OS === 'web') {
+          await deleteUser(user);
+        } else {
+          const rnAuth = getRnAuth();
+          const nativeUser = rnAuth?.currentUser;
+          if (nativeUser?.delete) await nativeUser.delete();
+        }
+        console.log('Account deleted from Firebase');
+      } catch (error: any) {
+        console.error('Error deleting from Firebase:', error);
+        // If deletion fails, sign out instead
+        await signOut();
+      }
+
+      // Navigate to sign-in screen
+      router.replace('/(auth)/sign-in');
+    } catch (error) {
+      console.error('Error deleting account:', error);
+      Alert.alert(
+        t('common.error'),
+        t('profile.errorDeletingAccount'),
+        [{ text: t('common.ok') }]
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading && !userData) {
+    return <Screen viewClassName="flex-1 items-center justify-center" loadingOverlay={true} />;
+  }
+
   return (
     <Screen
-      viewClassName="flex-1 pt-3 px-2 sm:px-4 items-center gap-4 sm:gap-6"
-      loadingOverlay={loading}
+      viewClassName="flex-1 px-2 sm:px-4 items-center gap-4 sm:gap-6"
+      loadingOverlay={loading || uploadingImage}
     >
-      <View className="items-center gap-3">
+      <View 
+        className="items-center gap-3 w-full"
+        style={{ paddingTop: Math.max(insets.top + 20, 40) }}
+      >
         <ImageInput
-          name={user?.fullName!}
+          name={user?.displayName || user?.phoneNumber || 'User'}
           imageUri={profileImage.uri}
-          onChangeImage={(asset) =>
-            setProfileImage(asset ?? { ...defaultImage, uri: '' })
-          }
+          onChangeImage={handleImageSelect}
         />
-        <Text className="text-sm text-gray-400">
-          {savedUsername || (username && usernameNumber ? `${username}_${usernameNumber}` : t('profile.chooseUsername'))}
+        {uploadingImage && (
+          <Text className={clsx('text-xs', textSecondaryColor)}>{t('profile.uploading')}</Text>
+        )}
+        <Text className={clsx('text-sm', textSecondaryColor)}>
+          {savedUsername || t('profile.chooseUsername')}
         </Text>
+        <View className="flex-row items-center justify-center gap-2 mt-2">
+          <ThemeToggle variant="profile" />
+        </View>
       </View>
       <View className="gap-3">
         <TextField
@@ -160,51 +323,46 @@ const ProfileScreen = () => {
           placeholder={t('auth.lastName')}
           onChangeText={onChangeLastName}
         />
-        <View className="relative">
-          <TextField
-            autoCapitalize="none"
-            value={username}
-            placeholder={t('auth.username')}
-            onChangeText={onChangeUsername}
-            className="pr-12"
-          />
-          <View className="absolute right-3 top-3 flex-row gap-2">
-            <View className="w-0.5 h-5 bg-gray-300" />
-            <TextInput
-              keyboardType="number-pad"
-              maxLength={2}
-              value={usernameNumber}
-              onChangeText={onChangeNumber}
-              className="w-5 h-5 android:w-8 android:h-12 android:bottom-3.5"
-            />
-          </View>
-          <Text
-            className={clsx(
-              'pl-2 pt-2 text-xs',
-              numberError ? 'text-red-500' : 'text-gray-500'
-            )}
-          >
-            {numberError ||
-              t('profile.usernameHint')}
+        <View>
+          <Text className={clsx('text-xs mb-1', textSecondaryColor)}>{t('auth.username')}</Text>
+          <Text className={clsx('text-base', usernameTextColor)}>
+            {savedUsername || '—'}
           </Text>
         </View>
         <TextField
-          value={phoneNumber}
-          placeholder={t('auth.phoneNumber') + ' (e.g., +1234567890)'}
-          onChangeText={onChangePhoneNumber}
-          keyboardType="phone-pad"
+          value={bio}
+          placeholder={t('profile.bio')}
+          onChangeText={onChangeBio}
+          multiline
+          numberOfLines={3}
         />
         <TextField
-          autoCapitalize="none"
-          value={emailAddress}
-          placeholder={t('auth.emailAddress')}
-          onChangeText={onChangeEmailAddress}
-          keyboardType="email-address"
+          value={phoneNumber}
+          placeholder={t('auth.phoneNumber')}
+          onChangeText={onChangePhoneNumber}
+          keyboardType="phone-pad"
+          editable={false}
         />
       </View>
       <Button onPress={updateProfile} disabled={submitDisabled}>
         {t('common.save')}
       </Button>
+      
+      <View className="mt-6 pt-6 border-t border-gray-300 dark:border-gray-700 w-full">
+        <Button
+          onPress={handleDeleteAccount}
+          disabled={loading}
+          variant="text"
+          className="w-full"
+        >
+          <Text className="text-red-500 text-center font-medium">
+            {t('profile.deleteAccount')}
+          </Text>
+        </Button>
+        <Text className={clsx('text-xs text-center mt-2 px-4', textSecondaryColor)}>
+          {t('profile.deleteAccountWarning')}
+        </Text>
+      </View>
     </Screen>
   );
 };

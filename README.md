@@ -45,15 +45,15 @@ yarn install
 
 ### 3. Add Environment Variables
 
-Create a `.env.local` file in the root and add your keys:
+Create a `.env.local` file in the root and add your Firebase keys:
 
 ```env
-EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
-EXPO_PUBLIC_STREAM_API_KEY=your_stream_api_key
-STREAM_API_SECRET=your_stream_api_secret
+EXPO_PUBLIC_FIREBASE_API_KEY=your_firebase_api_key
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your_firebase_auth_domain
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=your_firebase_project_id
 ```
 
-> 🔑 You can manage your Clerk and Stream API keys from their respective dashboards.
+> 🔑 You can get your Firebase configuration from the Firebase Console.
 
 ### 4. Run the App
 

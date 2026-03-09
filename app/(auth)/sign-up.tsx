@@ -1,281 +1,427 @@
-import { useSignUp } from '@clerk/clerk-expo';
+import { signInWithPhoneNumber, PhoneAuthProvider, signInWithCredential, updateProfile, RecaptchaVerifier, type ApplicationVerifier } from 'firebase/auth';
+import { Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import clsx from 'clsx';
-import { Link, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Link, useRouter, useLocalSearchParams } from 'expo-router';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Pressable, Text, TextInput, View, Alert, Platform } from 'react-native';
 
 import Button from '@/components/Button';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
 import useUserForm from '@/hooks/useUserForm';
-import { getError } from '@/lib/utils';
+import { useAuth } from '@/contexts/AuthContext';
+import { useThemeClassName } from '@/lib/themeUtils';
+import { auth, db } from '@/lib/firebase';
+import { sanitizeForFirestore } from '@/lib/firestoreNative';
+import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
 
-type SignUpMethod = 'email' | 'phone';
+// Import native Firebase for native platforms (single app from rnFirebase)
+import { getRnAuth, getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
+
+let signInWithPhoneNumberNative: any = null;
+let signInWithCredentialNative: any = null;
+let PhoneAuthProviderNative: any = null;
+let rnFirestoreMod: any = null;
+if (Platform.OS !== 'web') {
+  try {
+    rnFirestoreMod = require('@react-native-firebase/firestore');
+    const authModule = require('@react-native-firebase/auth');
+    signInWithPhoneNumberNative = authModule.signInWithPhoneNumber;
+    signInWithCredentialNative = authModule.signInWithCredential;
+    PhoneAuthProviderNative = authModule.PhoneAuthProvider;
+    if (__DEV__) console.log('Native Firebase auth/firestore loaded (single app)');
+  } catch (e: any) {
+    if (__DEV__) console.warn('@react-native-firebase not available:', e?.message || e);
+  }
+}
+
+type SignUpStep = 'form' | 'otp';
 
 const SignUpScreen = () => {
-  const { isLoaded, signUp, setActive } = useSignUp();
   const router = useRouter();
-  const { t } = useTranslation();
+  const params = useLocalSearchParams<{ completeProfile?: string; phone?: string }>();
+  const { user: authUser } = useAuth();
+  const { t, i18n } = useTranslation();
+  const textColor = useThemeClassName('text-black', 'text-white');
+  const textSecondaryColor = useThemeClassName('text-gray-500', 'text-gray-400');
+  const hintTextColor = useThemeClassName('text-gray-500', 'text-gray-400');
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
+
+  const isCompleteProfile = params.completeProfile === '1' && !!authUser;
+  const [step, setStep] = useState<SignUpStep>('form');
+  const [phoneNumber, setPhoneNumber] = useState(params.phone || authUser?.phoneNumber || '');
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const recaptchaVerifierRef = useRef<RecaptchaVerifier | ApplicationVerifier | null>(null);
+
+  // Store form data for use after OTP (account is created only after OTP success)
+  const formDataRef = useRef<{ firstName: string; lastName: string; username: string; phoneNumber: string } | null>(null);
+
   const {
     firstName,
     lastName,
     username,
     usernameNumber,
     numberError,
-    emailAddress,
-    phoneNumber,
-    password,
     onChangeFirstName,
     onChangeLastName,
     onChangeUsername,
     onChangeNumber,
-    onChangeEmailAddress,
-    onChangePhoneNumber,
-    onChangePassword,
   } = useUserForm();
-  const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>('email');
-  const [pendingVerification, setPendingVerification] = useState(false);
-  const [code, setCode] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [verificationMethod, setVerificationMethod] = useState<'email' | 'phone'>('email');
 
-  const onSignUpPress = async () => {
-    if (!isLoaded || numberError) return;
-    
-    // Validate required fields based on sign-up method
-    if (signUpMethod === 'email' && !emailAddress) {
-      alert('Please enter your email address');
+  useEffect(() => {
+    if (params.completeProfile === '1' && authUser?.phoneNumber) {
+      setPhoneNumber(authUser.phoneNumber);
+    }
+  }, [params.completeProfile, authUser?.phoneNumber]);
+
+  const formatPhoneNumber = (text: string) => {
+    let cleaned = text.replace(/[^\d+]/g, '');
+    if (cleaned && !cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned.replace(/\D/g, '');
+    }
+    return cleaned;
+  };
+
+  const handlePhoneNumberChange = (text: string) => {
+    setPhoneNumber(formatPhoneNumber(text));
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recaptchaVerifierRef.current && Platform.OS === 'web') {
+        try {
+          (recaptchaVerifierRef.current as RecaptchaVerifier).clear?.();
+        } catch (e) {}
+        recaptchaVerifierRef.current = null;
+      }
+    };
+  }, []);
+
+  /** Check if username is available (Firestore). When user is not yet authenticated, Firestore rules block the query - in that case we assume available. */
+  const checkUsernameAvailability = async (finalUsername: string): Promise<{ available: boolean; error?: string }> => {
+    try {
+      let empty: boolean;
+      if (Platform.OS !== 'web' && hasRnFirebase && rnFirestoreMod) {
+        const db = getRnFirestore();
+        const q = rnFirestoreMod.query(
+          rnFirestoreMod.collection(db, 'users'),
+          rnFirestoreMod.where('username', '==', finalUsername),
+          rnFirestoreMod.limit(1)
+        );
+        const snap = await rnFirestoreMod.getDocs(q);
+        empty = snap.empty;
+      } else {
+        const snap = await getDocs(query(collection(db, 'users'), where('username', '==', finalUsername)));
+        empty = snap.empty;
+      }
+      return { available: empty };
+    } catch (e: any) {
+      // Permission denied (user not authenticated) or network error - assume available so sign-up can proceed
+      if (__DEV__) console.warn('Username check failed (user may not be authenticated yet):', e?.message);
+      return { available: true };
+    }
+  };
+
+  /** STEP 1: Form submit → validate → check username → send OTP */
+  const handleFormSubmit = async () => {
+    if (numberError) {
+      Alert.alert(t('auth.error'), t('profile.usernameHint'));
       return;
     }
-    if (signUpMethod === 'phone' && !phoneNumber) {
-      alert('Please enter your phone number');
+    if (!firstName?.trim() || !username?.trim() || !usernameNumber) {
+      Alert.alert(t('auth.error'), t('auth.pleaseFillAllFields'));
       return;
     }
-    
+    const phone = formatPhoneNumber(phoneNumber);
+    if (!phone || phone.length < 10) {
+      Alert.alert(t('auth.error'), t('auth.pleaseEnterPhone'));
+      return;
+    }
+    if (!phone.startsWith('+')) {
+      Alert.alert(t('auth.error'), t('auth.countryCodeRequired'));
+      return;
+    }
+
+    // Complete profile flow: user already signed in, create doc directly
+    if (isCompleteProfile && authUser) {
+      setLoading(true);
+      try {
+        const finalUsername = `${username}_${usernameNumber}`;
+        const userPhone = authUser.phoneNumber || phone;
+        const userDoc = {
+          uid: authUser.uid,
+          phoneNumber: userPhone,
+          firstName: firstName.trim(),
+          lastName: (lastName || '').trim(),
+          username: finalUsername,
+          photoURL: authUser.photoURL || '',
+          bio: '',
+          createdAt: new Date().toISOString(),
+          lastSeen: new Date().toISOString(),
+          isOnline: false,
+        };
+        if (Platform.OS !== 'web' && hasRnFirebase && rnFirestoreMod) {
+          const db = getRnFirestore();
+          await rnFirestoreMod.setDoc(rnFirestoreMod.doc(db, 'users', authUser.uid), sanitizeForFirestore(userDoc));
+      } else {
+        await setDoc(doc(db, 'users', authUser.uid), userDoc);
+      }
+      // Use native user.updateProfile on native; web updateProfile on web
+      const displayName = lastName?.trim() ? `${firstName.trim()} ${lastName.trim()}` : firstName.trim();
+      if (Platform.OS === 'web') {
+        await updateProfile(authUser as any, { displayName });
+      } else if (hasRnFirebase) {
+        const rnAuth = getRnAuth();
+        const nativeUser = rnAuth?.currentUser;
+        if (nativeUser?.updateProfile) {
+          await nativeUser.updateProfile({ displayName });
+        }
+      }
+        await AsyncStorage.setItem('pendingUsername', finalUsername);
+        await AsyncStorage.setItem('pendingPhone', userPhone);
+        Alert.alert(t('auth.success'), t('auth.accountCreated'), [{ text: 'OK', onPress: () => router.replace('/(home)/(tabs)/chats') }]);
+      } catch (e: any) {
+        Alert.alert(t('auth.error'), e?.message || t('auth.signUpFailed'));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    const finalUsername = `${username}_${usernameNumber}`;
     setLoading(true);
     try {
-      const signUpData: any = {
-        firstName,
-        lastName,
-        password,
+      const { available } = await checkUsernameAvailability(finalUsername);
+      if (!available) {
+        Alert.alert(t('auth.error'), t('auth.usernameTaken'));
+        setLoading(false);
+        return;
+      }
+
+      // Store form data for use after OTP success
+      formDataRef.current = {
+        firstName: firstName.trim(),
+        lastName: (lastName || '').trim(),
+        username: finalUsername,
+        phoneNumber: phone,
       };
 
-      if (signUpMethod === 'email') {
-        signUpData.emailAddress = emailAddress.toLowerCase();
+      let confirmation: { verificationId: string };
+      if (Platform.OS === 'web') {
+        if (!recaptchaVerifierRef.current) {
+          recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-container-signup', {
+            size: 'invisible',
+            callback: () => {},
+            'expired-callback': () => { recaptchaVerifierRef.current = null; },
+          });
+        }
+        confirmation = await signInWithPhoneNumber(auth, phone, recaptchaVerifierRef.current);
       } else {
-        signUpData.phoneNumber = phoneNumber;
+        if (!hasRnFirebase || !signInWithPhoneNumberNative) {
+          throw new Error('Phone authentication requires native Firebase. Use a development build.');
+        }
+        const confirmationResult = await signInWithPhoneNumberNative(getRnAuth(), phone);
+        confirmation = { verificationId: confirmationResult.verificationId || '' };
       }
-
-      await signUp.create(signUpData);
-      
-      if (signUpMethod === 'email') {
-        await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
-        setVerificationMethod('email');
-      } else {
-        await signUp.preparePhoneNumberVerification({ strategy: 'phone_code' });
-        setVerificationMethod('phone');
+      setVerificationId(confirmation.verificationId);
+      setStep('otp');
+      Alert.alert(t('auth.success'), t('auth.otpSent'));
+    } catch (error: any) {
+      if (__DEV__) console.error('Error sending OTP:', error);
+      let msg = error?.message || t('auth.failedToSendOTP');
+      if (error?.code === 'auth/invalid-phone-number') msg = 'Invalid phone number format.';
+      if (error?.code === 'auth/too-many-requests' || error?.message?.includes('too-many-requests') || error?.message?.includes('blocked all requests')) {
+        msg = 'Firebase has temporarily blocked OTP requests from this device due to too many attempts. Wait 24–48 hours, or use a different device/network. For development, add test phone numbers in Firebase Console → Authentication → Phone → Phone numbers for testing.';
       }
-      
-      setPendingVerification(true);
-    } catch (err: any) {
-      getError(err);
+      Alert.alert(t('auth.error'), msg);
     } finally {
       setLoading(false);
     }
   };
 
-  const onVerifyPress = async () => {
-    if (!isLoaded) return;
+  /** STEP 2: OTP verified → create account and profile (only after OTP success) */
+  const verifyOTP = async () => {
+    if (!code || code.length !== 6) {
+      Alert.alert(t('auth.error'), t('auth.pleaseEnterCode'));
+      return;
+    }
+    if (!verificationId) {
+      Alert.alert(t('auth.error'), t('auth.pleaseRequestOTP'));
+      return;
+    }
+    const data = formDataRef.current;
+    if (!data) {
+      Alert.alert(t('auth.error'), t('auth.sessionExpired'));
+      setStep('form');
+      return;
+    }
+    // Ensure form data is present (must come from Sign Up form, not Auth)
+    if (!data.firstName?.trim() || !data.username?.trim() || !data.phoneNumber) {
+      Alert.alert(t('auth.error'), t('auth.missingProfileData'));
+      setStep('form');
+      return;
+    }
+
     setLoading(true);
     try {
-      let signUpAttempt;
-      
-      if (verificationMethod === 'email') {
-        signUpAttempt = await signUp.attemptEmailAddressVerification({
-          code,
-        });
+      let user: { uid: string; phoneNumber?: string; photoURL?: string; updateProfile?: (updates: { displayName?: string }) => Promise<void> };
+      if (Platform.OS === 'web') {
+        const credential = PhoneAuthProvider.credential(verificationId, code);
+        const userCred = await signInWithCredential(auth, credential);
+        user = userCred.user;
       } else {
-        signUpAttempt = await signUp.attemptPhoneNumberVerification({
-          code,
-        });
+        if (!hasRnFirebase || !PhoneAuthProviderNative || !signInWithCredentialNative) {
+          throw new Error('Native Firebase auth is not available');
+        }
+        const credential = PhoneAuthProviderNative.credential(verificationId, code);
+        const userCred = await signInWithCredentialNative(getRnAuth(), credential);
+        user = userCred.user;
       }
 
-      if (signUpAttempt.status === 'complete') {
-        // Store username and contact info for Stream Chat setup
-        const finalUsername = `${username}_${usernameNumber}`;
-        await AsyncStorage.setItem('pendingUsername', finalUsername);
-        
-        // Store phone or email for Stream Chat
-        if (verificationMethod === 'email') {
-          await AsyncStorage.setItem('pendingEmail', emailAddress.toLowerCase());
-        } else {
-          await AsyncStorage.setItem('pendingPhone', phoneNumber);
-        }
-        
-        await setActive({ session: signUpAttempt.createdSessionId });
-        router.replace('/chats');
+      // 1) Create full user profile in Firestore FIRST (before auth state propagates / home layout runs)
+      const now = new Date().toISOString();
+      const userDoc = {
+        uid: user.uid,
+        phoneNumber: data.phoneNumber,
+        firstName: data.firstName.trim(),
+        lastName: (data.lastName || '').trim(),
+        username: data.username,
+        avatar: '',
+        photoURL: '',
+        bio: '',
+        createdAt: now,
+        lastSeen: now,
+        isOnline: false,
+      };
+      if (Platform.OS !== 'web' && hasRnFirebase && rnFirestoreMod) {
+        const db = getRnFirestore();
+        await rnFirestoreMod.setDoc(rnFirestoreMod.doc(db, 'users', user.uid), sanitizeForFirestore(userDoc));
       } else {
-        console.error(JSON.stringify(signUpAttempt, null, 2));
+        await setDoc(doc(db, 'users', user.uid), userDoc);
       }
-    } catch (err) {
-      getError(err);
+
+      // 2) Then update Auth displayName (for consistency only; profile comes from Firestore)
+      const displayName = data.lastName?.trim() ? `${data.firstName} ${data.lastName}` : data.firstName;
+      if (Platform.OS === 'web') {
+        await updateProfile(user as any, { displayName });
+      } else if (user.updateProfile) {
+        await user.updateProfile({ displayName });
+      }
+
+      await AsyncStorage.setItem('pendingUsername', data.username);
+      await AsyncStorage.setItem('pendingPhone', data.phoneNumber);
+      Alert.alert(t('auth.success'), t('auth.accountCreated'), [{ text: 'OK', onPress: () => router.replace('/(home)/(tabs)/chats') }]);
+    } catch (error: any) {
+      if (__DEV__) console.error('Error verifying OTP:', error);
+      let msg = error?.message || t('auth.invalidCode');
+      if (error?.code === 'auth/invalid-verification-code') msg = 'Invalid verification code.';
+      if (error?.code === 'auth/code-expired' || error?.code === 'auth/session-expired') {
+        msg = 'Code expired. Please request a new code.';
+        setVerificationId(null);
+        setCode('');
+        setStep('form');
+      }
+      Alert.alert(t('auth.error'), msg);
     } finally {
       setLoading(false);
     }
   };
 
-  if (pendingVerification) {
-    const verificationTarget = verificationMethod === 'email' 
-      ? emailAddress.toLowerCase() 
-      : phoneNumber;
-    
-    return (
-      <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
-        <View className="absolute top-10 right-10">
-          <LanguageSwitcher />
-        </View>
-        <View className="gap-3">
-          <Text className="text-center text-3xl font-semibold">
-            {verificationMethod === 'email' ? t('auth.verifyEmail') : t('auth.verifyPhone')}
-          </Text>
-          <Text className="text-center text-base text-gray-500">
-            {t('auth.enterCode')} {verificationTarget}
-          </Text>
-          <Button
-            variant="text"
-            className="text-base text-blue-600"
-            onPress={() => setPendingVerification(false)}
-          >
-            {verificationMethod === 'email' ? t('auth.wrongEmail') : t('auth.wrongPhone')}
-          </Button>
-        </View>
-        <TextField
-          value={code}
-          placeholder={t('auth.enterCode')}
-          keyboardType="numeric"
-          onChangeText={(code) => setCode(code)}
-        />
-        <Button onPress={onVerifyPress}>{t('common.verify')}</Button>
-      </Screen>
-    );
-  }
+  const languages = [
+    { code: 'en', name: 'English' },
+    { code: 'tr', name: 'Türkçe' },
+    { code: 'tk', name: 'Türkmen' },
+    { code: 'ru', name: 'Русский' },
+  ];
+  const currentLangName = languages.find((l) => l.code === i18n.language)?.name || 'English';
 
   return (
     <Screen viewClassName="pt-10 px-4 gap-4" loadingOverlay={loading}>
-      <View className="absolute top-10 right-10">
-        <LanguageSwitcher />
-      </View>
-      <View className="gap-3">
-        <Text className="text-center text-3xl font-semibold">{t('auth.signUp')}</Text>
-        <Text className="text-center text-base text-gray-500">
-          {t('auth.createAccount')}
-        </Text>
-      </View>
-      
-      {/* Sign-up method selector */}
-      <View className="flex-row gap-2 mb-2 bg-gray-100 rounded-[13px] p-1">
-        <TouchableOpacity
-          className={clsx(
-            'flex-1 rounded-[10px] py-3 items-center justify-center',
-            signUpMethod === 'email' ? 'bg-blue-600' : 'bg-transparent'
-          )}
-          onPress={() => setSignUpMethod('email')}
+      <View className="absolute top-10 right-4 z-10">
+        <Pressable
+          onPress={() => setShowLanguageModal(true)}
+          className={clsx('flex-row items-center gap-2 px-4 py-2.5 rounded-full', useThemeClassName('bg-gray-100', 'bg-gray-800'))}
+          style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
         >
-          <Text className={clsx(
-            'text-base font-medium',
-            signUpMethod === 'email' ? 'text-white' : 'text-gray-700'
-          )}>
-            {t('auth.email')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          className={clsx(
-            'flex-1 rounded-[10px] py-3 items-center justify-center',
-            signUpMethod === 'phone' ? 'bg-blue-600' : 'bg-transparent'
-          )}
-          onPress={() => setSignUpMethod('phone')}
-        >
-          <Text className={clsx(
-            'text-base font-medium',
-            signUpMethod === 'phone' ? 'text-white' : 'text-gray-700'
-          )}>
-            {t('auth.phone')}
-          </Text>
-        </TouchableOpacity>
+          <View className={clsx('w-7 h-7 rounded-full items-center justify-center', useThemeClassName('bg-white', 'bg-gray-700'))}>
+            <Feather name="globe" size={14} color="#337E84" />
+          </View>
+          <Text className={clsx('text-sm font-semibold', textColor)}>{currentLangName}</Text>
+        </Pressable>
+        <LanguageSwitcher initialVisible={showLanguageModal} onModalVisibilityChange={setShowLanguageModal} />
       </View>
 
       <View className="gap-3">
-        <TextField
-          value={firstName}
-          placeholder={t('auth.firstName')}
-          onChangeText={onChangeFirstName}
-        />
-        <TextField
-          value={lastName}
-          placeholder={t('auth.lastName')}
-          onChangeText={onChangeLastName}
-        />
-        <View className="relative">
-          <TextField
-            autoCapitalize="none"
-            value={username}
-            placeholder={t('auth.username')}
-            onChangeText={onChangeUsername}
-            className="pr-12"
-          />
-          <View className="absolute right-3 top-3 flex-row gap-2">
-            <View className="w-0.5 h-5 bg-gray-300" />
-            <TextInput
-              keyboardType="number-pad"
-              maxLength={2}
-              value={usernameNumber}
-              onChangeText={onChangeNumber}
-              className="w-5 h-5 android:w-8 android:h-12 android:bottom-3.5"
-            />
+        <Text className={clsx('text-center text-3xl font-semibold', textColor)}>{t('auth.signUp')}</Text>
+        <Text className={clsx('text-center text-base', textSecondaryColor)}>
+          {step === 'form' ? t('auth.createAccount') : t('auth.enterCode')}
+        </Text>
+      </View>
+
+      {step === 'form' && (
+        <>
+          <TextField value={firstName} placeholder={t('auth.firstName')} onChangeText={onChangeFirstName} />
+          <TextField value={lastName} placeholder={t('auth.lastName')} onChangeText={onChangeLastName} />
+          <View className="relative">
+            <TextField autoCapitalize="none" value={username} placeholder={t('auth.username')} onChangeText={onChangeUsername} className="pr-12" />
+            <View className="absolute right-3 top-3 flex-row gap-2">
+              <View className="w-0.5 h-5 bg-gray-300" />
+              <TextInput
+                keyboardType="number-pad"
+                maxLength={2}
+                value={usernameNumber}
+                onChangeText={onChangeNumber}
+                className="w-5 h-5 android:w-8 android:h-12 android:bottom-3.5"
+              />
+            </View>
+            <Text className={clsx('pl-2 pt-2 text-xs', numberError ? 'text-red-500' : hintTextColor)}>{numberError || t('profile.usernameHint')}</Text>
           </View>
-          <Text
-            className={clsx(
-              'pl-2 pt-2 text-xs',
-              numberError ? 'text-red-500' : 'text-gray-500'
-            )}
-          >
-            {numberError ||
-              t('profile.usernameHint')}
-          </Text>
-        </View>
-        {signUpMethod === 'email' ? (
-          <TextField
-            autoCapitalize="none"
-            value={emailAddress}
-            placeholder={t('auth.emailAddress')}
-            onChangeText={onChangeEmailAddress}
-            keyboardType="email-address"
-          />
-        ) : (
           <TextField
             value={phoneNumber}
             placeholder={t('auth.phoneNumber') + ' (e.g., +1234567890)'}
-            onChangeText={onChangePhoneNumber}
+            onChangeText={handlePhoneNumberChange}
             keyboardType="phone-pad"
+            autoComplete="tel"
+            editable={!isCompleteProfile}
           />
-        )}
-        <TextField
-          value={password}
-          placeholder={t('auth.password')}
-          secureTextEntry={true}
-          onChangeText={onChangePassword}
-        />
-      </View>
-      <Button onPress={onSignUpPress}>{t('common.continue')}</Button>
-      <View className="flex-row gap-[3px]">
-        <Text>{t('auth.alreadyHaveAccount')}</Text>
-        <Link href="/sign-in">
-          <Text className="text-blue-600">{t('auth.signIn')}</Text>
-        </Link>
-      </View>
+          <Button onPress={handleFormSubmit}>{t('common.continue')}</Button>
+        </>
+      )}
+
+      {step === 'otp' && (
+        <>
+          <Text className={clsx('text-sm text-center', textSecondaryColor)}>{t('auth.enterCodeSentTo')} {formDataRef.current?.phoneNumber || phoneNumber}</Text>
+          <TextField value={code} placeholder={t('auth.enterCode')} onChangeText={setCode} keyboardType="number-pad" maxLength={6} autoFocus />
+          <Button onPress={verifyOTP}>{t('auth.verify')}</Button>
+          <Pressable
+            onPress={() => {
+              setStep('form');
+              setVerificationId(null);
+              setCode('');
+            }}
+          >
+            <Text className="text-center text-[#337E84]">{t('auth.wrongPhoneNumber')}</Text>
+          </Pressable>
+        </>
+      )}
+
+      {!isCompleteProfile && (
+        <View className="flex-row gap-[3px]">
+          <Text>{t('auth.alreadyHaveAccount')}</Text>
+          <Link href="/sign-in">
+            <Text style={{ color: '#337E84' }}>{t('auth.signIn')}</Text>
+          </Link>
+        </View>
+      )}
+
+      {Platform.OS === 'web' && (
+        <View nativeID="recaptcha-container-signup" style={{ display: 'none', position: 'absolute', width: 0, height: 0 }} />
+      )}
     </Screen>
   );
 };

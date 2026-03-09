@@ -1,0 +1,38 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Stories: Users can upload to their own stories folder
+    match /stories/{userId}/{allPaths=**} {
+      // Allow read if authenticated
+      allow read: if request.auth != null;
+      
+      // Allow write (create/update/delete) if authenticated and user matches the folder
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Chat media: Users can upload to chats they participate in
+    match /chats/{chatId}/{allPaths=**} {
+      // Allow read if authenticated
+      allow read: if request.auth != null;
+      
+      // Allow write if authenticated (chat participation is checked in Firestore)
+      // In production, you might want to verify chat participation here too
+      allow write: if request.auth != null;
+    }
+    
+    // User avatars: Users can upload their own avatar
+    match /avatars/{userId}/{allPaths=**} {
+      // Allow read if authenticated
+      allow read: if request.auth != null;
+      
+      // Allow write if authenticated and user matches
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Default: Deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

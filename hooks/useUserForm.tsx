@@ -6,8 +6,8 @@ interface InitialValues {
   username?: string;
   usernameNumber?: string;
   numberError?: string;
-  emailAddress?: string;
-  password?: string;
+  phoneNumber?: string;
+  bio?: string;
 }
 
 const defaultValues: InitialValues = {
@@ -16,8 +16,8 @@ const defaultValues: InitialValues = {
   username: '',
   usernameNumber: '',
   numberError: '',
-  emailAddress: '',
-  password: '',
+  phoneNumber: '',
+  bio: '',
 };
 
 const useUserForm = (initialValues = defaultValues) => {
@@ -30,10 +30,10 @@ const useUserForm = (initialValues = defaultValues) => {
   const [numberError, setNumberError] = useState(
     initialValues.numberError || ''
   );
-  const [emailAddress, setEmailAddress] = useState(
-    initialValues.emailAddress || ''
+  const [phoneNumber, setPhoneNumber] = useState(
+    initialValues.phoneNumber || ''
   );
-  const [password, setPassword] = useState(initialValues.password || '');
+  const [bio, setBio] = useState(initialValues.bio || '');
 
   const onChangeUsername = (text: string) => {
     setUsername(text);
@@ -69,12 +69,18 @@ const useUserForm = (initialValues = defaultValues) => {
     setLastName(text);
   };
 
-  const onChangeEmailAddress = (text: string) => {
-    setEmailAddress(text);
+  const onChangeBio = (text: string) => {
+    setBio(text);
   };
 
-  const onChangePassword = (text: string) => {
-    setPassword(text);
+  const onChangePhoneNumber = (text: string) => {
+    // Remove any non-digit characters except +
+    let cleaned = text.replace(/[^\d+]/g, '');
+    // Ensure it starts with + if it doesn't already
+    if (cleaned && !cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned.replace(/\D/g, '');
+    }
+    setPhoneNumber(cleaned);
   };
 
   return {
@@ -83,14 +89,14 @@ const useUserForm = (initialValues = defaultValues) => {
     username,
     usernameNumber,
     numberError,
-    emailAddress,
-    password,
+    phoneNumber,
+    bio,
     onChangeNumber,
     onChangeUsername,
     onChangeFirstName,
     onChangeLastName,
-    onChangeEmailAddress,
-    onChangePassword,
+    onChangePhoneNumber,
+    onChangeBio,
   };
 };
 

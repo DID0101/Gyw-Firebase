@@ -12,7 +12,16 @@
       "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle",
+        "buildArtifactPaths": ["android/app/build/outputs/mapping/release/mapping.txt"]
+      },
+      "env": {
+        "EAS_SKIP_AUTO_FINGERPRINT": "1",
+        "NODE_OPTIONS": "--max-old-space-size=4096"
+      },
+      "node": "20.19.0"
     }
   },
   "submit": {

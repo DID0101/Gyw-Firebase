@@ -1,32 +1,25 @@
-import {
-  ChannelAvatarProps,
-  useChannelPreviewDisplayAvatar,
-} from 'stream-chat-expo';
-
-import { checkIfDMChannel } from '@/lib/utils';
 import Avatar from './Avatar';
 
-export interface PreviewAvatarProps extends ChannelAvatarProps {
+export interface PreviewAvatarProps {
+  name: string;
+  image?: string;
   size?: number;
   fontSize?: number;
 }
 
 const PreviewAvatar = ({
-  channel,
+  name,
+  image,
   size = 44,
   fontSize = 20,
 }: PreviewAvatarProps) => {
-  const isDMChannel = checkIfDMChannel(channel);
-  const displayAvatar = useChannelPreviewDisplayAvatar(channel);
-  const placeholderType = isDMChannel ? 'text' : 'icon';
-
   return (
     <Avatar
       size={size}
-      name={displayAvatar.name!}
+      name={name}
       fontSize={fontSize}
-      imageUrl={isDMChannel ? displayAvatar.image : undefined}
-      placeholderType={placeholderType}
+      imageUrl={image}
+      placeholderType="text"
     />
   );
 };

@@ -1,53 +1,44 @@
 import { getRandomBytesAsync } from 'expo-crypto';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, View } from 'react-native';
-import { UserResponse } from 'stream-chat';
-import { useChatContext } from 'stream-chat-expo';
+import { ActivityIndicator, FlatList, View } from 'react-native';
 
 import Button from '@/components/Button';
 import Screen from '@/components/Screen';
 import Spinner from '@/components/Spinner';
 import TextField from '@/components/TextField';
 import UserCheckbox from '@/components/UserCheckbox';
-import useContacts from '@/hooks/useContacts';
+import { useAuth } from '@/contexts/AuthContext';
+import { useUsers } from '@/lib/hooks/useUsers';
+import { createGroupChat } from '@/lib/services/chatService';
+import { User } from '@/lib/types/chat';
 
 const NewGroupScreen = () => {
-  const { client } = useChatContext();
+  const { user: currentUser } = useAuth();
   const router = useRouter();
   const { t } = useTranslation();
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [query, setQuery] = useState('');
   const [groupName, setGroupName] = useState('');
-  const [users, setUsers] = useState<UserResponse[]>([]);
+  const { users: allUsers, loading: loadingUsers } = useUsers(query);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
 
-  const { contacts, loadingContacts, debounceSearch } = useContacts(
-    client,
-    setUsers
-  );
-
-  const resetUsers = () => {
-    setUsers(contacts);
-  };
-
-  const search = (query: string) => {
-    const users = contacts.filter((user) => {
-      // @ts-expect-error - name
-      const name = user.name || `${user.first_name} ${user.last_name}`;
-      return (
-        user.username?.toLowerCase().includes(query.toLowerCase()) ||
-        name.toLowerCase().includes(query.toLowerCase())
-      );
-    });
-    setUsers(users);
-  };
-
-  const handleUserSearch = (text: string) => {
-    setQuery(text);
-    debounceSearch(text, resetUsers, search);
-  };
+  // Filter out current user and filter by search query
+  const users = useMemo(() => {
+    return allUsers
+      .filter(u => u.uid !== currentUser?.uid)
+      .filter(u => {
+        if (!query.trim()) return true;
+        const searchLower = query.toLowerCase();
+        return (
+          u.username?.toLowerCase().includes(searchLower) ||
+          u.firstName?.toLowerCase().includes(searchLower) ||
+          u.lastName?.toLowerCase().includes(searchLower) ||
+          `${u.firstName} ${u.lastName}`.toLowerCase().includes(searchLower)
+        );
+      });
+  }, [allUsers, currentUser?.uid, query]);
 
   const leave = () => {
     setCreatingGroup(false);
@@ -58,7 +49,7 @@ const NewGroupScreen = () => {
   };
 
   const createNewGroup = async () => {
-    if (!groupName) {
+    if (!groupName.trim()) {
       alert(t('groups.enterGroupName'));
       return;
     }
@@ -66,32 +57,31 @@ const NewGroupScreen = () => {
       alert(t('groups.selectAtLeastOne'));
       return;
     }
+    if (!currentUser) return;
 
     setCreatingGroup(true);
 
     try {
-      const bytes = await getRandomBytesAsync(7);
-      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';
-      const id = Array.from(bytes)
-        .map((b) => alphabet[b % alphabet.length])
-        .join('');
-      const group = client.channel('messaging', id, {
-        members: [...selectedUsers, client.userID!],
-        // @ts-expect-error - name
-        name: groupName,
-      });
+      const chatId = await createGroupChat(
+        currentUser.uid,
+        groupName.trim(),
+        selectedUsers
+      );
 
-      await group.create();
-      leave();
+      // Navigate to the new group chat
+      router.dismissTo({
+        pathname: '/chat/[id]',
+        params: { id: chatId },
+      });
     } catch (error) {
-      console.error(error);
+      console.error('Error creating group:', error);
       alert(t('groups.errorCreating'));
     } finally {
       setCreatingGroup(false);
     }
   };
 
-  const onSelectUser = (userId: string, value: boolean) => {
+  const onSelectUser = useCallback((userId: string, value: boolean) => {
     setSelectedUsers((prevSelectedUsers) => {
       if (value) {
         return [...prevSelectedUsers, userId];
@@ -99,14 +89,14 @@ const NewGroupScreen = () => {
         return prevSelectedUsers.filter((id) => id !== userId);
       }
     });
-  };
+  }, []);
 
   const sortedUsers = useMemo(
     () =>
       users.sort((a, b) => {
-        const nameA = a.name;
-        const nameB = b.name;
-        return nameA?.localeCompare(nameB!)!;
+        const nameA = `${a.firstName} ${a.lastName}`;
+        const nameB = `${b.firstName} ${b.lastName}`;
+        return nameA.localeCompare(nameB);
       }),
     [users]
   );
@@ -125,25 +115,37 @@ const NewGroupScreen = () => {
         label={t('groups.addMembers')}
         placeholder={t('groups.addMembersPlaceholder')}
         value={query}
-        onChangeText={(value) => handleUserSearch(value)}
+        onChangeText={(value) => setQuery(value)}
         autoCapitalize="none"
       />
-      {loadingContacts && (
+      {loadingUsers && (
         <View className="flex items-center justify-center py-4">
           <Spinner />
         </View>
       )}
-      {!loadingContacts && users.length > 0 && (
-        <View className="flex flex-col gap-2 mt-2 flex-1">
-          {sortedUsers.map((user) => (
+      {!loadingUsers && sortedUsers.length > 0 && (
+        <FlatList
+          data={sortedUsers}
+          keyExtractor={(item) => item.uid}
+          className="flex-1 mt-2"
+          contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
+          removeClippedSubviews={true}
+          initialNumToRender={10}
+          maxToRenderPerBatch={5}
+          windowSize={5}
+          renderItem={({ item: user }) => (
             <UserCheckbox
-              key={user.id}
-              user={user}
-              checked={selectedUsers.includes(user.id)}
-              onValueChange={(value) => onSelectUser(user.id, value)}
+              user={{
+                id: user.uid,
+                name: `${user.firstName} ${user.lastName}`,
+                username: user.username,
+                image: user.avatar,
+              } as any}
+              checked={selectedUsers.includes(user.uid)}
+              onValueChange={(value) => onSelectUser(user.uid, value)}
             />
-          ))}
-        </View>
+          )}
+        />
       )}
       <Button
         className="mt-auto flex-shrink-0"

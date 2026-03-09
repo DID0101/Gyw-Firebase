@@ -1,45 +1,39 @@
 import { Ionicons } from '@expo/vector-icons';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useCalls } from '@stream-io/video-react-native-sdk';
-import { Tabs, useRouter } from 'expo-router';
-import { useEffect } from 'react';
+import { Tabs } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
 import { HapticTab } from '@/components/HapticTab';
+import { useTheme } from '@/contexts/ThemeContext';
 
 const TabsLayout = () => {
-  const router = useRouter();
   const { t } = useTranslation();
-  const calls = useCalls().filter((call) => call.ringing);
+  const { colorScheme } = useTheme();
+  
+  const tabBarActiveTintColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
+  const tabBarInactiveTintColor = colorScheme === 'dark' ? '#9ca3af' : '#6b7280';
+  const tabBarBackgroundColor = colorScheme === 'dark' ? '#111827' : '#ffffff';
+  const tabBarBorderColor = colorScheme === 'dark' ? '#374151' : '#e5e7eb';
+  const headerTintColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
 
-  const ringingCall = calls[0];
-  const isCallCreatedByMe =
-    ringingCall?.state?.custom.triggeredBy === ringingCall?.currentUserId;
-
-  useEffect(() => {
-    if (isCallCreatedByMe) return;
-    if (ringingCall) {
-      router.navigate({
-        pathname: `/call/[id]`,
-        params: {
-          id: ringingCall.id,
-        },
-      });
-    }
-  }, [ringingCall, isCallCreatedByMe, router]);
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: 'black',
+        tabBarActiveTintColor,
+        tabBarInactiveTintColor,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: 'white',
-          borderTopColor: 'white',
+          backgroundColor: tabBarBackgroundColor,
+          borderTopColor: tabBarBorderColor,
         },
         headerTransparent: true,
         headerTitleAlign: 'center',
+        headerTintColor,
+        headerTitleStyle: {
+          color: headerTintColor,
+        },
       }}
     >
       <Tabs.Screen
@@ -57,6 +51,15 @@ const TabsLayout = () => {
           title: t('calls.title'),
           tabBarIcon: ({ color }) => (
             <FontAwesome name="phone" size={28} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="discover"
+        options={{
+          title: t('discover.title'),
+          tabBarIcon: ({ color }) => (
+            <MaterialIcons name="videocam" size={26} color={color} />
           ),
         }}
       />
