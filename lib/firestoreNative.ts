@@ -697,7 +697,7 @@ export async function updateCallStatusNative(
     status,
     updatedAt: rnFirestore.serverTimestamp(),
   };
-  if (status === 'ended' || status === 'missed' || status === 'rejected') {
+  if (status === 'ended' || status === 'missed' || status === 'rejected' || status === 'busy') {
     updateData.endedAt = rnFirestore.serverTimestamp();
   }
   if (duration !== undefined) updateData.duration = duration;

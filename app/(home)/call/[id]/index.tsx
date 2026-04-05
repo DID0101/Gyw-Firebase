@@ -5,6 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Alert, Platform, Pressable, Text, View } from 'react-native';
 import InCallManager from 'react-native-incall-manager';
 
+import { dismissCallKeepForCallId } from '@/lib/incomingCallInvite';
+import { startIncomingCallVibration, stopIncomingCallVibration } from '@/lib/incomingCallVibration';
+
 // Conditional import for react-native-webrtc (requires dev build)
 import { RTCPeerConnection, RTCView, isWebRTCAvailable } from '@/lib/webrtc-wrapper';
 
@@ -16,6 +19,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { app, functions, httpsCallable } from '@/lib/firebase';
 import { blockUser, reportUser } from '@/lib/services/blockReportService';
 import { getCall, subscribeToCall, updateCallReceiverReady, updateCallStatus, waitForReceiverReady } from '@/lib/services/callService';
+import { useCallSessionStore } from '@/store/callSessionStore';
 import { getUser } from '@/lib/services/chatService';
 import { webRTCService } from '@/lib/services/webrtcService';
 import { Call } from '@/lib/types/call';
@@ -58,6 +62,7 @@ const CallScreen = () => {
   const safeBack = (opts?: { disconnected?: boolean }) => {
     if (isNavigatingAwayRef.current) return;
     isNavigatingAwayRef.current = true;
+    void useCallSessionStore.getState().reset();
     const current = callStateRef.current;
     const isRandom = current?.isRandom === true;
     const path = isRandom
@@ -70,6 +75,37 @@ const CallScreen = () => {
   useEffect(() => {
     callStateRef.current = call;
   }, [call]);
+
+  // Incoming (non-random): system default ringtone + wake screen while callee sees ringing UI
+  useEffect(() => {
+    if (Platform.OS !== 'android' && Platform.OS !== 'ios') return;
+    const random = call?.isRandom === true;
+    const incomingRing = callStatus === 'ringing' && !isCaller && !random;
+    if (incomingRing) {
+      try {
+        InCallManager.pokeScreen(10_000);
+        InCallManager.startRingtone('_DEFAULT_', [0, 700, 400, 700]);
+        startIncomingCallVibration();
+      } catch {
+        /* ignore */
+      }
+    } else {
+      try {
+        InCallManager.stopRingtone();
+        stopIncomingCallVibration();
+      } catch {
+        /* ignore */
+      }
+    }
+    return () => {
+      try {
+        InCallManager.stopRingtone();
+        stopIncomingCallVibration();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [callStatus, isCaller, call?.isRandom]);
 
   useEffect(() => {
     if (!callId || !user) return;
@@ -118,7 +154,7 @@ const CallScreen = () => {
         // Set up missed call timeout (20-25s for random, 30s for regular)
         if (callData.status === 'ringing') {
           callRingStartTime.current = Date.now();
-          const timeoutMs = callData.isRandom ? 22000 : 30000; // 22s for random, 30s for regular
+          const timeoutMs = 60000; // 60s ringing; server also marks stale ringing as missed
           missedCallTimeoutRef.current = setTimeout(async () => {
             const currentCall = callStateRef.current;
             if (currentCall && currentCall.status === 'ringing') {
@@ -143,8 +179,8 @@ const CallScreen = () => {
 
         if (isOfferer) {
           await initializeWebRTC(callData, otherUserId, isOfferer, offererId, answererId);
-        } else {
-          // Answerer: setup signaling, PC, add tracks BEFORE signaling ready
+        } else if (isRandom) {
+          // Random match: connect media immediately (Omegle-style)
           webRTCService.setupSignaling(
             callId,
             user.uid,
@@ -157,16 +193,15 @@ const CallScreen = () => {
             handleIceFailure
           );
           await webRTCService.initializePeerConnection(callId);
-          if (isRandom) {
-            InCallManager.start({ media: callData.type === 'video' ? 'video' : 'audio' });
-            InCallManager.setSpeakerphoneOn(callData.type === 'video');
-            const stream = await webRTCService.requestLocalStream(callId, callData.type === 'video');
-            setLocalStream(stream);
-            await updateCallReceiverReady(callId);
-          }
+          InCallManager.start({ media: callData.type === 'video' ? 'video' : 'audio' });
+          InCallManager.setSpeakerphoneOn(callData.type === 'video');
+          const stream = await webRTCService.requestLocalStream(callId, callData.type === 'video');
+          setLocalStream(stream);
+          await updateCallReceiverReady(callId);
         }
+        // Regular callee: no signaling / peer connection until Accept (or ConnectionService answer → accept=1)
 
-        // User tapped Accept - auto-accept regular call
+        // System-level answer (CallKeep) — same as tapping Accept
         if (acceptParam === '1' && !isRandom && !isOfferer && callData.status === 'ringing') {
           await doAcceptCall(callData, otherUserData);
         }
@@ -193,6 +228,7 @@ const CallScreen = () => {
       setCall(callData);
       setCallStatus(callData.status as any);
       if (['ended', 'missed', 'rejected'].includes(callData.status)) {
+        if (__DEV__) console.log('[CallScreen] call ended remotely', { status: callData.status, callId });
         const strangerLeft = callData.isRandom && !weJustEndedRef.current;
         handleEndCall(callData, strangerLeft);
       }
@@ -202,6 +238,7 @@ const CallScreen = () => {
       unsubscribe();
       InCallManager.stop();
       webRTCService.cleanup(callId);
+      void useCallSessionStore.getState().reset();
       if (durationInterval.current) clearInterval(durationInterval.current);
       if (missedCallTimeoutRef.current) clearTimeout(missedCallTimeoutRef.current);
       if (remoteStreamIntervalRef.current) clearInterval(remoteStreamIntervalRef.current);
@@ -283,16 +320,55 @@ const CallScreen = () => {
     }
   };
 
-  const doAcceptCall = async (callData: Call, otherUserData: User | null) => {
+  const doAcceptCall = async (callData: Call, _otherUserData: User | null) => {
     if (!user) return;
     try {
       const isVideo = callData.type === 'video';
-      setIsSpeakerEnabled(isVideo);
-      InCallManager.start({ media: isVideo ? 'video' : 'audio' });
-      InCallManager.setSpeakerphoneOn(isVideo);
+      const otherUserId = callData.callerId === user.uid ? callData.receiverId : callData.callerId;
+      const isRegularCallee = !callData.isRandom && callData.receiverId === user.uid;
 
-      const stream = callData.isRandom ? webRTCService.getLocalStream() : await webRTCService.requestLocalStream(callId, isVideo);
-      if (stream) setLocalStream(stream);
+      setIsSpeakerEnabled(isVideo);
+      try {
+        InCallManager.stopRingtone();
+        stopIncomingCallVibration();
+      } catch {
+        /* ignore */
+      }
+
+      if (isRegularCallee) {
+        const handleIceFailure = () => {
+          if (iceFailureDetectedRef.current) return;
+          iceFailureDetectedRef.current = true;
+          Alert.alert(
+            t('call.connectionFailed'),
+            t('call.unableToConnect'),
+            [{ text: t('common.ok'), onPress: () => {
+              weJustEndedRef.current = true;
+              handleEndCall(undefined, false);
+            }}]
+          );
+        };
+        webRTCService.setupSignaling(
+          callId,
+          user.uid,
+          otherUserId,
+          false,
+          (remote) => setRemoteStream(remote),
+          handleIceFailure
+        );
+        await webRTCService.initializePeerConnection(callId);
+        InCallManager.start({ media: isVideo ? 'video' : 'audio' });
+        InCallManager.setSpeakerphoneOn(isVideo);
+        const stream = await webRTCService.requestLocalStream(callId, isVideo);
+        setLocalStream(stream);
+      } else {
+        InCallManager.start({ media: isVideo ? 'video' : 'audio' });
+        InCallManager.setSpeakerphoneOn(isVideo);
+        const stream = callData.isRandom
+          ? webRTCService.getLocalStream()
+          : await webRTCService.requestLocalStream(callId, isVideo);
+        if (stream) setLocalStream(stream);
+      }
 
       await updateCallStatus(callId, 'active');
       setCallStatus('active');
@@ -329,7 +405,9 @@ const CallScreen = () => {
     if (!currentCall) return;
     try {
       InCallManager.stop();
+      stopIncomingCallVibration();
       await updateCallStatus(callId, 'rejected', undefined, currentCall.chatId);
+      void dismissCallKeepForCallId(callId);
       const { sendSignalingMessage } = await import('@/lib/services/callService');
       await sendSignalingMessage(callId, user!.uid, currentCall.receiverId === user!.uid ? currentCall.callerId : currentCall.receiverId, 'hangup');
       webRTCService.cleanup(callId);
@@ -345,6 +423,8 @@ const CallScreen = () => {
     if (!currentCall) return;
     try {
       InCallManager.stop();
+      stopIncomingCallVibration();
+      void dismissCallKeepForCallId(callId);
       const duration = callStartTime.current > 0 ? Math.floor((Date.now() - callStartTime.current) / 1000) : 0;
       if (!['ended', 'missed', 'rejected'].includes(currentCall.status)) {
         await updateCallStatus(callId, 'ended', duration, currentCall.chatId);
@@ -475,7 +555,7 @@ const CallScreen = () => {
         </View>
       )}
 
-      {isVideoCall && localStream && RTCView && (callStatus === 'active' || callStatus === 'ringing') && (
+      {isVideoCall && localStream && RTCView && (callStatus === 'active' || (callStatus === 'ringing' && (isCaller || isRandom))) && (
         <View className="absolute top-16 right-4 w-32 h-48 rounded-lg overflow-hidden border-2 border-white" style={{ zIndex: 10 }}>
           <RTCView streamURL={localStream.toURL()} objectFit="cover" style={{ flex: 1 }} mirror zOrder={1} />
         </View>

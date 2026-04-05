@@ -5,6 +5,14 @@
       "queryScope": "COLLECTION",
       "fields": [
         {"fieldPath": "receiverId", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "receiverId", "order": "ASCENDING"},
         {"fieldPath": "status", "order": "ASCENDING"},
         {"fieldPath": "isRandom", "order": "ASCENDING"}
       ]

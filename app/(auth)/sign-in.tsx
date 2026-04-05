@@ -149,31 +149,18 @@ const SignInScreen = () => {
         errorMessage = 'Please ensure phone number includes country code (e.g., +1234567890)';
       } else if (error.code === 'auth/invalid-phone-number') {
         errorMessage = 'Invalid phone number format. Please use format: +1234567890';
-      } else if (error.code === 'auth/missing-client-identifier' || error.message?.includes('missing-client-identifier') || error.message?.includes('Play Integrity')) {
-        errorMessage = '🔐 App Verification Required for Real Phone Numbers\n\n' +
-          '⚠️ CRITICAL: Your google-services.json is MISSING SHA-1 fingerprint data!\n\n' +
-          'The file shows: "oauth_client": [] (EMPTY)\n' +
-          'It MUST contain: "oauth_client": [{...}] (with SHA-1 data)\n\n' +
-          '📋 YOUR SHA-1 FINGERPRINT:\n' +
-          '5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25\n\n' +
-          '✅ FIX STEPS (DO ALL OF THESE):\n\n' +
-          '1. Go to Firebase Console:\n' +
-          '   https://console.firebase.google.com/project/gyw1-146d7/settings/general\n\n' +
-          '2. Scroll to "Your apps" → Find "com.gyw1.chat" (Android)\n\n' +
-          '3. Click "Add fingerprint"\n\n' +
-          '4. Paste SHA-1: 5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25\n\n' +
-          '5. Click "Save"\n\n' +
-          '6. ⚠️ WAIT 2-3 MINUTES for Firebase to process\n\n' +
-          '7. ⚠️ DOWNLOAD A NEW google-services.json:\n' +
-          '   - Click "Download google-services.json" button\n' +
-          '   - Open the downloaded file\n' +
-          '   - Verify it has "oauth_client": [{...}] (NOT empty [])\n\n' +
-          '8. Replace google-services.json in project root\n\n' +
-          '9. REBUILD THE APP (required!):\n' +
-          '   npx expo prebuild --clean\n' +
-          '   npx expo run:android\n\n' +
-          '⏱️  Wait 5-10 minutes after rebuild for changes to propagate.\n\n' +
-          '📱 After rebuild, real phone numbers will work!';
+      } else if (
+        error.code === 'auth/missing-client-identifier' ||
+        error.message?.includes('missing-client-identifier') ||
+        error.message?.includes('Play Integrity')
+      ) {
+        errorMessage =
+          '🔐 App verification failed for this phone number.\n\n' +
+          'Firebase could not verify your device with Google Play Integrity / reCAPTCHA, so real phone numbers are temporarily blocked.\n\n' +
+          '✅ What you can do:\n' +
+          '• Use a Firebase test phone number (no SMS, always works).\n' +
+          '• Or try again later / on a different device or network.\n\n' +
+          'This is a Google verification restriction, not an app configuration issue.';
       } else if (error.code === 'auth/too-many-requests' || error.message?.includes('too-many-requests') || error.message?.includes('blocked all requests')) {
         errorMessage = '⚠️ Rate Limit: Firebase has blocked requests from this device/IP.\n\n' +
           'This can persist for 24-48 hours after too many attempts.\n\n' +

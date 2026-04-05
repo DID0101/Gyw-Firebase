@@ -13,7 +13,7 @@
       "bundleIdentifier": "com.tropicolx.signal-clone",
       "bitcode": false,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "remote-notification", "voip"],
+        "UIBackgroundModes": ["audio", "voip", "fetch", "remote-notification"],
         "NSMicrophoneUsageDescription": "$(PRODUCT_NAME) needs microphone access for voice and video calls.",
         "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls."
       }
@@ -39,11 +39,15 @@
         "android.permission.CAMERA",
         "android.permission.INTERNET",
         "android.permission.SYSTEM_ALERT_WINDOW",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-        "android.permission.FOREGROUND_SERVICE_CAMERA"
+        "android.permission.FOREGROUND_SERVICE_CAMERA",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.READ_PHONE_NUMBERS",
+        "android.permission.CALL_PHONE"
       ],
       "package": "com.gyw1.chat",
       "versionCode": 2,
@@ -96,12 +100,16 @@
       [
         "expo-build-properties",
         {
+          "ios": { "useFrameworks": "static" },
           "android": {
             "minSdkVersion": 24,
             "enableProguardInReleaseBuilds": true
           }
         }
       ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "@react-native-firebase/messaging",
       [
         "@config-plugins/react-native-webrtc",
         {
@@ -109,38 +117,12 @@
           "microphonePermission": "$(PRODUCT_NAME) requires microphone access in order to capture and transmit audio"
         }
       ],
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/images/icon.png",
-          "color": "#ffffff",
-          "sounds": ["./assets/sounds/ringtone.wav"],
-          "mode": "production"
-        }
-      ],
-      "@react-native-firebase/app",
-      "@react-native-firebase/auth",
-      "@react-native-firebase/messaging",
       "expo-web-browser",
-      [
-        "@config-plugins/react-native-callkeep",
-        {
-          "ios": {
-            "appName": "GYW"
-          },
-          "android": {
-            "alertTitle": "In-app calls",
-            "alertDescription": "This app needs permission to show in-app voice and video call UI only (not regular phone calls).",
-            "cancelButton": "Cancel",
-            "okButton": "OK",
-            "foregroundService": {
-              "channelId": "incoming_calls",
-              "channelName": "Incoming Calls"
-            }
-          }
-        }
-      ],
-      "./plugins/android-manifest-merger-fix.js"
+      "./plugins/android-notifee-maven.js",
+      "@config-plugins/react-native-callkeep",
+      "./plugins/android-manifest-merger-fix.js",
+      "./plugins/android-incoming-call-ui.js",
+      "./plugins/withAndroidCallService.js"
     ],
     "experiments": {
       "typedRoutes": true

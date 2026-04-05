@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx expo:*)",
+      "Bash(adb shell:*)",
+      "Bash(xargs grep:*)",
+      "Bash(npm run:*)",
+      "Bash(firebase deploy:*)",
+      "Bash(FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions)",
+      "Bash(adb logcat:*)",
+      "Bash(./gradlew assembleDebug)"
+    ]
+  }
+}

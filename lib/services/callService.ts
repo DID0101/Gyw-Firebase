@@ -145,7 +145,7 @@ export const updateCallStatus = async (
     updatedAt: serverTimestamp(),
   };
 
-  if (status === 'ended' || status === 'missed' || status === 'rejected') {
+  if (status === 'ended' || status === 'missed' || status === 'rejected' || status === 'busy') {
     updateData.endedAt = serverTimestamp();
   }
 

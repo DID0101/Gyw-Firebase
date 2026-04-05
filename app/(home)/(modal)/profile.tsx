@@ -1,13 +1,13 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import clsx from 'clsx';
 import { ImagePickerAsset } from 'expo-image-picker';
 import { useRouter } from 'expo-router';
+import { deleteUser, updateProfile as updateFirebaseProfile } from 'firebase/auth';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Platform, Text, View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { updateProfile as updateFirebaseProfile, deleteUser } from 'firebase/auth';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import Button from '@/components/Button';
@@ -17,10 +17,10 @@ import TextField from '@/components/TextField';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/contexts/AuthContext';
 import useUserForm from '@/hooks/useUserForm';
-import { useThemeClassName } from '@/lib/themeUtils';
 import { db, storage } from '@/lib/firebase';
 import { getUserDocNative, hasNativeFirestore, updateUserDocNative } from '@/lib/firestoreNative';
 import { getRnAuth, getRnStorage } from '@/lib/rnFirebase';
+import { useThemeClassName } from '@/lib/themeUtils';
 import { getError } from '@/lib/utils';
 
 const ProfileScreen = () => {
@@ -311,6 +311,17 @@ const ProfileScreen = () => {
         <View className="flex-row items-center justify-center gap-2 mt-2">
           <ThemeToggle variant="profile" />
         </View>
+        {Platform.OS === 'android' && (
+          <Button
+            variant="text"
+            className="mt-2"
+            onPress={() =>
+              router.push({ pathname: '/(home)/(modal)/fcm-diagnostics' } as never)
+            }
+          >
+            <Text style={{ color: '#337E84', textAlign: 'center' }}>FCM & incoming call diagnostics</Text>
+          </Button>
+        )}
       </View>
       <View className="gap-3">
         <TextField

@@ -398,8 +398,8 @@ const ChatScreen = () => {
               await sendMediaMessage(
                 chatId,
                 user.uid,
-                user.displayName || user.phoneNumber || 'User',
-                user.photoURL || undefined,
+                user?.displayName || user?.phoneNumber || 'User',
+                user?.photoURL || undefined,
                 pendingMediaData.uri,
                 mediaType
               );
@@ -431,8 +431,8 @@ const ChatScreen = () => {
       id: tempId,
       chatId,
       senderId: user.uid,
-      senderName: user.displayName || user.phoneNumber || 'User',
-      senderAvatar: user.photoURL,
+      senderName: user?.displayName || user?.phoneNumber || 'User',
+      senderAvatar: user?.photoURL,
       text,
       type: 'text',
       createdAt: now,
@@ -455,8 +455,8 @@ const ChatScreen = () => {
       const messageId = await sendMessage(
         chatId,
         user.uid,
-        user.displayName || user.phoneNumber || 'User',
-        user.photoURL || undefined,
+        user?.displayName || user?.phoneNumber || 'User',
+        user?.photoURL || undefined,
         text,
         replyingTo ? {
           messageId: replyingTo.id,
@@ -506,8 +506,8 @@ const ChatScreen = () => {
       const messageId = await sendMessage(
         chatId,
         user.uid,
-        user.displayName || user.phoneNumber || 'User',
-        user.photoURL || undefined,
+        user?.displayName || user?.phoneNumber || 'User',
+        user?.photoURL || undefined,
         message.text,
         message.replyTo ? {
           messageId: message.replyTo.messageId,
@@ -747,8 +747,8 @@ const ChatScreen = () => {
           await sendMediaMessage(
             chatId,
             user.uid,
-            user.displayName || user.phoneNumber || 'User',
-            user.photoURL || undefined,
+            user?.displayName || user?.phoneNumber || 'User',
+            user?.photoURL || undefined,
             uri,
             'audio',
             undefined,
@@ -802,8 +802,8 @@ const ChatScreen = () => {
           await sendMediaMessage(
             chatId,
             user.uid,
-            user.displayName || user.phoneNumber || 'User',
-            user.photoURL || undefined,
+            user?.displayName || user?.phoneNumber || 'User',
+            user?.photoURL || undefined,
             result.assets[0].uri,
             'image',
             undefined,
@@ -851,8 +851,8 @@ const ChatScreen = () => {
           await sendMediaMessage(
             chatId,
             user.uid,
-            user.displayName || user.phoneNumber || 'User',
-            user.photoURL || undefined,
+            user?.displayName || user?.phoneNumber || 'User',
+            user?.photoURL || undefined,
             result.assets[0].uri,
             'video',
             undefined,
@@ -899,8 +899,8 @@ const ChatScreen = () => {
           await sendMediaMessage(
             chatId,
             user.uid,
-            user.displayName || user.phoneNumber || 'User',
-            user.photoURL || undefined,
+            user?.displayName || user?.phoneNumber || 'User',
+            user?.photoURL || undefined,
             result.assets[0].uri,
             'image',
             undefined,

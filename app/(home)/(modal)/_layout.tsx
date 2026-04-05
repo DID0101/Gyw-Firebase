@@ -158,6 +158,38 @@ const ModalLayout = () => {
           presentation: 'fullScreenModal',
         }}
       />
+      <Stack.Screen
+        name="fcm-diagnostics"
+        options={{
+          title: 'FCM diagnostics',
+          headerLeft: () => (
+            <Button
+              variant="plain"
+              onPress={() => router.dismiss()}
+              className="px-2"
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Feather name="chevron-left" size={32} color={iconColor} />
+            </Button>
+          ),
+        }}
+      />
+      <Stack.Screen
+        name="debug-fcm"
+        options={{
+          title: 'FCM delivery debug',
+          headerLeft: () => (
+            <Button
+              variant="plain"
+              onPress={() => router.dismiss()}
+              className="px-2"
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Feather name="chevron-left" size={32} color={iconColor} />
+            </Button>
+          ),
+        }}
+      />
     </Stack>
   );
 };

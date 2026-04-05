@@ -3,7 +3,7 @@ export interface Call {
   callerId: string;
   receiverId: string;
   type: 'audio' | 'video';
-  status: 'ringing' | 'active' | 'ended' | 'missed' | 'rejected';
+  status: 'ringing' | 'active' | 'ended' | 'missed' | 'rejected' | 'busy';
   createdAt: string;
   endedAt?: string;
   duration?: number; // Duration in seconds
@@ -21,5 +21,24 @@ export interface CallSignaling {
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   timestamp: string;
+}
+
+/** Incoming call UI payload (caller info for future incoming UI). */
+export interface CallData {
+  id: string;
+  callerId: string;
+  receiverId: string;
+  callerName: string;
+  avatarUrl?: string;
+  type: 'audio' | 'video';
+  chatId?: string;
+  isRandom?: boolean;
+}
+
+/** Actions exposed to incoming call UI. */
+export interface CallActions {
+  accept: () => Promise<void>;
+  reject: () => Promise<void>;
+  mute?: () => void;
 }
 

@@ -1,9 +1,15 @@
 import { User, onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { createContext, useContext, useEffect, useState, useMemo, useCallback, ReactNode } from 'react';
-import { Platform } from 'react-native';
+import { AppState, type AppStateStatus, Platform } from 'react-native';
+import { clearLastKnownAuthUid, persistLastKnownAuthUid } from '@/lib/authLastKnownUid';
+import {
+  refreshFcmTokenOnAppForeground,
+  removeCurrentFcmTokenDoc,
+  setupFcmTokenForUser,
+} from '@/lib/fcmTokenService';
 import { auth } from '@/lib/firebase';
-import { clearPushToken } from '@/lib/pushTokenService';
 import { getRnAuth, hasRnFirebase } from '@/lib/rnFirebase';
+import { useCallSessionStore } from '@/store/callSessionStore';
 
 interface AuthContextType {
   user: User | null;
@@ -45,6 +51,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const unsubscribe = onAuthStateChanged(auth, (u) => {
         setUser(u);
         setLoading(false);
+        if (u?.uid) void persistLastKnownAuthUid(u.uid);
+        else void clearLastKnownAuthUid();
       });
       return () => unsubscribe();
     }
@@ -59,13 +67,32 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const unsubscribe = rnOnAuthStateChanged(rnAuth, (u: any) => {
       setUser(toWebUser(u));
       setLoading(false);
+      if (u?.uid) void persistLastKnownAuthUid(u.uid);
+      else void clearLastKnownAuthUid();
     });
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS === 'web' || loading || !user?.uid) return;
+    const stop = setupFcmTokenForUser(user.uid);
+    return () => stop();
+  }, [user?.uid, loading]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || loading || !user?.uid) return;
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') void refreshFcmTokenOnAppForeground(user.uid);
+    });
+    return () => sub.remove();
+  }, [user?.uid, loading]);
+
   const signOut = useCallback(async () => {
     const uid = user?.uid;
-    if (uid) await clearPushToken(uid).catch(() => {});
+    if (uid && Platform.OS !== 'web') {
+      await removeCurrentFcmTokenDoc(uid);
+    }
+    await useCallSessionStore.getState().reset().catch(() => {});
     if (Platform.OS === 'web' || !hasRnFirebase) {
       await firebaseSignOut(auth);
       return;

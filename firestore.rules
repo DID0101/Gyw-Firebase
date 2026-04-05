@@ -13,6 +13,10 @@ service cloud.firestore {
       
       // Allow delete if authenticated user matches the document ID
       allow delete: if request.auth != null && request.auth.uid == userId;
+
+      match /fcmTokens/{tokenId} {
+        allow read, write, delete: if request.auth != null && request.auth.uid == userId;
+      }
     }
     
     match /chats/{chatId} {

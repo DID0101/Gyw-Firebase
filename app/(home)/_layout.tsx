@@ -1,15 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, usePathname, useRouter } from 'expo-router';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { AppState, AppStateStatus, Platform } from 'react-native';
 
 import ScreenLoading from '@/components/ScreenLoading';
 import { useAuth } from '@/contexts/AuthContext';
-import { useTheme } from '@/contexts/ThemeContext';
 import { db } from '@/lib/firebase';
+import { subscribeIncomingRingingCalls } from '@/lib/incomingCallFirestoreListener';
 import { loadFromStorage, preloadAppData } from '@/lib/services/preloadService';
-import { registerPushToken } from '@/lib/pushTokenService';
 
 // RN Firebase Firestore (single app from rnFirebase)
 import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
@@ -22,26 +21,26 @@ if (Platform.OS !== 'web') {
 }
 const useNativeFirestore = hasRnFirebase && !!rnFirestoreMod;
 
-
 const HomeLayout = () => {
   const router = useRouter();
+  const pathname = usePathname();
+  const pathnameRef = useRef<string>('');
+  pathnameRef.current = pathname ?? '';
+
   const { user, loading: authLoading } = useAuth();
-  const { isDark } = useTheme();
   const [setupComplete, setSetupComplete] = useState(false);
-  const routerRef = useRef(router);
-  routerRef.current = router;
-  
+
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const hasNavigatedToSignIn = useRef(false);
   const isNavigatingRef = useRef(false);
   const setupDoneForUidRef = useRef<string | null>(null);
 
-  // 1. Initial User Setup
+  // 1. Initial user setup
   useEffect(() => {
-    if (authLoading) return; // Wait for auth to load
-    
+    if (authLoading) return;
+
     if (!user?.uid) {
       setupDoneForUidRef.current = null;
-      // Only navigate once to prevent infinite loops
       if (!hasNavigatedToSignIn.current && !isNavigatingRef.current) {
         hasNavigatedToSignIn.current = true;
         isNavigatingRef.current = true;
@@ -54,11 +53,10 @@ const HomeLayout = () => {
       }
       return;
     }
-    
+
     hasNavigatedToSignIn.current = false;
     isNavigatingRef.current = false;
 
-    // Run setup only once per uid to avoid re-triggering setState in a loop
     if (setupDoneForUidRef.current === user.uid) return;
     setupDoneForUidRef.current = user.uid;
 
@@ -67,23 +65,24 @@ const HomeLayout = () => {
         const pendingUsername = await AsyncStorage.getItem('pendingUsername');
         const pendingPhone = await AsyncStorage.getItem('pendingPhone');
 
-        let userDoc: { exists: () => boolean };
+        let exists = false;
         if (useNativeFirestore && rnFirestoreMod) {
           const rnDb = getRnFirestore();
           const userRef = rnFirestoreMod.doc(rnDb, 'users', user.uid);
           const snap = await rnFirestoreMod.getDoc(userRef);
-          userDoc = { exists: () => snap.exists };
+          exists = !!snap.exists;
         } else {
-          userDoc = await getDoc(doc(db, 'users', user.uid));
+          const snap = await getDoc(doc(db, 'users', user.uid));
+          exists = !!snap.exists;
         }
 
-        if (!userDoc.exists()) {
+        if (!exists) {
           const userData = {
             uid: user.uid,
-            firstName: user.displayName?.split(' ')[0] || '',
-            lastName: user.displayName?.split(' ').slice(1).join(' ') || '',
+            firstName: user?.displayName?.split(' ')[0] || '',
+            lastName: user?.displayName?.split(' ').slice(1).join(' ') || '',
             username: pendingUsername || '',
-            phoneNumber: pendingPhone || user.phoneNumber || '',
+            phoneNumber: pendingPhone || user?.phoneNumber || '',
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
@@ -112,35 +111,36 @@ const HomeLayout = () => {
       } catch (error) {
         if (__DEV__) console.error('Error setting up user:', error);
       } finally {
-        setSetupComplete((prev) => (prev ? prev : true));
+        setSetupComplete(true);
       }
     };
 
     setupUser();
-  }, [user?.uid, authLoading]);
+  }, [user?.uid, authLoading, router]);
 
-  // 1.1. Load from storage first (instant), then preload from Firestore
+  // 1.1 Load cached data + preload
   useEffect(() => {
     if (!user?.uid || !setupComplete) return;
-    
-    // Step 1: Load from AsyncStorage instantly (no network needed)
-    loadFromStorage().catch(() => {
-      // Silently fail - continue with empty cache
-    });
-    
-    // Step 2: Preload from Firestore in background (silent sync)
-    // This runs async and doesn't block UI
-    preloadAppData(user.uid).catch(() => {
-      // Silently fail - AsyncStorage data is already loaded
-    });
-
-    // Register FCM token for incoming call notifications
-    registerPushToken(user.uid).catch(() => {});
+    loadFromStorage().catch(() => {});
+    preloadAppData(user.uid).catch(() => {});
   }, [user?.uid, setupComplete]);
 
-  // 2. Presence Heartbeat
+  // 1.2 Incoming calls while app is foregrounded (FCM onMessage is easy to miss; Firestore is immediate)
   useEffect(() => {
-    if (!user) return;
+    if (!user?.uid || !setupComplete) return;
+
+    const unsub = subscribeIncomingRingingCalls(user.uid, (callId) => {
+      const p = pathnameRef.current;
+      if (p.includes(`/call/${callId}`)) return;
+      router.push({ pathname: '/(home)/call/[id]', params: { id: callId } } as never);
+    });
+
+    return () => unsub();
+  }, [user?.uid, setupComplete, router]);
+
+  // 2. Presence heartbeat
+  useEffect(() => {
+    if (!user?.uid) return;
 
     const updateLastActive = async () => {
       try {
@@ -155,10 +155,44 @@ const HomeLayout = () => {
         if (__DEV__) console.error('Error updating lastActive:', error);
       }
     };
-    
+
     updateLastActive();
     const interval = setInterval(updateLastActive, 2 * 60 * 1000);
     return () => clearInterval(interval);
+  }, [user?.uid]);
+
+  // 3. AppState listener to update presence
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      const wasActive = appStateRef.current === 'active';
+      const isActive = nextState === 'active';
+      appStateRef.current = nextState;
+
+      if (wasActive !== isActive) {
+        if (useNativeFirestore && rnFirestoreMod) {
+          const rnDb = getRnFirestore();
+          const userRef = rnFirestoreMod.doc(rnDb, 'users', user.uid);
+          rnFirestoreMod
+            .setDoc(
+              userRef,
+              { lastActive: rnFirestoreMod.serverTimestamp(), isOnline: isActive },
+              { merge: true }
+            )
+            .catch(() => {});
+        } else {
+          setDoc(
+            doc(db, 'users', user.uid),
+            { lastActive: serverTimestamp(), isOnline: isActive },
+            { merge: true }
+          ).catch(() => {});
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
   }, [user?.uid]);
 
   if (authLoading || (user && !setupComplete)) {
@@ -168,14 +202,21 @@ const HomeLayout = () => {
   if (!user) return null;
 
   return (
-    <Stack>
+    <Stack screenOptions={{ animation: 'none' }}>
       <Stack.Screen name="(modal)" options={{ presentation: 'modal', headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="incoming-call/[id]" options={{ headerShown: false, animation: 'none' }} />
-      <Stack.Screen name="call/[id]" options={{ headerShown: false, animation: 'none' }} />
+      <Stack.Screen
+        name="call/[id]"
+        options={{
+          headerShown: false,
+          animation: 'none',
+          gestureEnabled: false,
+        }}
+      />
     </Stack>
   );
 };
 
 export default HomeLayout;
+

@@ -25,23 +25,27 @@ interface ChatHeaderProps {
   creatingCall?: boolean;
 }
 
-const ChatHeader = memo<ChatHeaderProps>(({
-  chat,
-  otherUser,
-  isOnline,
-  lastSeenText,
-  displayName,
-  displayAvatar,
-  textColor,
-  textSecondaryColor,
-  borderColor,
-  iconColor,
-  isDark,
-  onBack,
-  onVideoCall,
-  onAudioCall,
-  creatingCall = false,
-}) => {
+const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) => {
+  // Some fast reload/navigation sequences can briefly pass undefined props through memo.
+  // Default to a safe object so we never crash while auth hydrates.
+  const {
+    chat,
+    otherUser,
+    isOnline,
+    lastSeenText,
+    displayName,
+    displayAvatar,
+    textColor,
+    textSecondaryColor,
+    borderColor,
+    iconColor,
+    isDark,
+    onBack,
+    onVideoCall,
+    onAudioCall,
+    creatingCall = false,
+  } = (props ?? ({} as any)) as ChatHeaderProps;
+
   return (
     <View className={clsx(
       'px-4 py-3 border-b',
@@ -90,19 +94,6 @@ const ChatHeader = memo<ChatHeaderProps>(({
         </View>
       </View>
     </View>
-  );
-}, (prevProps, nextProps) => {
-  // Only re-render if relevant props changed
-  return (
-    prevProps.chat?.id === nextProps.chat?.id &&
-    prevProps.chat?.type === nextProps.chat?.type &&
-    prevProps.chat?.participants.length === nextProps.chat?.participants.length &&
-    prevProps.isOnline === nextProps.isOnline &&
-    prevProps.lastSeenText === nextProps.lastSeenText &&
-    prevProps.displayName === nextProps.displayName &&
-    prevProps.displayAvatar === nextProps.displayAvatar &&
-    prevProps.isDark === nextProps.isDark &&
-    prevProps.creatingCall === nextProps.creatingCall
   );
 });
 

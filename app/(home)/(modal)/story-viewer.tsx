@@ -304,8 +304,8 @@ const StoryViewer = () => {
       await sendMessage(
         chatId,
         user.uid,
-        user.displayName || user.phoneNumber || 'User',
-        user.photoURL,
+        user?.displayName || user?.phoneNumber || 'User',
+        user?.photoURL,
         `${t('stories.replyToStory')} ${storyOwnerName}\n\n${replyText}`,
         {
           messageId: currentStory.id,
@@ -319,8 +319,8 @@ const StoryViewer = () => {
       await sendMediaMessage(
         chatId,
         user.uid,
-        user.displayName || user.phoneNumber || 'User',
-        user.photoURL,
+        user?.displayName || user?.phoneNumber || 'User',
+        user?.photoURL,
         currentStory.mediaUrl,
         currentStory.mediaType === 'video' ? 'video' : 'image'
       );

@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal, Pressable, Text, View } from 'react-native';
 
-import { useTheme } from '@/contexts/ThemeContext';
 import { changeLanguage } from '@/i18n/config';
 import { useThemeClassName } from '@/lib/themeUtils';
 import Button from './Button';
@@ -26,7 +25,12 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
   const { i18n, t } = useTranslation();
   const [modalVisible, setModalVisible] = useState(initialVisible);
   const [currentLanguage, setCurrentLanguage] = useState(i18n.language);
-  
+
+  // All theme hooks must run every render (Rules of Hooks — do not place inside variant branches).
+  const menuTextColor = useThemeClassName('text-gray-900', 'text-gray-100');
+  const iconBg = useThemeClassName('bg-gray-100', 'bg-gray-800');
+  const buttonTextColor = useThemeClassName('text-black', 'text-white');
+
   // Sync with external visibility control
   useEffect(() => {
     setModalVisible(initialVisible);
@@ -57,10 +61,6 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
   const currentLangName = languages.find((lang) => lang.code === currentLanguage)?.name || 'English';
 
   if (variant === 'menu') {
-    const { colorScheme } = useTheme();
-    const textColor = useThemeClassName('text-gray-900', 'text-gray-100');
-    const iconBg = useThemeClassName('bg-gray-100', 'bg-gray-800');
-    
     return (
       <>
         <Pressable
@@ -74,8 +74,8 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
             <Feather name="globe" size={18} color="#337E84" />
           </View>
           <View className="flex-1">
-            <Text className={clsx('text-[15px] font-medium', textColor)}>{t('settings.language')}</Text>
-            <Text className={clsx('text-xs opacity-60 mt-0.5', textColor)}>{currentLangName}</Text>
+            <Text className={clsx('text-[15px] font-medium', menuTextColor)}>{t('settings.language')}</Text>
+            <Text className={clsx('text-xs opacity-60 mt-0.5', menuTextColor)}>{currentLangName}</Text>
           </View>
         </Pressable>
         <Modal
@@ -122,8 +122,6 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
     );
   }
 
-  const buttonTextColor = useThemeClassName('text-black', 'text-white');
-  
   // If initialVisible is provided, we're being controlled externally - don't render the button
   if (initialVisible !== undefined) {
     return (

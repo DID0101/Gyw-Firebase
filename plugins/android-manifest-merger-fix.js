@@ -1,37 +1,76 @@
-/**
- * Expo config plugin: add tools:replace="android:resource" to the
- * com.google.firebase.messaging.default_notification_color meta-data
- * so the app's value wins over react-native-firebase_messaging's in the manifest merger.
- *
- * Required when both expo-notifications and @react-native-firebase/messaging
- * contribute the same meta-data key with different resource references.
- */
-const { withAndroidManifest, AndroidConfig } = require('@expo/config-plugins');
+// Ensures app's meta-data wins over @react-native-firebase/messaging during manifest merge.
+// Without this, Gradle can fail with:
+// Attribute meta-data#com.google.firebase.messaging.default_notification_color ... is also present at [:react-native-firebase_messaging]
 
-const META_DATA_NAME = 'com.google.firebase.messaging.default_notification_color';
+const { withAndroidManifest } = require('@expo/config-plugins');
 
-function withAndroidManifestMergerFix(config) {
-  return withAndroidManifest(config, (config) => {
-    const androidManifest = config.modResults;
-    if (!androidManifest?.manifest) return config;
+const META_NAME = 'com.google.firebase.messaging.default_notification_color';
 
-    AndroidConfig.Manifest.ensureToolsAvailable(androidManifest);
-
-    const manifestRoot = androidManifest.manifest;
-    const application = manifestRoot.application;
-    const applications = Array.isArray(application) ? application : application ? [application] : [];
-    for (const app of applications) {
-      const metaDataList = app['meta-data'];
-      const list = Array.isArray(metaDataList) ? metaDataList : metaDataList ? [metaDataList] : [];
-      for (const item of list) {
-        if (item?.$?.['android:name'] === META_DATA_NAME) {
-          item.$['tools:replace'] = 'android:resource';
-          break;
-        }
-      }
-    }
-    return config;
-  });
+function ensureArray(x) {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
 }
 
-module.exports = withAndroidManifestMergerFix;
+function setToolsReplace(metaData) {
+  metaData.$ = metaData.$ || {};
+  const existing = metaData.$['tools:replace'];
+  if (!existing) {
+    metaData.$['tools:replace'] = 'android:resource';
+    return;
+  }
+  const parts = String(existing)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.includes('android:resource')) {
+    parts.push('android:resource');
+    metaData.$['tools:replace'] = parts.join(',');
+  }
+}
+
+function patchFirebaseNotificationMetaInApplication(application) {
+  if (!application) return false;
+  const apps = ensureArray(application);
+  let changed = false;
+  for (const app of apps) {
+    const metaArrayRaw = app['meta-data'] ?? app['metaData'];
+    if (!metaArrayRaw) continue;
+    const normalized = ensureArray(metaArrayRaw);
+    app['meta-data'] = normalized;
+
+    const meta = normalized.find((m) => {
+      const attrs = m?.$ ?? {};
+      const direct = attrs['android:name'] ?? attrs['name'];
+      if (direct === META_NAME) return true;
+      return Object.entries(attrs).some(([k, v]) => k.endsWith(':name') && String(v) === META_NAME);
+    });
+
+    if (meta) {
+      setToolsReplace(meta);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+module.exports = function androidManifestMergerFix(config) {
+  return withAndroidManifest(config, (cfg) => {
+    const manifest = cfg.modResults;
+    // Parsed shape varies: full doc under .manifest or top-level application
+    const root = manifest?.manifest ?? manifest;
+    if (!root) return cfg;
+
+    const applications = root.application;
+    if (applications) {
+      patchFirebaseNotificationMetaInApplication(applications);
+      return cfg;
+    }
+
+    // Rare: application at top of modResults
+    if (manifest.application) {
+      patchFirebaseNotificationMetaInApplication(manifest.application);
+    }
+    return cfg;
+  });
+};
+
