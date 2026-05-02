@@ -1,0 +1,24 @@
+diff --git a/node_modules/expo-video-thumbnails/android/src/main/java/expo/modules/videothumbnails/VideoThumbnailsModule.kt b/node_modules/expo-video-thumbnails/android/src/main/java/expo/modules/videothumbnails/VideoThumbnailsModule.kt
+index 2c2d794..2a3d545 100644
+--- a/node_modules/expo-video-thumbnails/android/src/main/java/expo/modules/videothumbnails/VideoThumbnailsModule.kt
++++ b/node_modules/expo-video-thumbnails/android/src/main/java/expo/modules/videothumbnails/VideoThumbnailsModule.kt
+@@ -11,9 +11,9 @@ import expo.modules.core.utilities.FileUtilities
+ import expo.modules.kotlin.Promise
+ import expo.modules.kotlin.exception.CodedException
+ import expo.modules.kotlin.exception.Exceptions
++import expo.modules.interfaces.filesystem.Permission
+ import expo.modules.kotlin.modules.Module
+ import expo.modules.kotlin.modules.ModuleDefinition
+-import expo.modules.kotlin.services.FilePermissionService
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.cancel
+@@ -116,7 +116,7 @@ class VideoThumbnailsModule : Module() {
+     val permissionModuleInterface = appContext.filePermission
+       ?: throw FilePermissionsModuleNotFound()
+     return permissionModuleInterface.getPathPermissions(context, url)
+-      .contains(FilePermissionService.Permission.READ)
++      .contains(Permission.READ)
+   }
+ 
+   private inline fun withModuleScope(promise: Promise, crossinline block: () -> Unit) = moduleCoroutineScope.launch {
