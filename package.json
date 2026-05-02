@@ -4,10 +4,12 @@
   "version": "1.0.0",
   "scripts": {
     "postinstall": "patch-package && node scripts/fix-css-interop.js || exit 0",
-    "start": "expo start",
-    "start:clear": "expo start --clear",
+    "start": "expo start --lan",
+    "start:clear": "expo start --clear --lan",
+    "start:localhost": "expo start --localhost",
+    "start:tunnel": "expo start --tunnel",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo run:android",
+    "android": "node ./scripts/android-usb-reverse.cjs && expo run:android",
     "android:community": "cross-env EXPO_USE_COMMUNITY_AUTOLINKING=1 expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
@@ -15,14 +17,17 @@
     "build:android": "eas build --platform android --profile production",
     "submit:android": "eas submit --platform android --profile production --latest",
     "deploy:functions": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
-    "deploy:functions:onCallCreated": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:onCallCreated",
-    "deploy:functions:onCallUpdated": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:onCallUpdated"
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:e2e:ios": "detox test --configuration ios.sim.debug",
+    "test:e2e:android": "detox test --configuration android.emu.debug",
+    "test:e2e:build:ios": "detox build --configuration ios.sim.debug",
+    "test:e2e:build:android": "detox build --configuration android.emu.debug"
   },
   "dependencies": {
-    "@config-plugins/react-native-callkeep": "^12.0.0",
     "@config-plugins/react-native-webrtc": "^12.0.0",
     "@expo/vector-icons": "^14.1.0",
-    "@notifee/react-native": "^9.1.8",
     "@op-engineering/op-sqlite": "^14.1.2",
     "@react-native-async-storage/async-storage": "2.1.2",
     "@react-native-community/netinfo": "11.4.1",
@@ -45,6 +50,7 @@
     "expo-checkbox": "~4.1.4",
     "expo-clipboard": "~7.1.5",
     "expo-constants": "~17.1.6",
+    "expo-contacts": "~14.2.6",
     "expo-crypto": "~14.1.5",
     "expo-dev-client": "~5.2.4",
     "expo-device": "~7.1.4",
@@ -59,6 +65,7 @@
     "expo-linking": "~7.1.5",
     "expo-localization": "~16.1.6",
     "expo-media-library": "~17.1.7",
+    "expo-notifications": "~0.31.5",
     "expo-router": "~5.1.0",
     "expo-secure-store": "^14.2.3",
     "expo-sharing": "~13.1.5",
@@ -67,16 +74,18 @@
     "expo-symbols": "~0.4.5",
     "expo-system-ui": "~5.0.9",
     "expo-video": "~2.2.2",
+    "expo-video-thumbnails": "^55.0.14",
     "expo-web-browser": "~14.2.0",
     "firebase": "^11.10.0",
     "firebase-functions": "^7.2.2",
     "i18next": "^25.7.3",
+    "libphonenumber-js": "^1.12.41",
     "nativewind": "^4.1.23",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "react-i18next": "^16.5.0",
     "react-native": "0.79.6",
-    "react-native-callkeep": "^4.3.16",
+    "react-native-callkeep": "^4.3.12",
     "react-native-css-interop": "^0.2.1",
     "react-native-gesture-handler": "~2.24.0",
     "react-native-incall-manager": "^4.2.1",
@@ -89,6 +98,13 @@
     "react-native-webview": "13.13.5",
     "react-native-worklets-core": "^1.6.2",
     "zustand": "^5.0.10"
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": ["expo-video-thumbnails"]
+      }
+    }
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
