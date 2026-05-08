@@ -6,9 +6,17 @@ export interface ChatMessage {
   senderId: string;
   senderName: string;
   senderAvatar?: string;
+  /** True for messages authored by Gyw AI. */
+  isAI?: boolean;
+  /** Optional UI hint when an AI request failed. */
+  aiError?: string;
   text?: string;
   imageUrl?: string;
+  imageWidth?: number;   // pixels — stored at upload time, used to preserve aspect ratio
+  imageHeight?: number;  // pixels — avoids FlatList layout-measurement round-trip
+  blurhash?: string;     // compact perceptual hash — shown as placeholder while image loads
   videoUrl?: string;
+  videoThumbnailUrl?: string; // static frame URL — shown instead of broken video-as-image hack
   fileUrl?: string;
   fileName?: string;
   audioUrl?: string;

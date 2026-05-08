@@ -7,47 +7,33 @@ interface MessageStatusIndicatorProps {
   size?: number;
 }
 
-const MessageStatusIndicator = ({ status, size = 14 }: MessageStatusIndicatorProps) => {
-  const iconColor = 'rgba(255, 255, 255, 0.7)';
-  
+const TICK_COLOR = 'rgba(255,255,255,0.65)';
+const READ_TICK_COLOR = '#7dd3fc';
+
+const DoubleTick = ({ size, color }: { size: number; color: string }) => (
+  <View style={{ width: Math.ceil(size * 1.75), height: size }}>
+    <Feather name="check" size={size} color={color} style={{ position: 'absolute', left: 0 }} />
+    <Feather name="check" size={size} color={color} style={{ position: 'absolute', left: Math.ceil(size * 0.65) }} />
+  </View>
+);
+
+const MessageStatusIndicator = ({ status, size = 13 }: MessageStatusIndicatorProps) => {
   if (!status || status === 'pending') {
-    return (
-      <View>
-        <Feather name="clock" size={size} color={iconColor} />
-      </View>
-    );
+    return <Feather name="clock" size={size} color={TICK_COLOR} />;
   }
-  
+  if (status === 'failed') {
+    return <Feather name="alert-circle" size={size} color="#ef4444" />;
+  }
+  // sent — on server (single tick)
   if (status === 'sent') {
-    return (
-      <View>
-        <Feather name="check" size={size} color={iconColor} />
-      </View>
-    );
+    return <Feather name="check" size={size} color={TICK_COLOR} />;
   }
-  
+  // delivered — two ticks (recipient device has the message)
   if (status === 'delivered') {
-    // Double check (grey) for delivered
-    return (
-      <View style={{ flexDirection: 'row', marginLeft: -4 }}>
-        <Feather name="check" size={size} color="rgba(255, 255, 255, 0.7)" style={{ marginRight: -4 }} />
-        <Feather name="check" size={size} color="rgba(255, 255, 255, 0.7)" />
-      </View>
-    );
+    return <DoubleTick size={size} color={TICK_COLOR} />;
   }
-  
-  if (status === 'seen') {
-    // Double check (blue) for seen
-    return (
-      <View style={{ flexDirection: 'row', marginLeft: -4 }}>
-        <Feather name="check" size={size} color="#4FC3F7" style={{ marginRight: -4 }} />
-        <Feather name="check" size={size} color="#4FC3F7" />
-      </View>
-    );
-  }
-  
-  return null;
+  // seen — two ticks, read receipt color
+  return <DoubleTick size={size} color={READ_TICK_COLOR} />;
 };
 
 export default MessageStatusIndicator;
-

@@ -46,7 +46,7 @@ export const useMessages = (chatId: string, pageSize: number = 50) => {
         
         // Store messages in reverse order (oldest first) - update store, not state
         const reversedMessages = messagesData.reverse();
-        setMessages(chatId, reversedMessages);
+        setMessages(chatId, reversedMessages, false);
         
         if (snapshot.docs.length > 0) {
           lastMessageRef.current = snapshot.docs[snapshot.docs.length - 1];

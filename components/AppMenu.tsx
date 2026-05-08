@@ -87,7 +87,7 @@ const AppMenu = () => {
               onPress={goToProfile}
             >
               <View className={clsx('w-9 h-9 rounded-full items-center justify-center', iconBg)}>
-                <Feather name="user" size={18} color="#337E84" />
+                <Feather name="user" size={18} color="#FF5722" />
               </View>
               <Text className={clsx('flex-1 text-[15px] font-medium', textColor)}>{t('profile.title')}</Text>
             </Pressable>

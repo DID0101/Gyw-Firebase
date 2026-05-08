@@ -1,0 +1,52 @@
+diff --git a/node_modules/@react-native-firebase/auth/android/src/main/java/io/invertase/firebase/auth/ReactNativeFirebaseAuthModule.java b/node_modules/@react-native-firebase/auth/android/src/main/java/io/invertase/firebase/auth/ReactNativeFirebaseAuthModule.java
+index e22c8ea..131ffb9 100644
+--- a/node_modules/@react-native-firebase/auth/android/src/main/java/io/invertase/firebase/auth/ReactNativeFirebaseAuthModule.java
++++ b/node_modules/@react-native-firebase/auth/android/src/main/java/io/invertase/firebase/auth/ReactNativeFirebaseAuthModule.java
+@@ -1101,14 +1101,18 @@ class ReactNativeFirebaseAuthModule extends ReactNativeFirebaseModule {
+         };
+ 
+     if (activity != null) {
++      // PhoneAuthOptions-based verifyPhoneNumber is required so FirebaseAuthSettings
++      // (e.g. forceRecaptchaFlowForTesting) applies; deprecated overloads skip it → missing-client-identifier.
++      PhoneAuthOptions.Builder phoneAuthOptionsBuilder =
++          PhoneAuthOptions.newBuilder(firebaseAuth)
++              .setPhoneNumber(phoneNumber)
++              .setTimeout(60L, TimeUnit.SECONDS)
++              .setActivity(activity)
++              .setCallbacks(callbacks);
+       if (forceResend && mForceResendingToken != null) {
+-        PhoneAuthProvider.getInstance(firebaseAuth)
+-            .verifyPhoneNumber(
+-                phoneNumber, 60, TimeUnit.SECONDS, activity, callbacks, mForceResendingToken);
+-      } else {
+-        PhoneAuthProvider.getInstance(firebaseAuth)
+-            .verifyPhoneNumber(phoneNumber, 60, TimeUnit.SECONDS, activity, callbacks);
++        phoneAuthOptionsBuilder.setForceResendingToken(mForceResendingToken);
+       }
++      PhoneAuthProvider.verifyPhoneNumber(phoneAuthOptionsBuilder.build());
+     }
+   }
+ 
+@@ -1622,14 +1626,16 @@ class ReactNativeFirebaseAuthModule extends ReactNativeFirebaseModule {
+         };
+ 
+     if (activity != null) {
++      PhoneAuthOptions.Builder phoneAuthOptionsBuilder =
++          PhoneAuthOptions.newBuilder(firebaseAuth)
++              .setPhoneNumber(phoneNumber)
++              .setTimeout((long) timeout, TimeUnit.SECONDS)
++              .setActivity(activity)
++              .setCallbacks(callbacks);
+       if (forceResend && mForceResendingToken != null) {
+-        PhoneAuthProvider.getInstance(firebaseAuth)
+-            .verifyPhoneNumber(
+-                phoneNumber, timeout, TimeUnit.SECONDS, activity, callbacks, mForceResendingToken);
+-      } else {
+-        PhoneAuthProvider.getInstance(firebaseAuth)
+-            .verifyPhoneNumber(phoneNumber, timeout, TimeUnit.SECONDS, activity, callbacks);
++        phoneAuthOptionsBuilder.setForceResendingToken(mForceResendingToken);
+       }
++      PhoneAuthProvider.verifyPhoneNumber(phoneAuthOptionsBuilder.build());
+     }
+   }
+ 

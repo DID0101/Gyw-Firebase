@@ -15,6 +15,26 @@ const KEYS = {
   LAST_SYNC: 'lastSync',
 } as const;
 
+const CHATS_SAVE_DEBOUNCE_MS = 900;
+const MESSAGES_SAVE_DEBOUNCE_MS = 750;
+
+let chatsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let chatsSavePending: Chat[] | null = null;
+
+const messageSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const messageSavePending = new Map<string, ChatMessage[]>();
+
+export function cancelDebouncedPersistence(): void {
+  if (chatsSaveTimer != null) {
+    clearTimeout(chatsSaveTimer);
+    chatsSaveTimer = null;
+  }
+  chatsSavePending = null;
+  messageSaveTimers.forEach((timer) => clearTimeout(timer));
+  messageSaveTimers.clear();
+  messageSavePending.clear();
+}
+
 /**
  * Persistence layer for Zustand stores
  * Saves data to MMKV for instant loading on app restart
@@ -139,10 +159,35 @@ export const persistence = {
   // Clear all persisted data
   clearAll: async () => {
     try {
+      cancelDebouncedPersistence();
       await storage.multiRemove([KEYS.CHATS, KEYS.MESSAGES, KEYS.CALLS, KEYS.STORIES, KEYS.LAST_SYNC]);
     } catch (error) {
       if (__DEV__) console.error('Error clearing AsyncStorage:', error);
     }
   },
 };
+
+/** Coalesce rapid Firestore updates into occasional AsyncStorage writes. */
+export function queueSaveChats(chats: Chat[]): void {
+  chatsSavePending = chats;
+  if (chatsSaveTimer != null) return;
+  chatsSaveTimer = setTimeout(() => {
+    chatsSaveTimer = null;
+    const snap = chatsSavePending;
+    chatsSavePending = null;
+    if (snap) void persistence.saveChats(snap);
+  }, CHATS_SAVE_DEBOUNCE_MS);
+}
+
+export function queueSaveMessages(chatId: string, messages: ChatMessage[]): void {
+  messageSavePending.set(chatId, messages);
+  if (messageSaveTimers.has(chatId)) return;
+  const t = setTimeout(() => {
+    messageSaveTimers.delete(chatId);
+    const latest = messageSavePending.get(chatId);
+    messageSavePending.delete(chatId);
+    if (latest) void persistence.saveMessages(chatId, latest);
+  }, MESSAGES_SAVE_DEBOUNCE_MS);
+  messageSaveTimers.set(chatId, t);
+}
 

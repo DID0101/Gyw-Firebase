@@ -51,8 +51,8 @@ const StoryViewer = () => {
   const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState(0);
   const [preloadedNextStory, setPreloadedNextStory] = useState<Story | null>(null);
-  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pauseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextStoryImageRef = useRef<string | null>(null);
   const currentVideoUriRef = useRef<string>('');
   
@@ -98,11 +98,11 @@ const StoryViewer = () => {
   // Mark story as viewed
   useEffect(() => {
     if (currentStory && user?.uid) {
-      viewStory(currentStory.id, user.uid).catch(() => {
-        // Silently fail
+      viewStory(currentStory.id, user.uid).catch((err) => {
+        if (__DEV__) console.warn('[StoryViewer] viewStory failed:', err);
       });
     }
-  }, [currentStory, user?.uid]);
+  }, [currentStory?.id, user?.uid]);
 
   // Update like status
   useEffect(() => {
@@ -153,7 +153,7 @@ const StoryViewer = () => {
               }
             }
           }).catch((error) => {
-            // Silently handle errors
+            if (__DEV__) console.warn('[StoryViewer] Video replaceAsync failed:', error);
           });
         }
       }, 300);
@@ -305,7 +305,7 @@ const StoryViewer = () => {
         chatId,
         user.uid,
         user?.displayName || user?.phoneNumber || 'User',
-        user?.photoURL,
+        user?.photoURL ?? undefined,
         `${t('stories.replyToStory')} ${storyOwnerName}\n\n${replyText}`,
         {
           messageId: currentStory.id,
@@ -320,7 +320,7 @@ const StoryViewer = () => {
         chatId,
         user.uid,
         user?.displayName || user?.phoneNumber || 'User',
-        user?.photoURL,
+        user?.photoURL ?? undefined,
         currentStory.mediaUrl,
         currentStory.mediaType === 'video' ? 'video' : 'image'
       );
@@ -372,8 +372,8 @@ const StoryViewer = () => {
   const storyOwnerId = currentStory?.userId || userId || '';
   const { usersData } = useUsersData(storyOwnerId ? [storyOwnerId] : []);
   const storyOwner = storyOwnerId ? usersData[storyOwnerId] : null;
-  const storyOwnerName = storyOwner 
-    ? `${storyOwner.firstName} ${storyOwner.lastName}`.trim() 
+  const storyOwnerName = storyOwner
+    ? (`${storyOwner.firstName ?? ''} ${storyOwner.lastName ?? ''}`).trim() || storyOwner.username || 'Unknown'
     : 'Unknown';
   const storyOwnerImage = storyOwner?.avatar;
 
@@ -547,7 +547,7 @@ const StoryViewer = () => {
               </Button>
               <Button
                 variant="plain"
-                className="flex-1 bg-[#337E84] rounded-xl py-3"
+                className="flex-1 bg-[#FF5722] rounded-xl py-3"
                 onPress={handleReply}
                 disabled={loading || !replyText.trim()}
               >

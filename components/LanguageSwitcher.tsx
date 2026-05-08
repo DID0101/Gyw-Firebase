@@ -71,7 +71,7 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
           onPress={() => setModalVisible(true)}
         >
           <View className={clsx('w-9 h-9 rounded-full items-center justify-center', iconBg)}>
-            <Feather name="globe" size={18} color="#337E84" />
+            <Feather name="globe" size={18} color="#FF5722" />
           </View>
           <View className="flex-1">
             <Text className={clsx('text-[15px] font-medium', menuTextColor)}>{t('settings.language')}</Text>
@@ -95,11 +95,11 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
                   key={lang.code}
                   onPress={() => handleLanguageChange(lang.code)}
                   className={`py-4 px-4 rounded-lg mb-2 ${
-                    currentLanguage === lang.code ? 'bg-[#337E84]/10 dark:bg-[#337E84]/20' : 'bg-gray-50 dark:bg-gray-800'
+                    currentLanguage === lang.code ? 'bg-[#FF5722]/10 dark:bg-[#FF5722]/20' : 'bg-gray-50 dark:bg-gray-800'
                   }`}
                 >
                   <Text
-                    style={currentLanguage === lang.code ? { color: '#337E84' } : undefined}
+                    style={currentLanguage === lang.code ? { color: '#FF5722' } : undefined}
                     className={`text-base ${
                       currentLanguage === lang.code ? 'font-semibold' : 'text-gray-800 dark:text-gray-200'
                     }`}
@@ -146,7 +146,7 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
                 }`}
               >
                 <Text
-                  style={currentLanguage === lang.code ? { color: '#337E84' } : undefined}
+                  style={currentLanguage === lang.code ? { color: '#FF5722' } : undefined}
                   className={`text-base ${
                     currentLanguage === lang.code ? 'font-semibold' : 'text-gray-800 dark:text-gray-200'
                   }`}
@@ -198,7 +198,7 @@ const LanguageSwitcher = ({ variant = 'button', initialVisible = false, onModalV
                 }`}
               >
                 <Text
-                  style={currentLanguage === lang.code ? { color: '#337E84' } : undefined}
+                  style={currentLanguage === lang.code ? { color: '#FF5722' } : undefined}
                   className={`text-base ${
                     currentLanguage === lang.code ? 'font-semibold' : 'text-gray-800 dark:text-gray-200'
                   }`}

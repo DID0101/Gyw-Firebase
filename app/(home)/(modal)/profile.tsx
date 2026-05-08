@@ -285,7 +285,7 @@ const ProfileScreen = () => {
   };
 
   if (loading && !userData) {
-    return <Screen viewClassName="flex-1 items-center justify-center" loadingOverlay={true} />;
+    return <Screen viewClassName="flex-1 items-center justify-center" loadingOverlay={true}>{null}</Screen>;
   }
 
   return (
@@ -311,17 +311,6 @@ const ProfileScreen = () => {
         <View className="flex-row items-center justify-center gap-2 mt-2">
           <ThemeToggle variant="profile" />
         </View>
-        {Platform.OS === 'android' && (
-          <Button
-            variant="text"
-            className="mt-2"
-            onPress={() =>
-              router.push({ pathname: '/(home)/(modal)/fcm-diagnostics' } as never)
-            }
-          >
-            <Text style={{ color: '#337E84', textAlign: 'center' }}>FCM & incoming call diagnostics</Text>
-          </Button>
-        )}
       </View>
       <View className="gap-3">
         <TextField

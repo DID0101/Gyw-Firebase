@@ -125,7 +125,7 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
                   'flex-1 py-3 rounded-2xl items-center',
                   !editText.trim() || editText.trim() === message?.text
                     ? 'bg-gray-400'
-                    : 'bg-[#337E84]'
+                    : 'bg-[#FF5722]'
                 )}
               >
                 <Text className="text-base font-medium text-white">Save</Text>

@@ -73,7 +73,7 @@ const ThemeToggle = ({ variant = 'button' }: ThemeToggleProps) => {
           onPress={() => setModalVisible(true)}
         >
           <View className={clsx('w-9 h-9 rounded-full items-center justify-center', iconBg)}>
-            <Feather name={themeIcon} size={18} color="#337E84" />
+            <Feather name={themeIcon} size={18} color="#FF5722" />
           </View>
           <View className="flex-1">
             <Text className={clsx('text-[15px] font-medium', textColor)}>{t('settings.theme')}</Text>
@@ -100,7 +100,7 @@ const ThemeToggle = ({ variant = 'button' }: ThemeToggleProps) => {
                   onPress={() => handleThemeChange(themeOption.value)}
                   className={`py-4 px-4 rounded-lg mb-2 ${
                     theme === themeOption.value
-                      ? 'bg-[#337E84]/10 dark:bg-[#337E84]/20'
+                      ? 'bg-[#FF5722]/10 dark:bg-[#FF5722]/20'
                       : 'bg-gray-50 dark:bg-gray-800'
                   }`}
                 >
@@ -115,7 +115,7 @@ const ThemeToggle = ({ variant = 'button' }: ThemeToggleProps) => {
                       {t(themeOption.label)}
                     </Text>
                     {theme === themeOption.value && (
-                      <Feather name="check" size={20} color="#337E84" />
+                      <Feather name="check" size={20} color="#FF5722" />
                     )}
                   </View>
                 </Pressable>
@@ -169,7 +169,7 @@ const ThemeToggle = ({ variant = 'button' }: ThemeToggleProps) => {
               >
                 <View className="flex-row items-center justify-between">
                   <Text
-                    style={theme === themeOption.value ? { color: '#337E84' } : undefined}
+                    style={theme === themeOption.value ? { color: '#FF5722' } : undefined}
                     className={`text-base ${
                       theme === themeOption.value
                         ? 'font-semibold'

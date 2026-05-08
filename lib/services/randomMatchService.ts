@@ -30,7 +30,7 @@ const QUEUE_COLLECTION = 'randomQueue';
 const HEARTBEAT_INTERVAL_MS = 12000; // 12 seconds
 const AUDIT = __DEV__;
 
-function audit(op: string, phase: 'before' | 'after' | 'error', extra?: Record<string, unknown>) {
+function audit(op: string, phase: string, extra?: Record<string, unknown>) {
   if (!AUDIT) return;
   let nativeUid: string | null = null;
   const projectId = app?.options?.projectId ?? 'unknown';
@@ -191,13 +191,10 @@ export async function tryMatch(
     callableRegion: 'us-central1',
   });
 
-  let data: TryMatchData;
+  let data: TryMatchData | undefined;
   try {
     if (Platform.OS === 'web') {
-      const tryMatchFn = httpsCallable<
-        { queueDocId: string; userId: string },
-        TryMatchData
-      >(functions, 'tryRandomMatch');
+      const tryMatchFn = (httpsCallable as any)(functions, 'tryRandomMatch');
       const response = await tryMatchFn({ queueDocId, userId });
       data = response.data;
       if (__DEV__) {

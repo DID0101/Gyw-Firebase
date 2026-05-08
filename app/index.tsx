@@ -1,5 +1,6 @@
 import clsx from 'clsx';
-import { Redirect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Text, View } from 'react-native';
 
@@ -17,18 +18,20 @@ const WelcomeScreen = () => {
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-500', 'text-gray-400');
 
-  if (loading) return null;
+  useEffect(() => {
+    if (loading) return;
+    if (!user) return; // Not signed in — show welcome screen below
 
-  if (user) {
-    return <Redirect href="/(home)/(tabs)/chats" />;
-  }
+    router.replace('/(home)/(tabs)/chats' as never);
+  }, [user, loading, router]);
+
+  // While auth is loading or user is signed in (and we're navigating), render nothing.
+  if (loading || user) return null;
 
   return (
-    <Screen
-      viewClassName="px-10 pb-10 w-full items-center justify-end gap-16"
-    >
+    <Screen viewClassName="px-10 pb-10 w-full items-center justify-end gap-16">
       <AppImage
-        source={require('@/assets/images/icon.png')}
+        source={require('@/assets/images/gyw_fox_logo.png')}
         className="w-[95%] h-[65%]"
         contentFit="contain"
       />

@@ -1,38 +1,167 @@
 {
   "indexes": [
+
+    // ── calls ───────────────────────────────────────────────────────────────
+    //
+    // Q1: callee's active incoming call(s)
+    //     where('calleeId','==',uid).where('status','==','ringing')
     {
       "collectionGroup": "calls",
       "queryScope": "COLLECTION",
       "fields": [
-        {"fieldPath": "receiverId", "order": "ASCENDING"},
-        {"fieldPath": "status", "order": "ASCENDING"}
+        { "fieldPath": "calleeId", "order": "ASCENDING" },
+        { "fieldPath": "status",   "order": "ASCENDING" }
+      ]
+    },
+
+    // Q2: caller's outgoing call lookup (idempotency check in initiateCall CF)
+    //     where('callerId','==',uid).where('status','==','ringing')
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "callerId", "order": "ASCENDING" },
+        { "fieldPath": "status",   "order": "ASCENDING" }
+      ]
+    },
+
+    // Q3: markStaleRingingCallsMissed  (every 2 min scheduled CF)
+    //     where('status','==','ringing').orderBy('expiresAt','asc')
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    },
+
+    // Q4: deleteStaleCallDocs  (daily cleanup CF)
+    //     where('deleteAfter','<=', now)
+    //     Single-field range query — no composite needed, but explicit
+    //     collection-group index ensures the query planner uses it.
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deleteAfter", "order": "ASCENDING" }
+      ]
+    },
+
+    // Q5: legacy — receiver-side call lookup used by the old client query
+    //     Preserved so existing code paths don't break until migrated to calleeId.
+    //     where('receiverId','==',uid).where('status','==','ringing')
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "receiverId", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" }
+      ]
+    },
+
+    // Q6: legacy with isRandom — used by random-call matching query
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "receiverId", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" },
+        { "fieldPath": "isRandom",   "order": "ASCENDING" }
+      ]
+    },
+
+    // Q7: admin / analytics — all calls for a user (either party), newest first
+    //     where('callerId','==',uid).orderBy('createdAt','desc')
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "callerId",  "order": "ASCENDING"  },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {
       "collectionGroup": "calls",
       "queryScope": "COLLECTION",
       "fields": [
-        {"fieldPath": "receiverId", "order": "ASCENDING"},
-        {"fieldPath": "status", "order": "ASCENDING"},
-        {"fieldPath": "isRandom", "order": "ASCENDING"}
+        { "fieldPath": "calleeId",  "order": "ASCENDING"  },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
+
+    // ── users/{uid}/callHistory ──────────────────────────────────────────────
+    //
+    // Q8: main history list  — orderBy('startedAt','desc').limit(25)
+    //     Single-field descending on a subcollection requires an explicit index.
     {
-      "collectionGroup": "randomQueue",
+      "collectionGroup": "callHistory",
       "queryScope": "COLLECTION",
       "fields": [
-        {"fieldPath": "status", "order": "ASCENDING"},
-        {"fieldPath": "lastSeen", "order": "ASCENDING"}
+        { "fieldPath": "startedAt", "order": "DESCENDING" }
       ]
     },
+
+    // Q9: filtered history — incoming missed calls (missed-calls tab)
+    //     where('direction','==','incoming').where('status','==','missed')
+    //     .orderBy('startedAt','desc')
+    {
+      "collectionGroup": "callHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "direction",  "order": "ASCENDING"  },
+        { "fieldPath": "status",     "order": "ASCENDING"  },
+        { "fieldPath": "startedAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    // Q10: history by peer — where('peerId','==',uid).orderBy('startedAt','desc')
+    {
+      "collectionGroup": "callHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "peerId",    "order": "ASCENDING"  },
+        { "fieldPath": "startedAt", "order": "DESCENDING" }
+      ]
+    },
+
+    // ── chats ────────────────────────────────────────────────────────────────
+    //
+    // Q11: user's chat list — where('participants','array-contains',uid)
+    //      .orderBy('lastMessageAt','desc')
     {
       "collectionGroup": "chats",
       "queryScope": "COLLECTION",
       "fields": [
-        {"fieldPath": "participants", "arrayConfig": "CONTAINS"},
-        {"fieldPath": "lastMessageAt", "order": "DESCENDING"}
+        { "fieldPath": "participants",  "arrayConfig": "CONTAINS"  },
+        { "fieldPath": "lastMessageAt", "order": "DESCENDING"      }
+      ]
+    },
+
+    // ── randomQueue ──────────────────────────────────────────────────────────
+    //
+    // Q12: matchmaking — where('status','==','waiting').orderBy('lastSeen','asc')
+    {
+      "collectionGroup": "randomQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",   "order": "ASCENDING" },
+        { "fieldPath": "lastSeen", "order": "ASCENDING" }
+      ]
+    },
+
+    // ── userTokens/devices ───────────────────────────────────────────────────
+    //
+    // Q13: stale device cleanup
+    //      where('lastActiveAt','<=', thirtyDaysAgo)
+    {
+      "collectionGroup": "devices",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "lastActiveAt", "order": "ASCENDING" }
       ]
     }
+
   ],
   "fieldOverrides": []
 }

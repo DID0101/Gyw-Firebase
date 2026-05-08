@@ -85,7 +85,6 @@ const ModalLayout = () => {
           headerLeft: () => (
             <TouchableOpacity
               onPress={() => {
-                console.log('Cancel button onPress triggered');
                 handleNewMessageCancel();
               }}
               hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
@@ -119,75 +118,12 @@ const ModalLayout = () => {
           ),
         }}
       />
-      <Stack.Screen
-        name="find-by-username"
-        options={{
-          title: t('chats.findByUsername'),
-          headerLeft: () => (
-            <Button
-              variant="plain"
-              onPress={() => router.dismiss()}
-              className="px-2"
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Feather name="chevron-left" size={32} color={iconColor} />
-            </Button>
-          ),
-        }}
-      />
-      <Stack.Screen
-        name="find-by-contact"
-        options={{
-          title: t('chats.findByContactTitle'),
-          headerLeft: () => (
-            <Button
-              variant="plain"
-              onPress={() => router.dismiss()}
-              className="px-2"
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Feather name="chevron-left" size={32} color={iconColor} />
-            </Button>
-          ),
-        }}
-      />
+      <Stack.Screen name="find-by-username" options={{ headerShown: false }} />
       <Stack.Screen
         name="story-viewer"
         options={{
           headerShown: false,
           presentation: 'fullScreenModal',
-        }}
-      />
-      <Stack.Screen
-        name="fcm-diagnostics"
-        options={{
-          title: 'FCM diagnostics',
-          headerLeft: () => (
-            <Button
-              variant="plain"
-              onPress={() => router.dismiss()}
-              className="px-2"
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Feather name="chevron-left" size={32} color={iconColor} />
-            </Button>
-          ),
-        }}
-      />
-      <Stack.Screen
-        name="debug-fcm"
-        options={{
-          title: 'FCM delivery debug',
-          headerLeft: () => (
-            <Button
-              variant="plain"
-              onPress={() => router.dismiss()}
-              className="px-2"
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Feather name="chevron-left" size={32} color={iconColor} />
-            </Button>
-          ),
         }}
       />
     </Stack>

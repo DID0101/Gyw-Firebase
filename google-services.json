@@ -58,6 +58,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "1039699232254-3j8qm7sjrme98iieealrboea1nbl9n5h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyw1.chat",
+            "certificate_hash": "89246e33f0b444faa6d5feb19901889f216d1578"
+          }
+        },
+        {
           "client_id": "1039699232254-l6sekr5vqdvqhlrrtkl8aj6h4ar9ku3g.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

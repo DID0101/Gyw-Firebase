@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { db } from '@/lib/firebase';
 import { Chat } from '@/lib/types/chat';
 import { hasNativeFirestore, subscribeToChatsNative } from '@/lib/firestoreNative';
-import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { useEffect } from 'react';
 import { useChatStore } from '@/store/chatStore';
 
@@ -33,7 +33,8 @@ export const useChats = (userId: string) => {
     const q = query(
       chatsRef,
       where('participants', 'array-contains', userId),
-      orderBy('lastMessageAt', 'desc')
+      orderBy('lastMessageAt', 'desc'),
+      limit(30)
     );
 
     const unsubscribe = onSnapshot(

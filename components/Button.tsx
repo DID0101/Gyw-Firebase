@@ -18,7 +18,7 @@ const Button = ({
   ...otherProps
 }: ButtonProps) => {
   const textColorClassName = useThemeClassName('text-black', 'text-white');
-  const bgClassName = useThemeClassName('bg-[#337E84]', 'bg-[#337E84]');
+  const bgClassName = useThemeClassName('bg-[#FF5722]', 'bg-[#FF5722]');
   
   if (variant === 'plain')
     return (

@@ -57,7 +57,7 @@ const CallItem = memo<CallItemProps>(({
     >
       <Avatar
         name={participantName}
-        image={avatarImage}
+        imageUrl={avatarImage}
         size={48}
         fontSize={20}
       />
@@ -72,7 +72,7 @@ const CallItem = memo<CallItemProps>(({
           <Feather
             name={call.direction === 'incoming' ? 'arrow-down-left' : 'arrow-up-right'}
             size={14}
-            color={call.direction === 'incoming' ? '#10b981' : iconSecondaryColor}
+            color={call.direction === 'incoming' ? '#FF5722' : iconSecondaryColor}
           />
           <Feather
             name={call.type === 'video' ? 'video' : 'phone'}

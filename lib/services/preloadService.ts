@@ -8,6 +8,12 @@ import { getStories } from './storyService';
 import { getCallHistory } from './callService';
 import { hasNativeFirestore, getChatsNative, getCallHistoryNative, getStoriesNative } from '@/lib/firestoreNative';
 
+function isFirestorePermissionDenied(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  const msg = String((err as { message?: string })?.message || '');
+  return code === 'firestore/permission-denied' || msg.includes('permission-denied');
+}
+
 /**
  * Loads data from AsyncStorage first (instant load)
  * Then syncs with Firestore in background
@@ -35,9 +41,9 @@ export const preloadAppData = async (userId: string) => {
         chatsData = await getChatsNative(userId, 20);
         // Already ordered by lastMessageAt desc from query
       } catch (err: any) {
-        // Index may still be building after deploy - keep cached data, don't crash
-        if (__DEV__) console.warn('[preload] Chats query failed (index building?):', err?.message);
-        chatsData = useChatStore.getState().chats;
+        if (__DEV__) console.warn('[preload] Chats query failed:', err?.message);
+        // Never reuse persisted chats on PERMISSION_DENIED — keys are not user-scoped, so cache may be another account's IDs.
+        chatsData = isFirestorePermissionDenied(err) ? [] : useChatStore.getState().chats;
       }
     } else {
       try {
@@ -62,46 +68,45 @@ export const preloadAppData = async (userId: string) => {
           } as Chat);
         });
       } catch (err: any) {
-        if (__DEV__) console.warn('[preload] Chats query failed (index building?):', err?.message);
-        chatsData = useChatStore.getState().chats;
+        if (__DEV__) console.warn('[preload] Chats query failed:', err?.message);
+        chatsData = isFirestorePermissionDenied(err) ? [] : useChatStore.getState().chats;
       }
     }
     useChatStore.getState().setChats(chatsData);
 
-    // 2. Preload active stories
-    let callsCount = 0;
-    try {
-      const stories = hasNativeFirestore ? await getStoriesNative() : await getStories();
-      useStoryStore.getState().setStories(stories);
-    } catch (error) {
-      if (__DEV__) console.error('Error preloading stories:', error);
-    }
-
-    // 3. Preload call history (last 50 calls)
-    try {
-      const calls = hasNativeFirestore ? await getCallHistoryNative(userId, 50) : await getCallHistory(userId, 50);
-      useCallStore.getState().setCalls(calls);
-      callsCount = calls.length;
-    } catch (error) {
-      if (__DEV__) console.error('Error preloading calls:', error);
-    }
-    
-    // 4. Preload presence for chat participants
-    const participantIds = new Set<string>();
-    chatsData.forEach(chat => {
-      chat.participants.forEach(id => {
-        if (id !== userId) participantIds.add(id);
-      });
-    });
-    
-    // Presence will be updated by real-time listeners
-    // We just initialize the store structure here
-    
-    if (__DEV__) {
-      console.log(`Preloaded: ${chatsData.length} chats, ${callsCount} calls, ${participantIds.size} participants`);
-    }
+    // Stories + call history are not needed for first paint; yield then hydrate in background.
+    void preloadStoriesAndCalls(userId, chatsData.length);
   } catch (error) {
     if (__DEV__) console.error('Error preloading app data:', error);
   }
 };
+
+/** Deferred so chat list / tab UI can commit before extra Firestore + JSON work. */
+async function preloadStoriesAndCalls(userId: string, chatCount: number) {
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  let callsCount = 0;
+  try {
+    const stories = hasNativeFirestore ? await getStoriesNative() : await getStories();
+    useStoryStore.getState().setStories(stories);
+  } catch (error) {
+    if (__DEV__) console.error('Error preloading stories:', error);
+  }
+
+  try {
+    const calls = hasNativeFirestore ? await getCallHistoryNative(userId, 30) : await getCallHistory(userId, 30);
+    useCallStore.getState().setCalls(calls);
+    callsCount = calls.length;
+  } catch (error) {
+    if (isFirestorePermissionDenied(error)) {
+      useCallStore.getState().clearAll();
+    } else if (__DEV__) {
+      console.error('Error preloading calls:', error);
+    }
+  }
+
+  if (__DEV__) {
+    console.log(`Preloaded (deferred): chats=${chatCount}, calls=${callsCount}`);
+  }
+}
 

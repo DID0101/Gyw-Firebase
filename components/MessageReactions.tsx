@@ -9,6 +9,27 @@ interface MessageReactionsProps {
   onReactionPress: (messageId: string, emoji: string) => void;
 }
 
+function areReactionMapsEqual(
+  a: Record<string, string[]> | undefined,
+  b: Record<string, string[]> | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    const av = a[key];
+    const bv = b[key];
+    if (!Array.isArray(av) || !Array.isArray(bv)) return false;
+    if (av.length !== bv.length) return false;
+    for (let i = 0; i < av.length; i += 1) {
+      if (av[i] !== bv[i]) return false;
+    }
+  }
+  return true;
+}
+
 const MessageReactions: React.FC<MessageReactionsProps> = ({
   message,
   currentUserId,
@@ -48,7 +69,7 @@ const MessageReactions: React.FC<MessageReactionsProps> = ({
               styles.reactionButton,
               userReacted && styles.reactionButtonActive,
               { backgroundColor: userReacted 
-                ? (isDark ? 'rgba(51, 126, 132, 0.3)' : 'rgba(51, 126, 132, 0.2)')
+                ? (isDark ? 'rgba(255, 87, 34, 0.3)' : 'rgba(255, 87, 34, 0.2)')
                 : (isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)')
               },
             ]}
@@ -86,7 +107,7 @@ const styles = StyleSheet.create({
   },
   reactionButtonActive: {
     borderWidth: 1,
-    borderColor: '#337E84',
+    borderColor: '#FF5722',
   },
   emoji: {
     fontSize: 14,
@@ -99,14 +120,10 @@ const styles = StyleSheet.create({
 
 // Memoize component to prevent re-renders when unrelated messages update
 export default memo(MessageReactions, (prevProps, nextProps) => {
-  // Only re-render if message ID, reactions, or currentUserId changes
-  const prevReactions = prevProps.message.reactions || {};
-  const nextReactions = nextProps.message.reactions || {};
-  
   return (
     prevProps.message.id === nextProps.message.id &&
     prevProps.currentUserId === nextProps.currentUserId &&
-    JSON.stringify(prevReactions) === JSON.stringify(nextReactions)
+    areReactionMapsEqual(prevProps.message.reactions, nextProps.message.reactions)
   );
 });
 

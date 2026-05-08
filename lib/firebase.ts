@@ -4,7 +4,7 @@ import { FirebaseApp, getApps, initializeApp } from 'firebase/app';
 import { Auth, getAuth, initializeAuth } from 'firebase/auth';
 import { FirebaseStorage, getStorage } from 'firebase/storage';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from 'firebase/functions';
-import { Firestore, getFirestore } from 'firebase/firestore';
+import { Firestore, initializeFirestore, persistentLocalCache, getFirestore } from 'firebase/firestore';
 
 // Firebase configuration
 // TODO: Replace these values with your new Firebase project configuration
@@ -54,8 +54,19 @@ try {
   }
 }
 
-// Initialize Firestore
-const db: Firestore = getFirestore(app);
+// Initialize Firestore.
+// On web: enable persistent local cache so repeat chat opens are near-instant.
+// On native: @react-native-firebase/firestore has offline cache enabled by default;
+// this web SDK instance is only used on web or as a fallback when the native SDK is absent.
+let db: Firestore;
+try {
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache(),
+  });
+} catch {
+  // initializeFirestore throws if already initialized (e.g. hot reload); fall back gracefully.
+  db = getFirestore(app);
+}
 
 // Initialize Storage
 const storage: FirebaseStorage = getStorage(app);

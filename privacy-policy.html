@@ -8,29 +8,35 @@
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
         h1 { color: #333; }
         h2 { color: #555; margin-top: 30px; }
+        h3 { color: #555; margin-top: 18px; }
+        code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
     </style>
 </head>
 <body>
     <h1>Privacy Policy for GYW</h1>
-    <p><strong>Last Updated:</strong> December 30, 2024</p>
+    <p><strong>Last Updated:</strong> May 8, 2026</p>
     
     <h2>Introduction</h2>
-    <p>GYW ("we", "our", or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, and safeguard your information when you use our mobile application.</p>
+    <p>GYW ("we", "our", or "us") is a messaging and calling app. This Privacy Policy explains what information we collect, why we collect it, and the choices you have.</p>
+    <p><strong>Important note:</strong> We aim to minimize the data we collect. However, GYW is <strong>not</strong> a replacement for Signal, and unless explicitly stated otherwise in-app, we do <strong>not</strong> claim that your message content is end-to-end encrypted.</p>
     
     <h2>Information We Collect</h2>
-    <h3>Information You Provide</h3>
+    <h3>Information you provide</h3>
     <ul>
-        <li>Account information (email, phone number, username)</li>
-        <li>Profile information (name, profile picture)</li>
-        <li>Messages and media you send through the app</li>
+        <li><strong>Phone number</strong> (required) to create an account and sign in.</li>
+        <li><strong>Profile information</strong> you choose to add, such as a display name and profile photo.</li>
+        <li><strong>Content you send</strong> (messages and media) to other users. Depending on the feature, content may be stored to deliver messages, enable synchronization, and allow media sharing.</li>
     </ul>
     
-    <h3>Information Automatically Collected</h3>
+    <h3>Information collected automatically</h3>
     <ul>
-        <li>Device information (device type, operating system)</li>
-        <li>Usage data (how you interact with the app)</li>
-        <li>Camera and microphone access (for video/audio calls and media sharing)</li>
+        <li><strong>Device and app information</strong> such as device model, OS version, and app version (used for reliability and compatibility).</li>
+        <li><strong>Diagnostics</strong> such as crash reports and error logs (to fix bugs and improve stability).</li>
+        <li><strong>Push notification tokens</strong> (e.g., FCM/APNs tokens) used to deliver notifications.</li>
     </ul>
+
+    <h3>Address book / contacts (optional)</h3>
+    <p>If you grant contacts permission, the app may access your contacts to help you find and connect with people you know. You can use the app without granting contacts access.</p>
     
     <h2>How We Use Your Information</h2>
     <p>We use the information we collect to:</p>
@@ -38,8 +44,9 @@
         <li>Provide and maintain our messaging and calling services</li>
         <li>Enable video and audio calls</li>
         <li>Allow you to share photos and videos</li>
-        <li>Improve our services</li>
-        <li>Ensure app security and prevent fraud</li>
+        <li>Deliver push notifications</li>
+        <li>Improve our services and reliability</li>
+        <li>Help prevent abuse and fraud</li>
     </ul>
     
     <h2>Permissions We Request</h2>
@@ -47,25 +54,39 @@
     <ul>
         <li><strong>Camera:</strong> To enable video calls and allow you to take photos/videos to share in messages</li>
         <li><strong>Microphone:</strong> To enable audio and video calls, and voice messages</li>
-        <li><strong>Storage:</strong> To save and access photos/videos you share</li>
+        <li><strong>Storage / Media:</strong> To save and access photos/videos you share</li>
         <li><strong>Contacts:</strong> To help you find and connect with other users (optional)</li>
+        <li><strong>Notifications:</strong> To notify you about messages and calls</li>
     </ul>
     
     <h2>Data Storage and Security</h2>
+    <p>We use reasonable security measures designed to protect your information. No method of transmission or storage is 100% secure.</p>
     <ul>
-        <li>Messages are encrypted and stored securely</li>
-        <li>We use industry-standard security measures to protect your data</li>
-        <li>Your data is stored on secure servers</li>
+        <li><strong>In transit:</strong> Data is transmitted over encrypted connections (e.g., HTTPS/TLS).</li>
+        <li><strong>At rest:</strong> Some data may be stored on third-party infrastructure with security controls.</li>
+        <li><strong>Device security:</strong> Some security features rely on your device settings (for example, a screen lock can be required for secure key storage on Android).</li>
     </ul>
+
+    <h2>Data retention</h2>
+    <p>We keep information only as long as needed to provide the service, comply with legal obligations, resolve disputes, and enforce our agreements. Retention periods may vary depending on the data type and feature.</p>
     
     <h2>Third-Party Services</h2>
-    <p>We use the following third-party services:</p>
+    <p>GYW uses third-party services to operate core functionality. Depending on the platform and features you use, these may include:</p>
     <ul>
-        <li><strong>Stream Chat:</strong> For messaging functionality</li>
-        <li><strong>Stream Video:</strong> For video/audio calling</li>
-        <li><strong>Clerk:</strong> For user authentication</li>
+        <li><strong>Google Firebase</strong> (e.g., Authentication and Cloud Messaging) for sign-in and notifications.</li>
+        <li><strong>Apple Push Notification service (APNs)</strong> for iOS push notifications.</li>
+        <li><strong>WebRTC-related components</strong> to enable real-time audio/video calling.</li>
     </ul>
-    <p>These services have their own privacy policies. We recommend reviewing them.</p>
+    <p>These providers may process certain data on our behalf (such as device identifiers, push tokens, and diagnostic information) to deliver their services.</p>
+
+    <h2>How we share information</h2>
+    <p>We do not sell your personal information. We may share information in these cases:</p>
+    <ul>
+        <li><strong>With service providers</strong> who help us operate the app (as described above).</li>
+        <li><strong>For legal reasons</strong> if required to comply with law or valid legal process.</li>
+        <li><strong>To protect safety</strong> of users, the public, or the integrity of our services.</li>
+        <li><strong>With your direction</strong> (for example, when you choose to share content with other users).</li>
+    </ul>
     
     <h2>Your Rights</h2>
     <p>You have the right to:</p>
@@ -75,6 +96,7 @@
         <li>Opt-out of certain data collection</li>
         <li>Request a copy of your data</li>
     </ul>
+    <p>To exercise these rights, contact us using the email below.</p>
     
     <h2>Children's Privacy</h2>
     <p>Our app is not intended for children under 13. We do not knowingly collect information from children.</p>
@@ -85,8 +107,7 @@
     <h2>Contact Us</h2>
     <p>If you have questions about this Privacy Policy, please contact us at:</p>
     <ul>
-        <li>Email: [your-email@example.com]</li>
-        <li>Website: [your-website.com]</li>
+        <li>Email: dpurliyew01@gmail.com</li>
     </ul>
 </body>
 </html>

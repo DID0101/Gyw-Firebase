@@ -58,7 +58,7 @@ const StoriesScreen = () => {
       groupsMap.set(user?.uid || '', {
         userId: user?.uid || '',
         userName: userData ? `${userData.firstName} ${userData.lastName}`.trim() : user?.displayName || t('stories.myStories'),
-        userImage: userData?.avatar || user?.photoURL,
+        userImage: (userData?.avatar || user?.photoURL) ?? undefined,
         stories: myStories,
         hasUnseen: false, // Own stories are always "seen"
       });

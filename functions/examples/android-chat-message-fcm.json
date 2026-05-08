@@ -1,0 +1,20 @@
+{
+  "comment": "Data-only FCM for chat (never use top-level notification for this). Send via Firebase Admin: admin.messaging().send(message). type must be chat_message so GywFirebaseMessagingService routes to GywMessageNotifier, not the call pipeline.",
+  "message": {
+    "token": "<DEVICE_FCM_TOKEN>",
+    "android": {
+      "priority": "high"
+    },
+    "data": {
+      "type": "chat_message",
+      "chatId": "CHAT_DOCUMENT_ID",
+      "senderId": "SENDER_UID",
+      "senderName": "Alex",
+      "text": "Hey — are you free tonight?",
+      "messageId": "MESSAGE_DOC_ID_OR_UNIQUE_ID",
+      "avatar": "https://example.com/avatar.jpg",
+      "sentAt": "1777300000123",
+      "unreadCount": "3"
+    }
+  }
+}

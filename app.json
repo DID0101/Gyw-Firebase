@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "GYW",
+    "name": "Gyw",
     "slug": "gyw",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/gyw_fox_logo.png",
     "scheme": "gyw",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
@@ -13,14 +13,20 @@
       "bundleIdentifier": "com.tropicolx.signal-clone",
       "bitcode": false,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "voip", "fetch", "remote-notification"],
+        "UIBackgroundModes": ["audio", "fetch", "voip", "remote-notification"],
         "NSMicrophoneUsageDescription": "$(PRODUCT_NAME) needs microphone access for voice and video calls.",
-        "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls."
+        "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls.",
+        "NSContactsUsageDescription": "$(PRODUCT_NAME) uses your contacts to suggest people you know who are already on the app. Phone numbers are matched securely."
+      },
+      "entitlements": {
+        "com.apple.developer.pushkit.voip": true,
+        "aps-environment": "development",
+        "com.apple.developer.pushnotification-triggering": true
       }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/icon.png",
+        "foregroundImage": "./assets/images/gyw_fox_logo.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -40,14 +46,13 @@
         "android.permission.INTERNET",
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
         "android.permission.FOREGROUND_SERVICE_CAMERA",
-        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.READ_CONTACTS",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.READ_PHONE_STATE",
+        "android.permission.CALL_PHONE",
         "android.permission.READ_PHONE_NUMBERS",
-        "android.permission.CALL_PHONE"
+        "android.permission.READ_PHONE_STATE"
       ],
       "package": "com.gyw1.chat",
       "versionCode": 2,
@@ -57,14 +62,21 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/icon.png"
+      "favicon": "./assets/images/gyw_fox_logo.png"
     },
     "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/gyw_fox_logo.png",
+          "color": "#4f46e5"
+        }
+      ],
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/icon.png",
+          "image": "./assets/images/gyw_fox_logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -109,7 +121,6 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      "@react-native-firebase/messaging",
       [
         "@config-plugins/react-native-webrtc",
         {
@@ -118,11 +129,10 @@
         }
       ],
       "expo-web-browser",
-      "./plugins/android-notifee-maven.js",
-      "@config-plugins/react-native-callkeep",
-      "./plugins/android-manifest-merger-fix.js",
-      "./plugins/android-incoming-call-ui.js",
-      "./plugins/withAndroidCallService.js"
+      "@react-native-firebase/messaging",
+      "./plugins/withAndroidIncomingCall",
+      "./plugins/withAndroidFirebasePhoneAuthDebug",
+      "./plugins/withIosVoIP"
     ],
     "experiments": {
       "typedRoutes": true

@@ -212,7 +212,7 @@ export const VoiceRecorderBar: React.FC<VoiceRecorderBarProps> = ({
         </View>
         <Pressable
           onPress={handleSend}
-          className="bg-[#337E84] rounded-full px-6 py-2"
+          className="bg-[#FF5722] rounded-full px-6 py-2"
         >
           <View className="flex-row items-center gap-2">
             <Feather name="send" size={18} color="white" />

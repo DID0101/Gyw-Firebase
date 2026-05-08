@@ -62,3 +62,29 @@ export const isFirstInCluster = (messages: ChatMessage[], index: number): boolea
 export const isLastInCluster = (messages: ChatMessage[], index: number): boolean => {
   return shouldShowTail(messages, index);
 };
+
+// ── Inverted list variants (data sorted newest→oldest, index 0 = newest) ──────
+
+/** Inverted: show tail when the item below (index-1, newer) is a different sender */
+export const shouldShowTailInverted = (messages: ChatMessage[], index: number): boolean => {
+  if (index === 0) return true;
+  const current = messages[index];
+  const newer = messages[index - 1];
+  if (!current || !newer) return true;
+  if (current.senderId !== newer.senderId) return true;
+  const tCurrent = new Date(current.createdAt || 0).getTime();
+  const tNewer = new Date(newer.createdAt || 0).getTime();
+  return (tNewer - tCurrent) > GROUP_TIME_THRESHOLD_MS;
+};
+
+/** Inverted: show sender when the item above (index+1, older) is a different sender */
+export const shouldShowSenderInverted = (messages: ChatMessage[], index: number): boolean => {
+  if (index === messages.length - 1) return true;
+  const current = messages[index];
+  const older = messages[index + 1];
+  if (!current || !older) return true;
+  if (current.senderId !== older.senderId) return true;
+  const tCurrent = new Date(current.createdAt || 0).getTime();
+  const tOlder = new Date(older.createdAt || 0).getTime();
+  return (tCurrent - tOlder) > GROUP_TIME_THRESHOLD_MS;
+};

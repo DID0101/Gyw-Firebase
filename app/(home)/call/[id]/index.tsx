@@ -1,12 +1,10 @@
 import { Feather, Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Platform, Pressable, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StatusBar, Text, Vibration, View } from 'react-native';
 import InCallManager from 'react-native-incall-manager';
-
-import { dismissCallKeepForCallId } from '@/lib/incomingCallInvite';
-import { startIncomingCallVibration, stopIncomingCallVibration } from '@/lib/incomingCallVibration';
 
 // Conditional import for react-native-webrtc (requires dev build)
 import { RTCPeerConnection, RTCView, isWebRTCAvailable } from '@/lib/webrtc-wrapper';
@@ -19,14 +17,18 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { app, functions, httpsCallable } from '@/lib/firebase';
 import { blockUser, reportUser } from '@/lib/services/blockReportService';
 import { getCall, subscribeToCall, updateCallReceiverReady, updateCallStatus, waitForReceiverReady } from '@/lib/services/callService';
+import { presentMissedCallLocalNotification } from '@/lib/call/missedCallNotification';
+import { releaseIncomingCall } from '@/lib/call/incomingCallGuard';
 import { useCallSessionStore } from '@/store/callSessionStore';
 import { getUser } from '@/lib/services/chatService';
 import { webRTCService } from '@/lib/services/webrtcService';
+import { endAllCalls as endAllCallKeepCalls, reportCallEnded } from '@/lib/callkeep';
 import { Call } from '@/lib/types/call';
 import { User } from '@/lib/types/chat';
 
 const CallScreen = () => {
-  const { id: callId, accept: acceptParam } = useLocalSearchParams<{ id: string; accept?: string }>();
+  const { id: callId, accept: acceptParam, decline: declineParam, callType: callTypeParam } =
+    useLocalSearchParams<{ id: string; accept?: string; decline?: string; callType?: string }>();
   const { user } = useAuth();
   const router = useRouter();
   const { t } = useTranslation();
@@ -35,7 +37,7 @@ const CallScreen = () => {
   
   const [call, setCall] = useState<Call | null>(null);
   const [otherUser, setOtherUser] = useState<User | null>(null);
-  const [callStatus, setCallStatus] = useState<'ringing' | 'active' | 'ended'>('ringing');
+  const [callStatus, setCallStatus] = useState<Call['status']>('ringing');
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerEnabled, setIsSpeakerEnabled] = useState(true);
@@ -43,6 +45,7 @@ const CallScreen = () => {
   const [remoteStream, setRemoteStream] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isCaller, setIsCaller] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
   
   const callStartTime = useRef<number>(0);
   const callRingStartTime = useRef<number>(0);
@@ -54,7 +57,13 @@ const CallScreen = () => {
   const callStateRef = useRef<Call | null>(null);
   const isNavigatingAwayRef = useRef(false);
   const weJustEndedRef = useRef(false);
+  const hasHandledEndRef = useRef(false);
   const iceFailureDetectedRef = useRef(false);
+  const missedNotifShownRef = useRef(false);
+  const ringVibrateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const incomingTriggerLoggedRef = useRef(false);
+  const handledDeclineDeepLinkRef = useRef(false);
+  const handledAcceptDeepLinkRef = useRef(false);
 
   const textColor = isDark ? 'text-white' : 'text-black';
   const bgColor = isDark ? 'bg-gray-900' : 'bg-white';
@@ -76,36 +85,79 @@ const CallScreen = () => {
     callStateRef.current = call;
   }, [call]);
 
-  // Incoming (non-random): system default ringtone + wake screen while callee sees ringing UI
   useEffect(() => {
-    if (Platform.OS !== 'android' && Platform.OS !== 'ios') return;
-    const random = call?.isRandom === true;
-    const incomingRing = callStatus === 'ringing' && !isCaller && !random;
-    if (incomingRing) {
-      try {
-        InCallManager.pokeScreen(10_000);
-        InCallManager.startRingtone('_DEFAULT_', [0, 700, 400, 700]);
-        startIncomingCallVibration();
-      } catch {
-        /* ignore */
-      }
-    } else {
-      try {
-        InCallManager.stopRingtone();
-        stopIncomingCallVibration();
-      } catch {
-        /* ignore */
-      }
-    }
+    // Reset per-call deep-link handling whenever we switch to a different call.
+    handledDeclineDeepLinkRef.current = false;
+    handledAcceptDeepLinkRef.current = false;
+  }, [callId]);
+
+  useEffect(() => {
+    if (!callId) return;
+    useCallSessionStore.getState().setActiveSessionCallId(callId);
     return () => {
-      try {
-        InCallManager.stopRingtone();
-        stopIncomingCallVibration();
-      } catch {
-        /* ignore */
+      if (useCallSessionStore.getState().activeSessionCallId === callId) {
+        useCallSessionStore.getState().setActiveSessionCallId(null);
       }
     };
-  }, [callStatus, isCaller, call?.isRandom]);
+  }, [callId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      StatusBar.setHidden(true, 'fade');
+      return () => {
+        StatusBar.setHidden(false, 'fade');
+      };
+    }, [])
+  );
+
+  // Handle Accept arriving via onNewIntent (user tapped notification Accept while call screen was open)
+  useEffect(() => {
+    if (acceptParam !== '1') return;
+    if (!user) return;
+    if (!call) return;
+    if (handledAcceptDeepLinkRef.current) return;
+    if (!['ringing', 'accepted', 'connecting', 'active'].includes(call.status)) return;
+
+    const isOfferer = call.isRandom === true
+      ? user.uid === (call.callerId < call.receiverId ? call.callerId : call.receiverId)
+      : call.callerId === user.uid;
+
+    if (!isOfferer && !call.isRandom) {
+      handledAcceptDeepLinkRef.current = true;
+      console.log('CALL_DEEP_LINK acceptParam=1 callId=' + callId + ' callee=false? isOfferer=' + isOfferer);
+      void doAcceptCall(call, otherUser);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [acceptParam, callId, call, callStatus, user?.uid, otherUser]);
+
+  // Handle Decline deep-link (notification / lockscreen / full-screen system UI decline).
+  // This path exists so the caller stops ringing even when the app process was dead.
+  useEffect(() => {
+    if (declineParam !== '1') return;
+    if (handledDeclineDeepLinkRef.current) return;
+    if (!callId || !user) return;
+    if (!call) return;
+    if (call.status !== 'ringing') return;
+    if (call.isRandom) return; // for random, rely on normal timeout/end state sync
+
+    // Callee should be the current user on non-random calls.
+    if (call.receiverId !== user.uid) return;
+
+    handledDeclineDeepLinkRef.current = true;
+    console.log('CALL_DECLINE source=deep_link_declineParam callId=' + callId);
+
+    void (async () => {
+      try {
+        await updateCallStatus(callId, 'declined', undefined, call.chatId);
+        console.log('CALL_DB_UPDATE status=declined callId=' + callId);
+        releaseIncomingCall(callId, 'declined_deep_link');
+      } catch (e) {
+        console.warn('CALL_DECLINE deep_link update failed', e);
+      } finally {
+        safeBack();
+      }
+    })();
+  }, [declineParam, callId, user?.uid, callStatus, call]);
 
   useEffect(() => {
     if (!callId || !user) return;
@@ -125,9 +177,9 @@ const CallScreen = () => {
           return;
         }
 
-        if (['ended', 'missed', 'rejected'].includes(callData.status)) {
+        if (['ended', 'missed', 'declined', 'rejected', 'busy', 'canceled', 'timeout'].includes(callData.status)) {
           setCall(callData);
-          setCallStatus(callData.status as any);
+          setCallStatus(callData.status);
           setTimeout(() => safeBack(), 1500);
           return;
         }
@@ -137,13 +189,31 @@ const CallScreen = () => {
         const otherUserData = await getUser(otherUserId);
         if (otherUserData) setOtherUser(otherUserData);
 
+        const isCalleeRinging =
+          !callData.isRandom &&
+          callData.receiverId === user.uid &&
+          callData.status === 'ringing';
+        if (isCalleeRinging) {
+          const activeId = useCallSessionStore.getState().activeSessionCallId;
+          if (activeId && activeId !== callId) {
+            try {
+              await updateCallStatus(callId, 'busy');
+            } catch {
+              /* ignore */
+            }
+            Alert.alert(t('calls.callEnded'), t('calls.busyLine') || 'The line is busy.');
+            safeBack();
+            return;
+          }
+        }
+
         // For random calls: deterministic offerer (smaller UID creates offer) to prevent offer collision
         const isRandom = callData.isRandom === true;
         const offererId = callData.callerId < callData.receiverId ? callData.callerId : callData.receiverId;
         const answererId = callData.callerId < callData.receiverId ? callData.receiverId : callData.callerId;
         const isOfferer = isRandom ? user.uid === offererId : callData.callerId === user.uid;
         setIsCaller(isOfferer);
-        setCallStatus(callData.status as any);
+        setCallStatus(callData.status);
 
         if (!isWebRTCAvailable || !RTCView || !RTCPeerConnection) {
           Alert.alert(t('common.error'), t('call.webrtcNotAvailable'));
@@ -154,7 +224,7 @@ const CallScreen = () => {
         // Set up missed call timeout (20-25s for random, 30s for regular)
         if (callData.status === 'ringing') {
           callRingStartTime.current = Date.now();
-          const timeoutMs = 60000; // 60s ringing; server also marks stale ringing as missed
+          const timeoutMs = callData.isRandom ? 60000 : 30000;
           missedCallTimeoutRef.current = setTimeout(async () => {
             const currentCall = callStateRef.current;
             if (currentCall && currentCall.status === 'ringing') {
@@ -176,6 +246,29 @@ const CallScreen = () => {
             );
           }
         };
+
+        // iOS only: play ringtone + vibration from JS while waiting for callee to accept.
+        // Android: GywIncomingCallAlerts (native) already owns ring + vibration;
+        //          calling InCallManager.startRingtone() here would double-ring.
+        if (!isOfferer && !isRandom && callData.status === 'ringing' && acceptParam !== '1' && Platform.OS !== 'android') {
+          try {
+            InCallManager.startRingtone('_BUNDLE_', 0, '', -1);
+          } catch {
+            try { InCallManager.startRingtone('_DEFAULT_', 0, '', -1); } catch { /* ignore */ }
+          }
+          try {
+            if (ringVibrateIntervalRef.current) {
+              clearInterval(ringVibrateIntervalRef.current);
+              ringVibrateIntervalRef.current = null;
+            }
+            Vibration.vibrate([0, 500, 250, 500]);
+            ringVibrateIntervalRef.current = setInterval(() => {
+              Vibration.vibrate(600);
+            }, 2200);
+          } catch {
+            /* ignore */
+          }
+        }
 
         if (isOfferer) {
           await initializeWebRTC(callData, otherUserId, isOfferer, offererId, answererId);
@@ -201,13 +294,20 @@ const CallScreen = () => {
         }
         // Regular callee: no signaling / peer connection until Accept (or ConnectionService answer → accept=1)
 
-        // System-level answer (CallKeep) — same as tapping Accept
-        if (acceptParam === '1' && !isRandom && !isOfferer && callData.status === 'ringing') {
+        // Accept path (in-app) — only for regular (non-random) callee
+        // When native small-UI "Accept" writes status headlessly, callData.status may
+        // already be "accepted"/"connecting" when the screen mounts; allow those too.
+        if (
+          acceptParam === '1' &&
+          !isRandom &&
+          !isOfferer &&
+          ['ringing', 'accepted', 'connecting', 'active'].includes(callData.status)
+        ) {
+          // Prevent double-processing when the call status flips headlessly before mount.
+          handledAcceptDeepLinkRef.current = true;
           await doAcceptCall(callData, otherUserData);
-        }
-
-        // Omegle-style: auto-accept random calls immediately (no ringing UI)
-        if (isRandom && callData.status === 'ringing') {
+        } else if (isRandom && callData.status === 'ringing') {
+          // Omegle-style: auto-accept random calls immediately (no ringing UI)
           await doAcceptCall(callData, otherUserData);
         }
       } catch (error) {
@@ -226,9 +326,57 @@ const CallScreen = () => {
         return;
       }
       setCall(callData);
-      setCallStatus(callData.status as any);
-      if (['ended', 'missed', 'rejected'].includes(callData.status)) {
+      setCallStatus(callData.status);
+      if (callData.status === 'ringing' && !incomingTriggerLoggedRef.current) {
+        incomingTriggerLoggedRef.current = true;
+        if (__DEV__) console.log(`INCOMING_TRIGGER source=firestore_listener callId=${callId} ts=${Date.now()}`);
+      }
+
+      // Start duration timer for the caller when receiver accepts
+      if (callData.status === 'active' && callStartTime.current === 0) {
+        callStartTime.current = Date.now();
+        setCallDuration(0);
+        if (durationInterval.current) clearInterval(durationInterval.current);
+        durationInterval.current = setInterval(() => {
+          if (callStartTime.current > 0) {
+            setCallDuration(Math.floor((Date.now() - callStartTime.current) / 1000));
+          }
+        }, 1000);
+        if (missedCallTimeoutRef.current) {
+          clearTimeout(missedCallTimeoutRef.current);
+          missedCallTimeoutRef.current = null;
+        }
+      }
+
+      if (['ended', 'missed', 'declined', 'rejected', 'busy', 'canceled', 'timeout'].includes(callData.status)) {
+        releaseIncomingCall(callId, `terminal_${callData.status}`);
+        console.log('CALLER_RECEIVED_TERMINAL status=' + callData.status + ' callId=' + callId);
         if (__DEV__) console.log('[CallScreen] call ended remotely', { status: callData.status, callId });
+        if (
+          callData.status === 'missed' &&
+          callData.receiverId === user?.uid &&
+          !callData.isRandom &&
+          !missedNotifShownRef.current
+        ) {
+          missedNotifShownRef.current = true;
+          void (async () => {
+            try {
+              const caller = await getUser(callData.callerId);
+              const name =
+                caller?.firstName?.trim() ||
+                `${caller?.firstName ?? ''} ${caller?.lastName ?? ''}`.trim() ||
+                caller?.username ||
+                'Unknown';
+              await presentMissedCallLocalNotification({
+                callId,
+                callerName: name,
+                isVideo: callData.type === 'video' || (callData as any).callType === 'video',
+              });
+            } catch {
+              /* ignore */
+            }
+          })();
+        }
         const strangerLeft = callData.isRandom && !weJustEndedRef.current;
         handleEndCall(callData, strangerLeft);
       }
@@ -236,6 +384,16 @@ const CallScreen = () => {
 
     return () => {
       unsubscribe();
+      try { InCallManager.stopRingtone(); } catch { /* ignore */ }
+      try {
+        Vibration.cancel();
+      } catch {
+        /* ignore */
+      }
+      if (ringVibrateIntervalRef.current) {
+        clearInterval(ringVibrateIntervalRef.current);
+        ringVibrateIntervalRef.current = null;
+      }
       InCallManager.stop();
       webRTCService.cleanup(callId);
       void useCallSessionStore.getState().reset();
@@ -254,7 +412,7 @@ const CallScreen = () => {
     answererId?: string
   ) => {
     try {
-      const isVideo = callData.type === 'video';
+      const isVideo = callData.type === 'video' || (callData as any).callType === 'video';
       setIsSpeakerEnabled(isVideo);
 
       InCallManager.start({ media: isVideo ? 'video' : 'audio' });
@@ -299,11 +457,13 @@ const CallScreen = () => {
         await webRTCService.createOffer(callId, from, to);
       }
 
+      if (remoteStreamIntervalRef.current) clearInterval(remoteStreamIntervalRef.current);
       remoteStreamIntervalRef.current = setInterval(() => {
         const remote = webRTCService.getRemoteStream();
         if (remote && remote.getTracks().length > 0) setRemoteStream(remote);
       }, 300);
 
+      if (localStreamIntervalRef.current) clearInterval(localStreamIntervalRef.current);
       localStreamIntervalRef.current = setInterval(() => {
         const local = webRTCService.getLocalStream();
         if (local && local.getTracks().length > 0) setLocalStream(local);
@@ -323,16 +483,24 @@ const CallScreen = () => {
   const doAcceptCall = async (callData: Call, _otherUserData: User | null) => {
     if (!user) return;
     try {
-      const isVideo = callData.type === 'video';
+      const isVideo = callData.type === 'video' || (callData as any).callType === 'video';
       const otherUserId = callData.callerId === user.uid ? callData.receiverId : callData.callerId;
       const isRegularCallee = !callData.isRandom && callData.receiverId === user.uid;
 
       setIsSpeakerEnabled(isVideo);
       try {
         InCallManager.stopRingtone();
-        stopIncomingCallVibration();
       } catch {
         /* ignore */
+      }
+      try {
+        Vibration.cancel();
+      } catch {
+        /* ignore */
+      }
+      if (ringVibrateIntervalRef.current) {
+        clearInterval(ringVibrateIntervalRef.current);
+        ringVibrateIntervalRef.current = null;
       }
 
       if (isRegularCallee) {
@@ -370,6 +538,10 @@ const CallScreen = () => {
         if (stream) setLocalStream(stream);
       }
 
+      await updateCallStatus(callId, 'accepted');
+      console.log('CALL_DB_UPDATE status=accepted callId=' + callId);
+      releaseIncomingCall(callId, 'accepted');
+      setCallStatus('accepted' as Call['status']);
       await updateCallStatus(callId, 'active');
       setCallStatus('active');
       callStartTime.current = Date.now();
@@ -378,6 +550,11 @@ const CallScreen = () => {
         clearTimeout(missedCallTimeoutRef.current);
         missedCallTimeoutRef.current = null;
       }
+
+      // Clear any intervals already running (e.g. from initializeWebRTC for random offerer)
+      if (remoteStreamIntervalRef.current) clearInterval(remoteStreamIntervalRef.current);
+      if (localStreamIntervalRef.current) clearInterval(localStreamIntervalRef.current);
+      if (durationInterval.current) clearInterval(durationInterval.current);
 
       remoteStreamIntervalRef.current = setInterval(() => {
         const remote = webRTCService.getRemoteStream();
@@ -389,7 +566,12 @@ const CallScreen = () => {
         if (local && local.getTracks().length > 0) setLocalStream(local);
       }, 300);
 
-      durationInterval.current = setInterval(() => {}, 1000) as any;
+      setCallDuration(0);
+      durationInterval.current = setInterval(() => {
+        if (callStartTime.current > 0) {
+          setCallDuration(Math.floor((Date.now() - callStartTime.current) / 1000));
+        }
+      }, 1000);
     } catch (error) {
       console.error('Accept Error:', error);
     }
@@ -404,10 +586,19 @@ const CallScreen = () => {
     const currentCall = callStateRef.current;
     if (!currentCall) return;
     try {
+      try { InCallManager.stopRingtone(); } catch { /* ignore */ }
+      try {
+        Vibration.cancel();
+      } catch {
+        /* ignore */
+      }
+      if (ringVibrateIntervalRef.current) {
+        clearInterval(ringVibrateIntervalRef.current);
+        ringVibrateIntervalRef.current = null;
+      }
       InCallManager.stop();
-      stopIncomingCallVibration();
-      await updateCallStatus(callId, 'rejected', undefined, currentCall.chatId);
-      void dismissCallKeepForCallId(callId);
+      await updateCallStatus(callId, 'declined', undefined, currentCall.chatId);
+      releaseIncomingCall(callId, 'declined');
       const { sendSignalingMessage } = await import('@/lib/services/callService');
       await sendSignalingMessage(callId, user!.uid, currentCall.receiverId === user!.uid ? currentCall.callerId : currentCall.receiverId, 'hangup');
       webRTCService.cleanup(callId);
@@ -419,15 +610,26 @@ const CallScreen = () => {
   };
 
   const handleEndCall = async (terminalCall?: Call, strangerLeft?: boolean) => {
+    if (hasHandledEndRef.current) return;
+    hasHandledEndRef.current = true;
     const currentCall = terminalCall || callStateRef.current;
     if (!currentCall) return;
     try {
+      try { InCallManager.stopRingtone(); } catch { /* ignore */ }
       InCallManager.stop();
-      stopIncomingCallVibration();
-      void dismissCallKeepForCallId(callId);
+      console.log('CALLER_RING_STOPPED callId=' + callId);
+      // Clear the CallKit UI on iOS so the system knows the call ended
+      reportCallEnded(callId);
+      endAllCallKeepCalls();
       const duration = callStartTime.current > 0 ? Math.floor((Date.now() - callStartTime.current) / 1000) : 0;
-      if (!['ended', 'missed', 'rejected'].includes(currentCall.status)) {
+      try {
+        Vibration.cancel();
+      } catch {
+        /* ignore */
+      }
+      if (!['ended', 'missed', 'declined', 'rejected', 'busy', 'canceled', 'timeout'].includes(currentCall.status)) {
         await updateCallStatus(callId, 'ended', duration, currentCall.chatId);
+        releaseIncomingCall(callId, 'ended');
         const { sendSignalingMessage } = await import('@/lib/services/callService');
         await sendSignalingMessage(callId, user!.uid, currentCall.callerId === user!.uid ? currentCall.receiverId : currentCall.callerId, 'hangup');
       }
@@ -444,10 +646,7 @@ const CallScreen = () => {
     try {
       let allowed: boolean;
       if (Platform.OS === 'web') {
-        const checkSkipFn = httpsCallable<{ userId: string }, { allowed: boolean }>(
-          functions,
-          'checkSkipRateLimit'
-        );
+        const checkSkipFn = (httpsCallable as any)(functions, 'checkSkipRateLimit');
         const result = await checkSkipFn({ userId: user.uid });
         allowed = result.data.allowed;
       } else {
@@ -541,11 +740,20 @@ const CallScreen = () => {
 
   if (loading) return <ScreenLoading />;
 
+  const formatDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   const isRandom = call?.isRandom === true;
   const displayName = isRandom
     ? (otherUser?.firstName?.trim() || t('discover.stranger'))
     : (otherUser ? `${otherUser.firstName} ${otherUser.lastName}`.trim() || otherUser.username : 'User');
-  const isVideoCall = call?.type === 'video';
+  const isVideoCall =
+    call?.type === 'video' ||
+    (call as any)?.callType === 'video' ||
+    callTypeParam === 'video';
 
   return (
     <Screen viewClassName={`flex-1 ${bgColor}`}>
@@ -567,22 +775,44 @@ const CallScreen = () => {
           <Text className={`text-2xl font-semibold mt-6 ${textColor}`}>{displayName}</Text>
           <Text className={`text-base mt-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
             {callStatus === 'ringing'
-              ? (isRandom ? t('calls.connecting') : (isCaller ? t('calls.calling') : t('calls.incomingCall')))
+              ? isRandom
+                ? t('calls.connecting')
+                : isCaller
+                  ? t('calls.calling')
+                  : isVideoCall
+                    ? t('calls.incomingVideoCall')
+                    : t('calls.incomingAudioCall')
+              : callStatus === 'accepted' || callStatus === 'connecting'
+                ? t('calls.connecting')
               : callStatus === 'active'
-              ? t('calls.connected')
-              : t('calls.callEnded')}
+                ? callDuration > 0
+                  ? formatDuration(callDuration)
+                  : t('calls.connected')
+                : t('calls.callEnded')}
           </Text>
         </View>
       )}
 
       <View className={`absolute bottom-0 left-0 right-0 p-6 ${bgColor} border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         {callStatus === 'ringing' && !isCaller && !isRandom && (
-          <View className="flex-row justify-center gap-4 mb-4">
-            <Pressable onPress={handleRejectCall} className="w-16 h-16 rounded-full bg-red-500 items-center justify-center">
-              <Ionicons name="call" size={24} color="white" />
+          <View className="flex-row justify-center gap-8 mb-4 items-center">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('calls.decline')}
+              onPress={handleRejectCall}
+              className="w-20 h-20 rounded-full bg-red-500 items-center justify-center shadow-lg"
+              style={{ elevation: 6 }}
+            >
+              <Ionicons name="call" size={28} color="white" style={{ transform: [{ rotate: '135deg' }] }} />
             </Pressable>
-            <Pressable onPress={handleAcceptCall} className="w-16 h-16 rounded-full bg-green-500 items-center justify-center">
-              <Ionicons name="call" size={24} color="white" />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('calls.accept')}
+              onPress={handleAcceptCall}
+              className="w-20 h-20 rounded-full bg-[#FF5722] items-center justify-center shadow-lg"
+              style={{ elevation: 6 }}
+            >
+              <Ionicons name="call" size={28} color="white" />
             </Pressable>
           </View>
         )}
@@ -604,7 +834,7 @@ const CallScreen = () => {
                 <Feather name={isMuted ? 'mic-off' : 'mic'} size={20} color={isMuted ? 'white' : iconColor} />
               </Pressable>
               {!isVideoCall && (
-                <Pressable onPress={toggleSpeaker} className={`w-14 h-14 rounded-full items-center justify-center ${isSpeakerEnabled ? 'bg-[#337E84]' : isDark ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                <Pressable onPress={toggleSpeaker} className={`w-14 h-14 rounded-full items-center justify-center ${isSpeakerEnabled ? 'bg-[#FF5722]' : isDark ? 'bg-gray-700' : 'bg-gray-200'}`}>
                   <Ionicons name={isSpeakerEnabled ? "volume-high" : "volume-low"} size={20} color={isSpeakerEnabled ? 'white' : iconColor} />
                 </Pressable>
               )}
@@ -619,7 +849,7 @@ const CallScreen = () => {
                 </>
               )}
               {isRandom && (
-                <Pressable onPress={handleNextStranger} className="w-14 h-14 rounded-full items-center justify-center" style={{ backgroundColor: '#337E84' }}>
+                <Pressable onPress={handleNextStranger} className="w-14 h-14 rounded-full items-center justify-center" style={{ backgroundColor: '#FF5722' }}>
                   <Feather name="skip-forward" size={20} color="white" />
                 </Pressable>
               )}

@@ -21,7 +21,6 @@ const getDeviceLanguage = () => {
 
 // Initialize i18n
 i18n.use(initReactI18next).init({
-  showSupportNotice: false,
   compatibilityJSON: 'v4',
   resources: {
     en: { translation: en },
@@ -35,7 +34,7 @@ i18n.use(initReactI18next).init({
     escapeValue: false,
   },
   ...(process.env.NODE_ENV === 'development' && {
-    missingKeyHandler: (_lngs: string | string[], _ns: string, key: string) => {
+    missingKeyHandler: (_lngs: readonly string[], _ns: string, key: string) => {
       console.warn(`[i18n] Missing key: "${key}"`);
     },
   }),

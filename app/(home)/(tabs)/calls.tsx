@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Modal, Pressable, Share, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FlatList } from 'react-native';
@@ -38,6 +38,7 @@ const CallsScreen = () => {
   const calls = useCallStore((state) => state.calls);
   const chats = useChatStore((state) => state.chats);
   const [userData, setUserData] = useState<Record<string, User>>({});
+  const userDataLoadedRef = useRef(false);
   const [creatingLink, setCreatingLink] = useState(false);
   const [creatingCall, setCreatingCall] = useState(false);
   const [showCallLinkModal, setShowCallLinkModal] = useState(false);
@@ -45,8 +46,10 @@ const CallsScreen = () => {
   const [callLink, setCallLink] = useState<string>('');
 
   // Sync calls from Firestore in background (silent update)
-  const syncCallHistory = useCallback(async () => {
+  const syncCallHistory = useCallback(async (force = false) => {
     if (!user?.uid) return;
+    // Skip if already loaded (unless forced)
+    if (userDataLoadedRef.current && !force) return;
 
     let callHistory: Call[] = [];
     try {
@@ -57,37 +60,43 @@ const CallsScreen = () => {
       callHistory = useCallStore.getState().calls;
     }
 
-    // Always fetch user data for participants - from fresh callHistory or store
+    // Fetch user data only for IDs not already cached
     const userIds = new Set<string>();
     callHistory.forEach(call => {
-      userIds.add(call.callerId);
-      userIds.add(call.receiverId);
+      if (!userData[call.callerId]) userIds.add(call.callerId);
+      if (!userData[call.receiverId]) userIds.add(call.receiverId);
     });
 
-    const userDataMap: Record<string, User> = {};
-    await Promise.all(
-      Array.from(userIds).map(async (userId) => {
-        try {
-          const userInfo = await getUser(userId);
-          if (userInfo) {
-            userDataMap[userId] = userInfo;
+    if (userIds.size > 0) {
+      const userDataMap: Record<string, User> = { ...userData };
+      await Promise.all(
+        Array.from(userIds).map(async (userId) => {
+          try {
+            const userInfo = await getUser(userId);
+            if (userInfo) userDataMap[userId] = userInfo;
+          } catch (error) {
+            // Silently fail - user fetch errors are not critical
           }
-        } catch (error) {
-          // Silently fail - user fetch errors are not critical
-        }
-      })
-    );
-    setUserData(userDataMap);
+        })
+      );
+      setUserData(userDataMap);
+    }
+    userDataLoadedRef.current = true;
   }, [user?.uid]);
 
-  // Sync in background when screen comes into focus (but don't block)
+  // Sync on first focus only; re-sync when new calls arrive (calls array changes)
   useFocusEffect(
     useCallback(() => {
-      // Calls are already in store from MMKV/preload
-      // Just sync silently in background
       syncCallHistory();
     }, [syncCallHistory])
   );
+
+  // Re-fetch user data when new call participants appear
+  useEffect(() => {
+    if (!userDataLoadedRef.current) return;
+    const missing = calls.some(c => !userData[c.callerId] || !userData[c.receiverId]);
+    if (missing) syncCallHistory(true);
+  }, [calls]);
 
   // TODO: Enhance call records with user names from Firestore when WebRTC is implemented
 
@@ -132,7 +141,16 @@ const CallsScreen = () => {
         const { getOrCreateDirectChat } = await import('@/lib/services/chatService');
         const { createCall } = await import('@/lib/services/callService');
         const chatId = await getOrCreateDirectChat(user!.uid, otherUserId);
-        const newCallId = await createCall(user!.uid, otherUserId, call.type, chatId);
+        const callType: 'audio' | 'video' = call.type === 'video' ? 'video' : 'audio';
+        const newCallId = await createCall(
+          user!.uid,
+          otherUserId,
+          callType,
+          chatId,
+          undefined,
+          user!.displayName ?? undefined,
+          user!.photoURL ?? undefined,
+        );
         router.push(`/(home)/call/${newCallId}`);
       } catch (error) {
         if (__DEV__) console.error('Error initiating call:', error);
@@ -286,7 +304,7 @@ const CallsScreen = () => {
             const participantName = nameFromUser || nameFromChat || t('calls.unknown');
             const isMissed = call.status === 'missed';
             const isRejected = call.status === 'rejected';
-            const isCompleted = call.status === 'ended' && call.duration && call.duration > 0;
+            const isCompleted = call.status === 'ended' && !!call.duration && call.duration > 0;
             const durationText = isCompleted ? formatDuration(call.duration || 0) : '';
             const dateText = formatDate(call.createdAt) || 'Unknown';
             
@@ -333,8 +351,8 @@ const CallsScreen = () => {
             onPress={(e) => e.stopPropagation()}
           >
             <View className="items-center mb-6">
-              <View className={clsx('w-16 h-16 rounded-full items-center justify-center mb-4', useThemeClassName('bg-green-100', 'bg-green-900/30'))}>
-                <Feather name="check" size={32} color="#10b981" />
+              <View className={clsx('w-16 h-16 rounded-full items-center justify-center mb-4', useThemeClassName('bg-orange-100', 'bg-orange-900/30'))}>
+                <Feather name="check" size={32} color="#FF5722" />
               </View>
               <Text className={clsx('text-2xl font-bold mb-2', textColor)}>{t('calls.callLinkCreated')}</Text>
               <Text className={clsx('text-sm text-center', textSecondaryColor)}>{t('calls.callLinkCopied')}</Text>
@@ -353,7 +371,7 @@ const CallsScreen = () => {
             <View className="gap-3">
               <TouchableOpacity
                 onPress={handleShareLink}
-                className={clsx('flex-row items-center justify-center gap-3 p-4 rounded-2xl', useThemeClassName('bg-[#337E84]', 'bg-[#337E84]'))}
+                className={clsx('flex-row items-center justify-center gap-3 p-4 rounded-2xl', useThemeClassName('bg-[#FF5722]', 'bg-[#FF5722]'))}
                 activeOpacity={0.8}
               >
                 <Feather name="share-2" size={20} color="#ffffff" />
@@ -415,7 +433,7 @@ const CallsScreen = () => {
                 activeOpacity={0.7}
               >
                 <View className={clsx('w-12 h-12 rounded-full items-center justify-center', useThemeClassName('bg-blue-100', 'bg-blue-900/30'))}>
-                  <Feather name="phone" size={24} color="#337E84" />
+                  <Feather name="phone" size={24} color="#FF5722" />
                 </View>
                 <View className="flex-1">
                   <Text className={clsx('text-base font-semibold', textColor)}>{t('calls.audioCall')}</Text>
@@ -432,7 +450,7 @@ const CallsScreen = () => {
                 activeOpacity={0.7}
               >
                 <View className={clsx('w-12 h-12 rounded-full items-center justify-center', useThemeClassName('bg-purple-100', 'bg-purple-900/30'))}>
-                  <Feather name="video" size={24} color="#337E84" />
+                  <Feather name="video" size={24} color="#FF5722" />
                 </View>
                 <View className="flex-1">
                   <Text className={clsx('text-base font-semibold', textColor)}>{t('calls.videoCall')}</Text>

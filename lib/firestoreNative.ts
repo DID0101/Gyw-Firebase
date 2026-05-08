@@ -4,8 +4,9 @@
  * Uses single app from rnFirebase (same as Auth, Functions) - modular API only.
  */
 
-import { Platform } from 'react-native';
+import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
 import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
+import { Platform } from 'react-native';
 
 /** Firestore rejects undefined - strip it before writing. Export for use in layout/sign-up. */
 export function sanitizeForFirestore(obj: Record<string, any>): Record<string, any> {
@@ -24,6 +25,7 @@ let rnFirestore: {
   where: (field: string, op: string, value: any) => any;
   orderBy: (field: string, direction?: string) => any;
   limit: (n: number) => any;
+  startAfter: (...fieldValues: any[]) => any;
   getDocs: (q: any) => Promise<any>;
   getDoc: (ref: any) => Promise<any>;
   setDoc: (ref: any, data: any, options?: any) => Promise<void>;
@@ -49,6 +51,7 @@ if (Platform.OS !== 'web' && hasRnFirebase) {
       where: firestoreModule.where,
       orderBy: firestoreModule.orderBy,
       limit: firestoreModule.limit,
+      startAfter: firestoreModule.startAfter,
       getDocs: firestoreModule.getDocs,
       getDoc: firestoreModule.getDoc,
       setDoc: firestoreModule.setDoc,
@@ -66,6 +69,20 @@ if (Platform.OS !== 'web' && hasRnFirebase) {
 }
 
 export const hasNativeFirestore = Platform.OS !== 'web' && !!rnFirestore;
+
+/** Same shape as Firestore auto-ids (20 chars, A–Z a–z 0–9) for batch.set without addDoc. */
+function newNativeMessageDocId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = new Uint8Array(20);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 20; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let id = '';
+  for (let i = 0; i < 20; i++) id += chars[bytes[i]! % chars.length];
+  return id;
+}
 
 export function getNativeFirestore() {
   return getRnFirestore();
@@ -364,7 +381,7 @@ export async function getUserDocNative(uid: string): Promise<any | null> {
   const db = rnFirestore.getFirestore();
   const snap = await rnFirestore.getDoc(rnFirestore.doc(db, 'users', uid));
   if (!snap.exists) return null;
-  const data = snap.data();
+  const data = snap.data() ?? {};
   return { id: snap.id, ...data };
 }
 
@@ -449,6 +466,34 @@ export function subscribeToChatMessagesNative(
   return unsubscribe;
 }
 
+/** One page of messages strictly older than the given message (same orderBy as live listener: createdAt desc). */
+export async function fetchOlderMessagesAfterNative(
+  chatId: string,
+  oldestMessageId: string,
+  pageSize: number
+): Promise<any[]> {
+  if (!hasNativeFirestore || !rnFirestore || typeof rnFirestore.startAfter !== 'function') {
+    return [];
+  }
+  const db = rnFirestore.getFirestore();
+  const messagesRef = rnFirestore.collection(rnFirestore.doc(db, 'chats', chatId), 'messages');
+  const oldestRef = rnFirestore.doc(db, 'chats', chatId, 'messages', oldestMessageId);
+  const oldestSnap = await rnFirestore.getDoc(oldestRef);
+  if (!oldestSnap.exists) return [];
+  const q = rnFirestore.query(
+    messagesRef,
+    rnFirestore.orderBy('createdAt', 'desc'),
+    rnFirestore.startAfter(oldestSnap),
+    rnFirestore.limit(pageSize)
+  );
+  const snapshot = await rnFirestore.getDocs(q);
+  const messages: any[] = [];
+  snapshot.forEach((docSnap: any) => {
+    messages.push(normalizeMessageDoc(docSnap.id, chatId, docSnap.data()));
+  });
+  return messages;
+}
+
 /** Subscribe to a chat document (native API). Returns unsubscribe. */
 export function subscribeToChatDocNative(
   chatId: string,
@@ -506,13 +551,13 @@ export function subscribeToUserDocNative(
         onSnapshot(null);
         return;
       }
-      const data = snap.data();
+      const data = snap.data() ?? {};
       onSnapshot({
         id: snap.id,
         ...data,
-        lastActive: data.lastActive?.toDate?.()?.toISOString() ?? data.lastActive,
-        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+        lastActive: (data as any).lastActive?.toDate?.()?.toISOString() ?? (data as any).lastActive,
+        createdAt: (data as any).createdAt?.toDate?.()?.toISOString() || (data as any).createdAt,
+        updatedAt: (data as any).updatedAt?.toDate?.()?.toISOString() || (data as any).updatedAt,
       });
     },
     (err: any) => {
@@ -532,6 +577,42 @@ export async function addMessageNative(chatId: string, messageData: Record<strin
   const messagesRef = rnFirestore.collection(rnFirestore.doc(db, 'chats', chatId), 'messages');
   const docRef = await rnFirestore.addDoc(messagesRef, docData);
   return docRef.id;
+}
+
+/**
+ * One round-trip: new message + chat lastMessage + unread increments for known recipients.
+ * Avoids getDoc before every send (major latency win vs addMessage + incrementUnread).
+ */
+export async function addMessageAndUpdateChatNativeBatch(
+  chatId: string,
+  messageData: Record<string, any>,
+  lastMessagePreview: { text: string; senderId: string; createdAt: string },
+  otherUserIds: string[]
+): Promise<string> {
+  if (!hasNativeFirestore || !rnFirestore) throw new Error('Native Firestore not available');
+  const db = rnFirestore.getFirestore();
+  const data = sanitizeForFirestore(messageData);
+  const docData = { ...data, createdAt: rnFirestore.serverTimestamp() };
+  const chatRef = rnFirestore.doc(db, 'chats', chatId);
+  const msgRef = rnFirestore.doc(db, 'chats', chatId, 'messages', newNativeMessageDocId());
+  const serverTs = rnFirestore.serverTimestamp();
+  const inc = rnFirestore.FieldValue.increment(1);
+  const chatUpdates: Record<string, any> = {
+    lastMessage: lastMessagePreview,
+    lastMessageAt: serverTs,
+    lastSenderId: lastMessagePreview.senderId,
+    updatedAt: serverTs,
+  };
+  for (const uid of otherUserIds) {
+    if (uid && uid !== lastMessagePreview.senderId) {
+      chatUpdates[`unreadCount.${uid}`] = inc;
+    }
+  }
+  const batch = db.batch();
+  batch.set(msgRef, docData);
+  batch.update(chatRef, chatUpdates);
+  await batch.commit();
+  return msgRef.id;
 }
 
 /** Set typing indicator (native API) */
@@ -595,14 +676,124 @@ export async function markMessagesAsReadNative(chatId: string, userId: string): 
   if (!hasNativeFirestore || !rnFirestore) return;
   const db = rnFirestore.getFirestore();
   const chatRef = rnFirestore.doc(db, 'chats', chatId);
-  const snap = await rnFirestore.getDoc(chatRef);
-  if (!snap.exists) return;
-  const data = snap.data();
-  const unreadCount = data?.unreadCount || {};
+  // Use field path update — atomic, does not overwrite other participants' unread counts.
   await rnFirestore.updateDoc(chatRef, {
-    unreadCount: { ...unreadCount, [userId]: 0 },
+    [`unreadCount.${userId}`]: 0,
     updatedAt: rnFirestore.serverTimestamp(),
   });
+}
+
+export async function markMessageAsDeliveredNative(chatId: string, messageId: string): Promise<void> {
+  if (!hasNativeFirestore || !rnFirestore) return;
+  const db = rnFirestore.getFirestore();
+  const ref = rnFirestore.doc(db, 'chats', chatId, 'messages', messageId);
+  const now = new Date().toISOString();
+  await rnFirestore.updateDoc(ref, {
+    status: 'delivered',
+    deliveredAt: now,
+    updatedAt: rnFirestore.serverTimestamp(),
+  });
+}
+
+export type MarkMessageSeenHintNative = {
+  chatType?: 'direct' | 'group';
+  messageReadBy?: string[];
+  messageSenderId?: string;
+  chatParticipants?: string[];
+};
+
+export async function markMessageAsSeenNative(
+  chatId: string,
+  messageId: string,
+  userId: string,
+  hint?: MarkMessageSeenHintNative
+): Promise<void> {
+  if (!hasNativeFirestore || !rnFirestore) return;
+  const db = rnFirestore.getFirestore();
+  const ref = rnFirestore.doc(db, 'chats', chatId, 'messages', messageId);
+  const knownSenderId = hint?.messageSenderId;
+  const knownReadBy = hint?.messageReadBy;
+  const knownChatType = hint?.chatType;
+  const knownParticipants = hint?.chatParticipants;
+
+  if (knownSenderId && knownSenderId === userId) return;
+
+  if (knownChatType === 'direct') {
+    if (knownReadBy?.includes(userId)) return;
+    const now = new Date().toISOString();
+    await rnFirestore.updateDoc(ref, {
+      status: 'seen',
+      seenAt: now,
+      readBy: [...(knownReadBy ?? []), userId],
+      updatedAt: rnFirestore.serverTimestamp(),
+    });
+    return;
+  }
+
+  if (knownChatType === 'group' && knownReadBy !== undefined) {
+    if (knownReadBy.includes(userId)) return;
+    const nextReadBy = [...knownReadBy, userId];
+    await rnFirestore.updateDoc(ref, {
+      readBy: nextReadBy,
+      updatedAt: rnFirestore.serverTimestamp(),
+    });
+    if (knownParticipants && knownSenderId) {
+      const otherParticipants = knownParticipants.filter((p: string) => p !== knownSenderId);
+      const allRead = otherParticipants.every((p: string) => nextReadBy.includes(p));
+      if (allRead) {
+        const now = new Date().toISOString();
+        await rnFirestore.updateDoc(ref, {
+          status: 'seen',
+          seenAt: now,
+          updatedAt: rnFirestore.serverTimestamp(),
+        });
+      }
+    }
+    return;
+  }
+
+  const msgSnap = await rnFirestore.getDoc(ref);
+  if (!msgSnap.exists()) return;
+  const messageData = msgSnap.data() || {};
+  if (messageData.senderId === userId) return;
+  const chatRef = rnFirestore.doc(db, 'chats', chatId);
+  const chatSnap = await rnFirestore.getDoc(chatRef);
+  const chatData = chatSnap.data();
+  const isGroupChat = chatData?.type === 'group';
+
+  if (isGroupChat) {
+    const readBy: string[] = messageData.readBy || [];
+    if (!readBy.includes(userId)) {
+      const nextRead = [...readBy, userId];
+      await rnFirestore.updateDoc(ref, {
+        readBy: nextRead,
+        updatedAt: rnFirestore.serverTimestamp(),
+      });
+      const participants = chatData?.participants || [];
+      const otherParticipants = participants.filter((p: string) => p !== messageData.senderId);
+      const allRead = otherParticipants.every((p: string) => nextRead.includes(p));
+      if (allRead && messageData.status !== 'seen') {
+        const now = new Date().toISOString();
+        await rnFirestore.updateDoc(ref, {
+          status: 'seen',
+          seenAt: now,
+          updatedAt: rnFirestore.serverTimestamp(),
+        });
+      }
+    }
+  } else {
+    if (messageData.status === 'delivered' || messageData.status === 'sent' || messageData.status == null) {
+      const now = new Date().toISOString();
+      const rb: string[] = messageData.readBy || [];
+      if (rb.includes(userId)) return;
+      await rnFirestore.updateDoc(ref, {
+        status: 'seen',
+        seenAt: now,
+        readBy: [...rb, userId],
+        updatedAt: rnFirestore.serverTimestamp(),
+      });
+    }
+  }
 }
 
 /** Get or create direct chat (native API) - uses native auth for permission */
@@ -624,7 +815,10 @@ export async function getOrCreateDirectChatNative(userId1: string, userId2: stri
   });
   if (existing) return existing.id;
 
-  const [u1, u2] = await Promise.all([getUserDocNative(userId1), getUserDocNative(userId2)]);
+  const [u1, u2] = await Promise.all([
+    getUserDocNative(userId1),
+    userId2 === GYW_AI_SYSTEM_ID ? Promise.resolve(null) : getUserDocNative(userId2),
+  ]);
   const user1Data = u1 || {};
   const user2Data = u2 || {};
 
@@ -635,9 +829,13 @@ export async function getOrCreateDirectChatNative(userId1: string, userId2: stri
     ...(user1Data.username && { username: user1Data.username }),
   };
   participantData[userId2] = {
-    name: `${user2Data.firstName || ''} ${user2Data.lastName || ''}`.trim() || 'User',
-    ...(user2Data.avatar && { avatar: user2Data.avatar }),
-    ...(user2Data.username && { username: user2Data.username }),
+    ...(userId2 === GYW_AI_SYSTEM_ID
+      ? { name: GYW_AI_DISPLAY_NAME }
+      : {
+          name: `${user2Data.firstName || ''} ${user2Data.lastName || ''}`.trim() || 'User',
+          ...(user2Data.avatar && { avatar: user2Data.avatar }),
+          ...(user2Data.username && { username: user2Data.username }),
+        }),
   };
 
   const serverTs = rnFirestore.serverTimestamp();
@@ -663,19 +861,24 @@ export async function createCallNative(
   receiverId: string,
   type: 'audio' | 'video',
   chatId?: string,
-  isRandom?: boolean
+  isRandom?: boolean,
+  callerName?: string,
+  callerAvatar?: string,
 ): Promise<string> {
   if (!hasNativeFirestore || !rnFirestore) throw new Error('Native Firestore not available');
   const db = rnFirestore.getFirestore();
   const callData: Record<string, any> = {
     callerId,
     receiverId,
+    calleeId: receiverId, // mirrors receiverId so _layout.tsx Firestore listener (queries calleeId) fires
     type,
     status: 'ringing',
     createdAt: rnFirestore.serverTimestamp(),
   };
   if (chatId) callData.chatId = chatId;
   if (isRandom) callData.isRandom = true;
+  if (callerName) callData.callerName = callerName;
+  if (callerAvatar) callData.callerAvatar = callerAvatar;
   const docRef = await rnFirestore.addDoc(rnFirestore.collection(db, 'calls'), callData);
   return docRef.id;
 }

@@ -1,15 +1,15 @@
 import { User, onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
-import { createContext, useContext, useEffect, useState, useMemo, useCallback, ReactNode } from 'react';
-import { AppState, type AppStateStatus, Platform } from 'react-native';
+import { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef, ReactNode } from 'react';
+import { Platform } from 'react-native';
 import { clearLastKnownAuthUid, persistLastKnownAuthUid } from '@/lib/authLastKnownUid';
-import {
-  refreshFcmTokenOnAppForeground,
-  removeCurrentFcmTokenDoc,
-  setupFcmTokenForUser,
-} from '@/lib/fcmTokenService';
 import { auth } from '@/lib/firebase';
 import { getRnAuth, hasRnFirebase } from '@/lib/rnFirebase';
+import { registerPushTokens, unregisterPushTokens } from '@/lib/fcmTokenService';
 import { useCallSessionStore } from '@/store/callSessionStore';
+import { useChatStore } from '@/store/chatStore';
+import { useCallStore } from '@/store/callStore';
+import { useStoryStore } from '@/store/storyStore';
+import { persistence } from '@/store/persistence';
 
 interface AuthContextType {
   user: User | null;
@@ -42,17 +42,38 @@ function toWebUser(nativeUser: any): User | null {
   } as User;
 }
 
+function clearPersistedCachesForAccountSwitch(): void {
+  useChatStore.getState().clearAll();
+  useCallStore.getState().clearAll();
+  useStoryStore.getState().clearAll();
+  void persistence.clearAll();
+}
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Tracks last signed-in uid so we can drop global (non–user-scoped) MMKV chat/call data when the account changes. */
+  const prevAuthUidRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (Platform.OS === 'web' || !hasRnFirebase) {
       const unsubscribe = onAuthStateChanged(auth, (u) => {
         setUser(u);
         setLoading(false);
-        if (u?.uid) void persistLastKnownAuthUid(u.uid);
-        else void clearLastKnownAuthUid();
+        if (u?.uid) {
+          const prev = prevAuthUidRef.current;
+          if (prev != null && prev !== u.uid) {
+            clearPersistedCachesForAccountSwitch();
+          }
+          prevAuthUidRef.current = u.uid;
+          void persistLastKnownAuthUid(u.uid);
+          void registerPushTokens(u.uid);
+        } else {
+          prevAuthUidRef.current = null;
+          clearPersistedCachesForAccountSwitch();
+          void clearLastKnownAuthUid();
+          void unregisterPushTokens();
+        }
       });
       return () => unsubscribe();
     }
@@ -63,36 +84,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setLoading(false);
       return;
     }
-    const { onAuthStateChanged: rnOnAuthStateChanged } = require('@react-native-firebase/auth');
-    const unsubscribe = rnOnAuthStateChanged(rnAuth, (u: any) => {
-      setUser(toWebUser(u));
+    try {
+      const { onAuthStateChanged: rnOnAuthStateChanged } = require('@react-native-firebase/auth');
+      const unsubscribe = rnOnAuthStateChanged(rnAuth, (u: any) => {
+        setUser(toWebUser(u));
+        setLoading(false);
+        if (u?.uid) {
+          const prev = prevAuthUidRef.current;
+          if (prev != null && prev !== u.uid) {
+            clearPersistedCachesForAccountSwitch();
+          }
+          prevAuthUidRef.current = u.uid;
+          void persistLastKnownAuthUid(u.uid);
+          void registerPushTokens(u.uid);
+        } else {
+          prevAuthUidRef.current = null;
+          clearPersistedCachesForAccountSwitch();
+          void clearLastKnownAuthUid();
+          void unregisterPushTokens();
+        }
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('[AuthContext] Failed to load native auth module:', e);
       setLoading(false);
-      if (u?.uid) void persistLastKnownAuthUid(u.uid);
-      else void clearLastKnownAuthUid();
-    });
-    return () => unsubscribe();
+    }
   }, []);
 
-  useEffect(() => {
-    if (Platform.OS === 'web' || loading || !user?.uid) return;
-    const stop = setupFcmTokenForUser(user.uid);
-    return () => stop();
-  }, [user?.uid, loading]);
-
-  useEffect(() => {
-    if (Platform.OS === 'web' || loading || !user?.uid) return;
-    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (next === 'active') void refreshFcmTokenOnAppForeground(user.uid);
-    });
-    return () => sub.remove();
-  }, [user?.uid, loading]);
-
   const signOut = useCallback(async () => {
-    const uid = user?.uid;
-    if (uid && Platform.OS !== 'web') {
-      await removeCurrentFcmTokenDoc(uid);
-    }
-    await useCallSessionStore.getState().reset().catch(() => {});
+    await useCallSessionStore.getState().reset().catch((e) => {
+      console.warn('[AuthContext] signOut: call session reset failed:', e);
+    });
     if (Platform.OS === 'web' || !hasRnFirebase) {
       await firebaseSignOut(auth);
       return;
@@ -101,7 +123,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!rnAuth) return;
     const { signOut: rnSignOut } = require('@react-native-firebase/auth');
     await rnSignOut(rnAuth);
-  }, [user?.uid]);
+  }, []);
 
   const contextValue = useMemo(
     () => ({ user, loading, signOut }),

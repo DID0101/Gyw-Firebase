@@ -15,7 +15,7 @@ interface CallStore {
   updateCall: (callId: string, updates: Partial<Call>) => void;
   clearAll: () => void;
   // Persistence
-  loadFromStorage: () => void;
+  loadFromStorage: () => Promise<void>;
 }
 
 export const useCallStore = create<CallStore>((set) => ({

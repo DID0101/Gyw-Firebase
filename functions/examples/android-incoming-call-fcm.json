@@ -1,0 +1,18 @@
+{
+  "comment": "Send via Firebase Admin SDK: admin.messaging().send(message). No top-level notification key.",
+  "message": {
+    "token": "<FCM_REGISTRATION_TOKEN>",
+    "data": {
+      "type": "incoming_call",
+      "callId": "firestore_call_doc_id",
+      "callerId": "uid_of_caller",
+      "callerName": "Alex",
+      "callerAvatar": "https://example.com/avatar.jpg",
+      "callType": "audio"
+    },
+    "android": {
+      "priority": "high",
+      "ttl": "30s"
+    }
+  }
+}

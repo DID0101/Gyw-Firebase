@@ -177,12 +177,12 @@ const AudioMessage: React.FC<AudioMessageProps> = ({ messageId, uri, duration, i
     },
   }), [barWidth, handleSeek]);
 
-  const progressColor = isSender ? '#FFFFFF' : (isDark ? '#337E84' : '#337E84');
+  const progressColor = isSender ? '#FFFFFF' : (isDark ? '#FF5722' : '#FF5722');
   const unplayedColor = isSender ? 'rgba(255,255,255,0.3)' : (isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)');
   const durationColor = isSender ? 'rgba(255,255,255,0.9)' : (isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)');
   // High-contrast: solid white for sender (on teal bubble), solid teal for receiver
-  const buttonBg = isSender ? '#FFFFFF' : '#337E84';
-  const iconColor = isSender ? '#337E84' : '#FFFFFF';
+  const buttonBg = isSender ? '#FFFFFF' : '#FF5722';
+  const iconColor = isSender ? '#FF5722' : '#FFFFFF';
 
   const frameStyle = [
     styles.frame,

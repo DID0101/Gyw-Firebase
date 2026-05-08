@@ -22,7 +22,7 @@ export function CallButton(props: PressableProps & { bg: string }) {
           opacity: pressed && !disabled ? 0.7 : 1,
         };
 
-        const extra = typeof style === 'function' ? style({ pressed }) : style;
+        const extra = typeof style === 'function' ? style({ pressed, hovered: false }) : style;
         return [base, extra] as any;
       }}
     />

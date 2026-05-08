@@ -29,6 +29,16 @@ if (Platform.OS !== 'web') {
       const { getApps } = require('@react-native-firebase/app');
       const apps = getApps();
       console.log('APPS COUNT', apps?.length ?? 0);
+      try {
+        const opts = rnApp?.options || {};
+        console.log('[rnFirebase] app options', {
+          appId: opts.appId,
+          projectId: opts.projectId,
+          apiKey: opts.apiKey,
+        });
+      } catch {
+        // ignore
+      }
       if ((apps?.length ?? 0) !== 1) {
         console.warn('[rnFirebase] Expected exactly 1 app. Multiple apps can cause UNAUTHENTICATED in callables.');
       }

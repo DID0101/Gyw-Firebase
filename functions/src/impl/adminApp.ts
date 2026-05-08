@@ -28,8 +28,3 @@ export function getDb(): ReturnType<typeof admin.firestore> {
   ensureInit();
   return admin.firestore();
 }
-
-export function messagingInstance(): ReturnType<typeof admin.messaging> {
-  ensureInit();
-  return admin.messaging();
-}

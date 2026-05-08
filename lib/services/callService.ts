@@ -15,6 +15,7 @@ import {
   getDocs,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { functions, httpsCallable } from '@/lib/firebase';
 import {
   createCallNative,
   getCallHistoryNative,
@@ -28,11 +29,35 @@ import {
 } from '@/lib/firestoreNative';
 import { Call, CallSignaling } from '@/lib/types/call';
 
+function csLog(...args: unknown[]) {
+  if (__DEV__) console.log(...args);
+}
+function csWarn(...args: unknown[]) {
+  if (__DEV__) console.warn(...args);
+}
+
 export interface CreateCallOptions {
   chatId?: string;
   /** Omegle-style random video chat; no chat/call log. */
   isRandom?: boolean;
 }
+
+const TERMINAL_STATUSES = new Set([
+  'ended',
+  'missed',
+  'declined',
+  'rejected',
+  'busy',
+  'canceled',
+  'timeout',
+]);
+
+const normalizeCallStatus = (status: string | undefined): Call['status'] => {
+  if (!status) return 'ringing';
+  if (status === 'answered') return 'accepted' as Call['status'];
+  if (status === 'rejected') return 'declined' as Call['status'];
+  return status as Call['status'];
+};
 
 // Create a new call
 export const createCall = async (
@@ -40,19 +65,52 @@ export const createCall = async (
   receiverId: string,
   type: 'audio' | 'video',
   chatId?: string,
-  options?: CreateCallOptions
+  options?: CreateCallOptions,
+  /** Caller's display name — stored in the call doc so the receiver's
+   *  CallKeep / lock-screen notification can show the name without a
+   *  separate Firestore lookup. */
+  callerName?: string,
+  callerAvatar?: string,
 ): Promise<string> => {
+  // Defensive: some UI surfaces may pass an untyped value (e.g. old call history rows).
+  // Keep the backend contract strict: only 'audio'|'video'.
+  const normalizedType: 'audio' | 'video' = type === 'video' ? 'video' : 'audio';
   const opts = options ?? (chatId !== undefined ? { chatId } : {});
+  const roomId = doc(collection(db, 'calls')).id;
+
+  // Canonical production path: callable writes call doc + pushes.
+  // Keep random path on direct Firestore because it uses a separate flow.
+  if (!opts.isRandom) {
+    try {
+      const initiateCallFn = httpsCallable<any, { success: boolean; roomId: string }>(functions, 'initiateCall');
+      const res = await initiateCallFn({
+        callerId,
+        calleeId: receiverId,
+        roomId,
+        callType: normalizedType,
+        callerName: callerName ?? '',
+        callerAvatar: callerAvatar ?? '',
+      });
+      if (res?.data?.success && res.data.roomId) {
+        csLog('Call created (callable):', { roomId: res.data.roomId, callerId, receiverId, type });
+        return res.data.roomId;
+      }
+    } catch (err) {
+      csWarn('[callService] initiateCall callable failed, falling back to direct write', err);
+    }
+  }
 
   if (Platform.OS !== 'web' && hasNativeFirestore) {
     const callId = await createCallNative(
       callerId,
       receiverId,
-      type,
+      normalizedType,
       opts.chatId,
-      opts.isRandom
+      opts.isRandom,
+      callerName,
+      callerAvatar,
     );
-    console.log('Call created (native):', { callId, callerId, receiverId, type, chatId: opts.chatId, isRandom: opts.isRandom, status: 'ringing' });
+    csLog('Call created (native):', { callId, callerId, receiverId, type, chatId: opts.chatId, isRandom: opts.isRandom, status: 'ringing' });
     return callId;
   }
 
@@ -60,22 +118,21 @@ export const createCall = async (
   const callData: any = {
     callerId,
     receiverId,
-    type,
+    calleeId: receiverId, // mirrors receiverId so _layout.tsx Firestore listener (queries calleeId) fires
+    type: normalizedType,
     status: 'ringing' as const,
     createdAt: serverTimestamp(),
   };
 
-  if (opts.chatId) {
-    callData.chatId = opts.chatId;
-  }
-  if (opts.isRandom) {
-    callData.isRandom = true;
-  }
+  if (opts.chatId) callData.chatId = opts.chatId;
+  if (opts.isRandom) callData.isRandom = true;
+  if (callerName) callData.callerName = callerName;
+  if (callerAvatar) callData.callerAvatar = callerAvatar;
 
   const callDocRef = doc(callsRef);
   await setDoc(callDocRef, callData);
 
-  console.log('Call created:', {
+  csLog('Call created:', {
     callId: callDocRef.id,
     callerId,
     receiverId,
@@ -127,8 +184,21 @@ export const updateCallStatus = async (
   duration?: number,
   chatId?: string
 ): Promise<void> => {
+  const normalizedStatus = normalizeCallStatus(status as string);
+  try {
+    const transitionFn = httpsCallable<any, { success: true; status: string }>(functions, 'transitionCallState');
+    await transitionFn({
+      roomId: callId,
+      nextStatus: normalizedStatus,
+      ...(typeof duration === 'number' ? { duration } : {}),
+    });
+    return;
+  } catch (err) {
+    if (__DEV__) console.warn('[callService] transitionCallState callable failed, fallback to direct update', err);
+  }
+
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    await updateCallStatusNative(callId, status, duration, chatId);
+    await updateCallStatusNative(callId, normalizedStatus, duration, chatId);
     return;
   }
 
@@ -141,11 +211,11 @@ export const updateCallStatus = async (
 
   const callData = callDoc.data();
   const updateData: any = {
-    status,
+    status: normalizedStatus,
     updatedAt: serverTimestamp(),
   };
 
-  if (status === 'ended' || status === 'missed' || status === 'rejected' || status === 'busy') {
+  if (TERMINAL_STATUSES.has(normalizedStatus)) {
     updateData.endedAt = serverTimestamp();
   }
 
@@ -159,13 +229,19 @@ export const updateCallStatus = async (
 
   await updateDoc(callRef, updateData);
 
-  // Create system message in chat if call ended/rejected/missed (skip for random calls)
+  // Create system message in chat if call ended/declined/missed (skip for random calls)
   if (
     chatId &&
     !callData?.isRandom &&
-    (status === 'ended' || status === 'missed' || status === 'rejected')
+    (normalizedStatus === 'ended' || normalizedStatus === 'missed' || normalizedStatus === 'declined')
   ) {
-    await createCallLogMessage(callId, callData, status, duration || 0, chatId);
+    await createCallLogMessage(
+      callId,
+      callData,
+      normalizedStatus as 'ended' | 'missed' | 'declined',
+      duration || 0,
+      chatId
+    );
   }
 };
 
@@ -173,7 +249,7 @@ export const updateCallStatus = async (
 const createCallLogMessage = async (
   callId: string,
   callData: any,
-  status: 'ended' | 'missed' | 'rejected',
+  status: 'ended' | 'missed' | 'declined',
   duration: number,
   chatId: string
 ): Promise<void> => {
@@ -186,7 +262,7 @@ const createCallLogMessage = async (
     
     if (status === 'missed') {
       messageText = `${callType} Missed ${callData.type} call`;
-    } else if (status === 'rejected') {
+    } else if (status === 'declined') {
       messageText = `${callType} ${callData.type === 'video' ? 'Video' : 'Audio'} call • Rejected`;
     } else if (status === 'ended') {
       if (duration > 0) {
@@ -263,9 +339,13 @@ export const getCall = async (callId: string): Promise<Call | null> => {
 
   if (callDoc.exists()) {
     const data = callDoc.data();
+    const normalizedType: 'audio' | 'video' =
+      data.type === 'video' || data.callType === 'video' ? 'video' : 'audio';
     return {
       id: callDoc.id,
       ...data,
+      type: normalizedType,
+      status: normalizeCallStatus(data.status),
       createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
       endedAt: data.endedAt?.toDate?.()?.toISOString() || data.endedAt,
     } as Call;
@@ -288,9 +368,13 @@ export const subscribeToCall = (
     (callDoc) => {
       if (callDoc.exists()) {
         const data = callDoc.data();
+        const normalizedType: 'audio' | 'video' =
+          data.type === 'video' || data.callType === 'video' ? 'video' : 'audio';
         callback({
           id: callDoc.id,
           ...data,
+          type: normalizedType,
+          status: normalizeCallStatus(data.status),
           createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
           endedAt: data.endedAt?.toDate?.()?.toISOString() || data.endedAt,
         } as Call);
@@ -317,7 +401,7 @@ export const sendSignalingMessage = async (
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
       await sendSignalingMessageNative(callId, from, to, type, sdp, candidate);
-      console.log(`Signaling ${type} sent from ${from} to ${to} (native)`);
+      csLog(`Signaling ${type} sent from ${from} to ${to} (native)`);
       return;
     }
     const signalingRef = collection(db, 'callSignaling', callId, 'messages');
@@ -329,7 +413,7 @@ export const sendSignalingMessage = async (
       ...(candidate && { candidate }),
       timestamp: serverTimestamp(),
     });
-    console.log(`Signaling ${type} sent from ${from} to ${to}`);
+    csLog(`Signaling ${type} sent from ${from} to ${to}`);
   } catch (error) {
     console.error(`Error sending signaling ${type}:`, error);
     throw error;
@@ -343,13 +427,13 @@ export const subscribeToSignaling = (
   callback: (message: CallSignaling) => void
 ): (() => void) => {
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    console.log(`Subscribing to signaling for user ${userId} on call ${callId} (native)`);
+    csLog(`Subscribing to signaling for user ${userId} on call ${callId} (native)`);
     return subscribeToSignalingNative(callId, userId, callback);
   }
   const signalingRef = collection(db, 'callSignaling', callId, 'messages');
   const q = query(signalingRef);
 
-  console.log(`Subscribing to signaling for user ${userId} on call ${callId}`);
+  csLog(`Subscribing to signaling for user ${userId} on call ${callId}`);
 
   return onSnapshot(
     q,
@@ -369,7 +453,7 @@ export const subscribeToSignaling = (
               ...(data.candidate && { candidate: data.candidate }),
               timestamp: data.timestamp?.toDate?.()?.toISOString() || data.timestamp,
             };
-            console.log(`Signaling ${message.type} received from ${message.from}`);
+            csLog(`Signaling ${message.type} received from ${message.from}`);
             callback(message);
           }
         }
@@ -377,7 +461,7 @@ export const subscribeToSignaling = (
     },
     (error) => {
       if (error.code === 'permission-denied') {
-        console.warn('Signaling permission denied - this is expected if call was ended/cleaned up');
+        csWarn('Signaling permission denied - this is expected if call was ended/cleaned up');
       } else {
         console.error('Error listening to signaling:', error);
       }
@@ -438,10 +522,10 @@ export const getCallHistory = async (userId: string, limitCount: number = 50): P
     return timeB - timeA;
   });
 
-  // Return only completed/ended/missed/rejected calls (exclude active/ringing and random)
+  // Return only completed terminal calls (exclude active/ringing and random)
   const completedCalls = calls.filter(
     (call) =>
-      ['ended', 'missed', 'rejected'].includes(call.status) && !call.isRandom
+      ['ended', 'missed', 'declined', 'rejected', 'canceled', 'timeout'].includes(call.status) && !call.isRandom
   );
 
   return completedCalls.slice(0, limitCount);

@@ -88,6 +88,11 @@ export const usePresenceStore = create<PresenceStore>((set, get) => ({
   },
   setMultipleOnline: (users) => {
     set((state) => {
+      // Only update if any value actually changed
+      const hasChange = Object.entries(users).some(
+        ([id, online]) => state.onlineUsers[id] !== online
+      );
+      if (!hasChange) return state;
       return {
         onlineUsers: {
           ...state.onlineUsers,

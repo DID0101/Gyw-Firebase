@@ -1,6 +1,6 @@
 {
   "name": "functions",
-  "description": "Firebase Cloud Functions (do not add \"gyw\" file:.. here — it breaks deploy discovery).",
+  "description": "Firebase Cloud Functions",
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
@@ -10,24 +10,29 @@
     "deploy": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
     "deploy:functions": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
     "deploy:function": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
-    "deploy:onCallCreated": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:default:onCallCreated",
-    "deploy:onCallUpdated": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:default:onCallUpdated",
-    "deploy:onCallCreatedAndTestFcm": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:default:onCallCreated,functions:default:testFcmSend",
     "deploy:fast": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "deploy:noAi": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:rejectCallAnon,functions:markStaleRingingCallsMissed,functions:tryRandomMatch,functions:checkSkipRateLimit,functions:checkAndBanFromReports,functions:cleanupRandomQueue,functions:gywAiReplyV1,functions:gywAiHealthV1,functions:initiateCall,functions:endCall",
+    "deploy:call": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:initiateCall,functions:endCall",
+    "logs": "firebase functions:log",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
   },
   "engines": {
     "node": "20"
   },
   "main": "lib/index.js",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "apn": "^2.2.0",
     "firebase-admin": "^13.7.0",
     "firebase-functions": "^7.2.2",
-    "gyw": "file:.."
+    "gyw": "file:..",
+    "openai": "^6.35.0"
   },
   "devDependencies": {
     "cross-env": "^7.0.3",
     "typescript": "^5.3.0"
   },
-  "private": true
+  "private": true,
+  "version": "1.0.0"
 }

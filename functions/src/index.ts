@@ -5,25 +5,35 @@
  * Do NOT import firebase-admin here — it makes CLI code analysis exceed the default 10s timeout.
  * Admin initializes when `impl/adminApp` loads (first `require("./impl/handlers")`).
  *
- * PowerShell (if discovery still times out): `$env:FUNCTIONS_DISCOVERY_TIMEOUT='120'; firebase deploy --only functions`
- * Partial deploy (firebase.json has codebase `default`): `--only functions:default:onCallCreated` not `functions:onCallCreated`.
+ * Discovery default is 10s. From `functions/`: `npm run deploy` sets FUNCTIONS_DISCOVERY_TIMEOUT=120.
+ * PowerShell: `$env:FUNCTIONS_DISCOVERY_TIMEOUT='120'; firebase deploy --only functions`
  */
 import * as functions from "firebase-functions/v1";
 
-export const onCallCreated = functions
+// ── callPush (Firestore onCreate calls/{callId}) ─────────────────────────────
+// Explicitly export callPush so production always maps this trigger to the
+// current repo handler (impl/callPushHandler.ts), replacing legacy ghost code.
+export const callPush = functions
   .region("us-central1")
   .firestore.document("calls/{callId}")
   .onCreate(async (snap, context) => {
-    const { handleOnCallCreated } = require("./impl/handlers") as typeof import("./impl/handlers");
-    return handleOnCallCreated(snap, context);
+    const { handleCallCreated } = require("./impl/callPushHandler") as typeof import("./impl/callPushHandler");
+    return handleCallCreated(context.params.callId, snap.data());
   });
 
-export const onCallUpdated = functions
+// ── messagePush (Firestore onCreate chats/{chatId}/messages/{messageId}) ─────
+// Dedicated chat message sender. Data-only + high-priority payload with type=chat_message.
+// Completely separate from callPush / incoming_call transport.
+export const messagePush = functions
   .region("us-central1")
-  .firestore.document("calls/{callId}")
-  .onUpdate(async (change, context) => {
-    const { handleOnCallUpdated } = require("./impl/handlers") as typeof import("./impl/handlers");
-    return handleOnCallUpdated(change, context);
+  .firestore.document("chats/{chatId}/messages/{messageId}")
+  .onCreate(async (snap, context) => {
+    const { handleChatMessageCreated } = require("./impl/messagePushHandler") as typeof import("./impl/messagePushHandler");
+    return handleChatMessageCreated(
+      context.params.chatId,
+      context.params.messageId,
+      snap.data()
+    );
   });
 
 export const markStaleRingingCallsMissed = functions
@@ -35,36 +45,38 @@ export const markStaleRingingCallsMissed = functions
     return handleMarkStaleRingingCallsMissed();
   });
 
-/** Proactive FCM registration cleanup + dry-run validation (see `fcmTokenMaintenance.ts`). */
-export const fcmTokenMaintenanceSweep = functions
+// ── onCallTerminal — writes callHistory for both parties ─────────────────────
+export const onCallTerminal = functions
   .region("us-central1")
-  .runWith({ timeoutSeconds: 540, memory: "512MB" })
-  .pubsub.schedule("every day 05:00")
-  .timeZone("Etc/UTC")
-  .onRun(async () => {
-    const { handleFcmTokenMaintenanceScheduled } = require("./impl/handlers") as typeof import("./impl/handlers");
-    return handleFcmTokenMaintenanceScheduled();
+  .firestore.document("calls/{callId}")
+  .onUpdate(async (change, context) => {
+    const { handleOnCallTerminal } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
+    return handleOnCallTerminal(change, context);
   });
 
-/** Remove fcmTokens subdocs with updatedAt/lastActiveAt older than 60d or unusable token length. */
-export const cleanupStaleTokens = functions
+// ── deleteStaleCallDocs — hard-delete calls past their TTL ───────────────────
+export const deleteStaleCallDocs = functions
   .region("us-central1")
-  .runWith({ timeoutSeconds: 540, memory: "512MB" })
   .pubsub.schedule("every 24 hours")
   .timeZone("Etc/UTC")
   .onRun(async () => {
-    const { handleCleanupStaleTokens } = require("./impl/handlers") as typeof import("./impl/handlers");
-    return handleCleanupStaleTokens();
+    const { handleDeleteStaleCallDocs } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
+    return handleDeleteStaleCallDocs();
+  });
+
+// ── deleteStaleDeviceTokens — prune 30-day-inactive device token records ──────
+export const deleteStaleDeviceTokens = functions
+  .region("us-central1")
+  .pubsub.schedule("every 24 hours")
+  .timeZone("Etc/UTC")
+  .onRun(async () => {
+    const { handleDeleteStaleDeviceTokens } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
+    return handleDeleteStaleDeviceTokens();
   });
 
 export const tryRandomMatch = functions.region("us-central1").https.onCall(async (data, context) => {
   const { handleTryRandomMatch } = require("./impl/handlers") as typeof import("./impl/handlers");
   return handleTryRandomMatch(data, context);
-});
-
-export const testFcmSend = functions.region("us-central1").https.onCall(async (data, context) => {
-  const { handleTestFcmSend } = require("./impl/handlers") as typeof import("./impl/handlers");
-  return handleTestFcmSend(data, context);
 });
 
 export const checkSkipRateLimit = functions.https.onCall(async (data, context) => {
@@ -81,3 +93,64 @@ export const cleanupRandomQueue = functions.pubsub.schedule("every 1 minutes").o
   const { handleCleanupRandomQueue } = require("./impl/handlers") as typeof import("./impl/handlers");
   return handleCleanupRandomQueue();
 });
+
+// ── Reject from lock screen (no auth token available on device) ───────────────
+// Called by IncomingCallReceiver.kt (Android) and GywVoIPPushDelegate.swift (iOS)
+// when the user rejects the call from the lock screen / notification.
+export const rejectCallAnon = functions
+  .region("us-central1")
+  .https.onCall(async (data, context) => {
+    const { handleRejectCallAnon } = require("./impl/callPushHandler") as typeof import("./impl/callPushHandler");
+    return handleRejectCallAnon(data, context);
+  });
+
+// ── initiateCall / endCall ────────────────────────────────────────────────────
+export const initiateCall = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 30, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleInitiateCall } = require("./impl/initiateCallHandler") as typeof import("./impl/initiateCallHandler");
+    return handleInitiateCall(data, context);
+  });
+
+export const endCall = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 15, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleEndCall } = require("./impl/initiateCallHandler") as typeof import("./impl/initiateCallHandler");
+    return handleEndCall(data, context);
+  });
+
+export const transitionCallState = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 15, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleTransitionCallState } = require("./impl/initiateCallHandler") as typeof import("./impl/initiateCallHandler");
+    return handleTransitionCallState(data, context);
+  });
+
+// ── Gyw AI: v1 callables (Spark-friendly; avoids v2 Cloud Run / Eventarc + Secret Manager deploy path) ──
+// Callable names differ from legacy gen2 `gywAiReply` / `gywAiHealth` if those still exist in GCP without billing to delete them.
+// Set key: `firebase functions:config:set gyw.gemini_api_key="..."` or runtime env GEMINI_API_KEY on these functions.
+export const gywAiReplyV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 180, memory: "512MB" })
+  .https.onCall(async (data, context) => {
+    const { handleGywAiReply } = require("./impl/gywAi/handler") as typeof import("./impl/gywAi/handler");
+    return handleGywAiReply({
+      auth: context.auth ? { uid: context.auth.uid } : null,
+      data,
+    });
+  });
+
+export const gywAiHealthV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 10, memory: "128MB" })
+  .https.onCall(async (_data, context) => {
+    if (!context.auth?.uid) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be signed in");
+    }
+    const { resolveGeminiApiKey } = require("./impl/gywAi/handler") as typeof import("./impl/gywAi/handler");
+    const hasKey = !!resolveGeminiApiKey();
+    return { ok: true, hasKey };
+  });

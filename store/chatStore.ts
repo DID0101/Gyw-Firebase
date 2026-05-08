@@ -1,9 +1,36 @@
 import { create } from 'zustand';
 import { Chat, ChatMessage } from '@/lib/types/chat';
-import { persistence } from './persistence';
+import { persistence, queueSaveChats, queueSaveMessages } from './persistence';
 
 /** Stable empty array for selectors - prevents "getSnapshot should be cached" / infinite loop when chat has no messages */
 export const EMPTY_MESSAGES: ChatMessage[] = [];
+
+/** List row–relevant fields only (ignores typing map churn on the same doc). */
+function chatsConversationFingerprint(chats: Chat[]): string {
+  return chats
+    .map((c) => {
+      const lm = c.lastMessage;
+      const lmSig = lm
+        ? `${lm.type ?? ''}\t${lm.senderId ?? ''}\t${(lm.text ?? '').slice(0, 160)}`
+        : '';
+      const ur = c.unreadCount ? JSON.stringify(c.unreadCount) : '';
+      return `${c.id}\t${c.lastMessageAt ?? ''}\t${c.updatedAt ?? ''}\t${ur}\t${lmSig}`;
+    })
+    .join('\n');
+}
+
+/** Detect real message-list changes beyond id sequence (status, read receipts, text). */
+function messagesVisualSignature(msgs: ChatMessage[], cap = 80): string {
+  const n = msgs.length;
+  let s = String(n);
+  for (let i = 0; i < Math.min(cap, n); i++) {
+    const m = msgs[i]!;
+    const rb = m.readBy?.length ? m.readBy!.join(',') : '';
+    const tx = (m.text ?? '').slice(0, 48);
+    s += `\n${m.id}:${m.status}:${rb}:${tx}`;
+  }
+  return s;
+}
 
 interface ChatStore {
   // Messages cache: { chatId: ChatMessage[] }
@@ -24,7 +51,7 @@ interface ChatStore {
   clearChat: (chatId: string) => void;
   clearAll: () => void;
   // Persistence
-  loadFromStorage: () => void;
+  loadFromStorage: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -34,21 +61,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   
   setMessages: (chatId, messages, persist = true) => {
     set((state) => {
-      // Avoid recreating array if messages haven't changed
       const existing = state.messagesByChat[chatId] || [];
-      const messagesChanged = 
+      // Five O(1) checks cover: new/deleted messages, re-ordering, newest message
+      // status change (sent→delivered→seen), and read-receipt accumulation.
+      // This replaces two O(n) string-building passes that ran on every Firestore update.
+      const messagesChanged =
         existing.length !== messages.length ||
-        existing.some((msg, idx) => msg.id !== messages[idx]?.id);
-      
+        existing[0]?.id !== messages[0]?.id ||
+        existing[existing.length - 1]?.id !== messages[messages.length - 1]?.id ||
+        existing[0]?.status !== messages[0]?.status ||
+        (existing[0]?.readBy?.length ?? 0) !== (messages[0]?.readBy?.length ?? 0);
+
       if (!messagesChanged) {
         return state;
       }
-      
-      // Only persist if explicitly requested (not on every load)
+
       if (persist) {
-        persistence.saveMessages(chatId, messages).catch(() => {});
+        queueSaveMessages(chatId, messages);
       }
-      
+
       return {
         messagesByChat: {
           ...state.messagesByChat,
@@ -61,15 +92,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   addMessage: (chatId, message) => {
     set((state) => {
       const existing = state.messagesByChat[chatId] || [];
-      
+
       // Check if message already exists (avoid duplicates)
       if (existing.some(m => m.id === message.id)) {
         return state;
       }
-      
-      // Append to existing array without recreating
-      const newMessages = [...existing, message];
-      
+
+      // Prepend so newest message stays at index 0 (matches newest-first store order
+      // from applyMessages, avoids redundant sort in the chat screen useMemo)
+      const newMessages = [message, ...existing];
+
       return {
         messagesByChat: {
           ...state.messagesByChat,
@@ -82,24 +114,39 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       };
     });
   },
-  
+
   updateMessage: (chatId, messageId, updates) => {
     set((state) => {
       const messages = state.messagesByChat[chatId] || [];
       const index = messages.findIndex(m => m.id === messageId);
-      
+
       if (index === -1) return state;
-      
+
+      const updatedMessage = { ...messages[index], ...updates };
+
+      // If the id changed (optimistic temp id → real id), deduplicate using a Map (O(n))
+      // instead of the previous O(n²) filter+findIndex pattern.
+      if (updates.id && updates.id !== messageId) {
+        const dedupedMap = new Map<string, ChatMessage>();
+        for (let i = 0; i < messages.length; i++) {
+          const m = i === index ? updatedMessage : messages[i];
+          dedupedMap.set(m.id, m);
+        }
+        return {
+          messagesByChat: {
+            ...state.messagesByChat,
+            [chatId]: Array.from(dedupedMap.values()),
+          },
+        };
+      }
+
+      // No id change — simple in-place update, no dedup needed
       const updatedMessages = [...messages];
-      updatedMessages[index] = { ...updatedMessages[index], ...updates };
-      
-      // Deduplicate by id (optimistic temp id replaced with real id)
-      const deduped = updatedMessages.filter((m, i) => i === updatedMessages.findIndex(x => x.id === m.id));
-      
+      updatedMessages[index] = updatedMessage;
       return {
         messagesByChat: {
           ...state.messagesByChat,
-          [chatId]: deduped,
+          [chatId]: updatedMessages,
         },
       };
     });
@@ -107,18 +154,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   
   setChats: (chats) => {
     set((state) => {
-      // Only update if chats actually changed
-      const chatsChanged = 
-        state.chats.length !== chats.length ||
-        state.chats.some((chat, idx) => chat.id !== chats[idx]?.id);
-      
-      if (!chatsChanged) {
+      if (
+        state.chats.length === chats.length &&
+        chatsConversationFingerprint(state.chats) === chatsConversationFingerprint(chats)
+      ) {
         return state;
       }
-      
-      // Persist to AsyncStorage (async, don't block)
-      persistence.saveChats(chats).catch(() => {});
-      
+
+      queueSaveChats(chats);
+
       return { chats };
     });
   },

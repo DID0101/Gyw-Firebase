@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-/** Persists last signed-in uid for FCM/headless routing when native auth isn't hydrated yet. */
+/** Persists last signed-in uid for routing when native auth isn't hydrated yet. */
 const KEY = 'gyw:authLastKnownUid';
 
 export async function persistLastKnownAuthUid(uid: string): Promise<void> {

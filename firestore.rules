@@ -1,219 +1,289 @@
 rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GYW Firestore Security Rules
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Call state-machine enforcement
+// ───────────────────────────────
+//   Valid client-writable transitions:
+//     ringing   → answered   (calleeId only)
+//     ringing   → declined   (calleeId only)
+//     ringing   → busy       (calleeId only)
+//     ringing   → ended      (callerId only — cancel before answer)
+//     answered  → connecting (either party)
+//     connecting → active    (either party)
+//     active    → ended      (either party)
+//
+//   Server-only (Admin SDK bypasses rules):
+//     ringing → missed
+//
+// Immutable call fields (cannot change after creation):
+//   callId, callerId, calleeId, callType, chatId, isRandom,
+//   ringTimeoutSecs, createdAt, expiresAt, deleteAfter
+// ═══════════════════════════════════════════════════════════════════════════════
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId} {
-      // Allow read if authenticated
-      allow read: if request.auth != null;
-      
-      // Allow create if authenticated user matches the document ID
-      allow create: if request.auth != null && request.auth.uid == userId;
-      
-      // Allow update if authenticated user matches the document ID
-      allow update: if request.auth != null && request.auth.uid == userId;
-      
-      // Allow delete if authenticated user matches the document ID
-      allow delete: if request.auth != null && request.auth.uid == userId;
 
-      match /fcmTokens/{tokenId} {
-        allow read, write, delete: if request.auth != null && request.auth.uid == userId;
+    // ── Shared helpers ──────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    // ── users/{userId} ──────────────────────────────────────────────────────
+
+    match /users/{userId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn() && uid() == userId;
+      allow update: if isSignedIn() && uid() == userId;
+      allow delete: if isSignedIn() && uid() == userId;
+
+      // ── users/{userId}/callHistory/{entryId} ────────────────────────────
+      //
+      // Written exclusively by the onCallTerminal Cloud Function via Admin SDK.
+      // Clients may only read their own history.  No client writes allowed.
+      match /callHistory/{entryId} {
+        allow read:             if isSignedIn() && uid() == userId;
+        allow create, update,
+              delete:           if false;  // Admin SDK only
       }
     }
-    
+
+    // ── chats/{chatId} ──────────────────────────────────────────────────────
+
     match /chats/{chatId} {
-      // Allow read if user is a participant and document exists
-      allow read: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        request.auth.uid in resource.data.participants;
-      
-      // Allow create if user is in the participants array of the new document
-      allow create: if request.auth != null && 
-        request.resource.data.participants != null &&
-        request.auth.uid in request.resource.data.participants;
-      
-      // Allow update if user is a participant
-      allow update: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        request.auth.uid in resource.data.participants;
-      
-      // Allow delete if user is a participant
-      allow delete: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        request.auth.uid in resource.data.participants;
-      
+      allow read: if isSignedIn()
+        && resource != null
+        && uid() in resource.data.participants;
+
+      allow create: if isSignedIn()
+        && request.resource.data.participants != null
+        && uid() in request.resource.data.participants;
+
+      allow update: if isSignedIn()
+        && resource != null
+        && uid() in resource.data.participants;
+
+      allow delete: if isSignedIn()
+        && resource != null
+        && uid() in resource.data.participants;
+
       match /messages/{messageId} {
-        // Allow read if chat exists and user is a chat participant
-        allow read: if request.auth != null && 
-          exists(/databases/$(database)/documents/chats/$(chatId)) &&
-          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        
-        // Allow create if chat exists, user is a participant, and either:
-        // - user is the sender (normal messages), OR
-        // - type is 'call' (call log - either participant can create; senderId is caller for display)
-        allow create: if request.auth != null && 
-          exists(/databases/$(database)/documents/chats/$(chatId)) &&
-          request.resource.data.senderId != null &&
-          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
-          (
-            request.auth.uid == request.resource.data.senderId ||
-            request.resource.data.type == 'call'
-          );
-        
-        // Allow update if:
-        // 1. User is the sender (can update anything), OR
-        // 2. User is a participant (can update reactions - we only check immutable fields)
-        allow update: if request.auth != null && 
-          resource != null &&
-          resource.data != null &&
-          resource.data.senderId != null &&
-          exists(/databases/$(database)/documents/chats/$(chatId)) &&
-          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
-          (
-            // User is the sender (can update anything)
-            request.auth.uid == resource.data.senderId ||
-            // OR user is a participant - only check immutable fields (senderId, type, chatId)
-            // Reactions and updatedAt can be changed by any participant
-            (
-              request.resource.data.senderId == resource.data.senderId &&
-              request.resource.data.type == resource.data.type &&
-              request.resource.data.chatId == resource.data.chatId
-            )
-          );
-        
-        // Allow delete if user is the sender
-        allow delete: if request.auth != null && 
-          resource != null &&
-          resource.data != null &&
-          resource.data.senderId != null &&
-          request.auth.uid == resource.data.senderId;
+        function chatParticipants() {
+          return get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        }
+
+        allow read: if isSignedIn()
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && uid() in chatParticipants();
+
+        allow create: if isSignedIn()
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && request.resource.data.senderId != null
+          && uid() in chatParticipants()
+          && (uid() == request.resource.data.senderId
+              || request.resource.data.type == 'call');
+
+        allow update: if isSignedIn()
+          && resource != null
+          && resource.data.senderId != null
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && uid() in chatParticipants()
+          && (uid() == resource.data.senderId
+              || (request.resource.data.senderId == resource.data.senderId
+                  && request.resource.data.type   == resource.data.type
+                  && request.resource.data.chatId == resource.data.chatId));
+
+        allow delete: if isSignedIn()
+          && resource != null
+          && uid() == resource.data.senderId;
       }
     }
-    
-    // Call documents
+
+    // ── calls/{callId} ──────────────────────────────────────────────────────
+
     match /calls/{callId} {
-      // Allow read only if user is caller or receiver (participant)
-      allow read: if request.auth != null &&
-        resource != null &&
-        resource.data != null &&
-        (request.auth.uid == resource.data.callerId ||
-         request.auth.uid == resource.data.receiverId);
-      
-      // Allow create if user is the caller and required fields are present
-      allow create: if request.auth != null && 
-        request.resource.data.callerId != null &&
-        request.resource.data.receiverId != null &&
-        request.auth.uid == request.resource.data.callerId &&
-        request.resource.data.keys().hasAll(['callerId', 'receiverId', 'type', 'status', 'createdAt']);
-      
-      // Allow update/delete if user is caller or receiver
-      allow update, delete: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        (request.auth.uid == resource.data.callerId || 
-         request.auth.uid == resource.data.receiverId);
+
+      // ── Read — caller or callee only ─────────────────────────────────────
+      allow read: if isSignedIn()
+        && resource != null
+        && (uid() == resource.data.callerId
+            || uid() == resource.data.calleeId);
+
+      // ── Create — caller only; status must start as "ringing" ─────────────
+      allow create: if isSignedIn()
+        && request.resource.data.callerId  != null
+        && request.resource.data.calleeId  != null
+        && uid() == request.resource.data.callerId
+        && request.resource.data.callerId  != request.resource.data.calleeId
+        && request.resource.data.status    == 'ringing'
+        && request.resource.data.keys().hasAll([
+             'callId', 'callerId', 'calleeId', 'callType',
+             'status', 'createdAt', 'updatedAt', 'expiresAt', 'deleteAfter'
+           ]);
+
+      // ── Update — state-machine transitions ───────────────────────────────
+      allow update: if isSignedIn()
+        && resource != null
+        && _callImmutableFieldsPreserved()
+        && _callValidTransition();
+
+      // ── Delete — caller or callee (soft-delete via status is preferred) ──
+      allow delete: if isSignedIn()
+        && resource != null
+        && (uid() == resource.data.callerId
+            || uid() == resource.data.calleeId);
     }
-    
-    // Call signaling subcollection for WebRTC offers/answers/ICE candidates
+
+    // ── State-machine helper functions ────────────────────────────────────
+
+    function _callIsCaller() {
+      return uid() == resource.data.callerId;
+    }
+
+    function _callIsCallee() {
+      return uid() == resource.data.calleeId;
+    }
+
+    function _callIsParticipant() {
+      return _callIsCaller() || _callIsCallee();
+    }
+
+    function _callImmutableFieldsPreserved() {
+      // These fields are written once at creation and must never change.
+      let immutable = [
+        'callId', 'callerId', 'calleeId', 'callType',
+        'chatId', 'isRandom', 'ringTimeoutSecs',
+        'createdAt', 'expiresAt', 'deleteAfter'
+      ];
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(immutable);
+    }
+
+    function _callValidTransition() {
+      let from = resource.data.status;
+      let to   = request.resource.data.status;
+
+      // ringing → answered     (callee accepts)
+      return (from == 'ringing'    && to == 'answered'   && _callIsCallee())
+        // ringing → declined     (callee rejects)
+        || (from == 'ringing'    && to == 'declined'   && _callIsCallee())
+        // ringing → busy         (callee already in a call)
+        || (from == 'ringing'    && to == 'busy'        && _callIsCallee())
+        // ringing → ended        (caller cancels before answer)
+        || (from == 'ringing'    && to == 'ended'       && _callIsCaller())
+        // answered → connecting  (either — WebRTC setup starts)
+        || (from == 'answered'   && to == 'connecting'  && _callIsParticipant())
+        // connecting → active    (either — ICE connected)
+        || (from == 'connecting' && to == 'active'      && _callIsParticipant())
+        // active → ended         (either hangs up)
+        || (from == 'active'     && to == 'ended'       && _callIsParticipant());
+      // NOTE: ringing → missed is intentionally absent — Admin SDK only.
+    }
+
+    // ── callSignaling/{callId}/messages/{messageId} ─────────────────────────
+
     match /callSignaling/{callId}/messages/{messageId} {
-      // Allow read if call exists and user is a participant
-      allow read: if request.auth != null && 
-        exists(/databases/$(database)/documents/calls/$(callId)) &&
-        (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId ||
-         request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.receiverId);
-      
-      // Allow write (create/update/delete) if call exists and user is a participant
-      allow write: if request.auth != null && 
-        exists(/databases/$(database)/documents/calls/$(callId)) &&
-        (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId ||
-         request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.receiverId);
+
+      function _signalingCallParticipant() {
+        return exists(/databases/$(database)/documents/calls/$(callId))
+          && (uid() == get(/databases/$(database)/documents/calls/$(callId)).data.callerId
+              || uid() == get(/databases/$(database)/documents/calls/$(callId)).data.calleeId);
+      }
+
+      allow read: if isSignedIn() && _signalingCallParticipant();
+
+      allow create, update: if isSignedIn()
+        && _signalingCallParticipant()
+        && request.resource.data.from == uid();
+
+      allow delete: if isSignedIn() && _signalingCallParticipant();
     }
-    
-    // Call links collection
+
+    // ── callLinks/{linkId} ──────────────────────────────────────────────────
+
     match /callLinks/{linkId} {
-      // Allow read if authenticated (anyone can read to join)
-      allow read: if request.auth != null;
-      
-      // Allow create if authenticated and user is the creator
-      allow create: if request.auth != null && 
-        request.resource.data.creatorId != null &&
-        request.auth.uid == request.resource.data.creatorId;
-      
-      // Allow update if user is the creator or is joining (adding themselves to participants)
-      allow update: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        (
-          // Creator can update anything
-          request.auth.uid == resource.data.creatorId ||
-          // Anyone can add themselves to participants (joining the call)
-          (request.resource.data.participants != null && 
-           request.auth.uid in request.resource.data.participants)
-        );
-      
-      // Allow delete if user is the creator
-      allow delete: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        request.auth.uid == resource.data.creatorId;
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.creatorId != null
+        && uid() == request.resource.data.creatorId;
+
+      allow update: if isSignedIn()
+        && resource != null
+        && (uid() == resource.data.creatorId
+            || (request.resource.data.participants != null
+                && uid() in request.resource.data.participants));
+
+      allow delete: if isSignedIn()
+        && resource != null
+        && uid() == resource.data.creatorId;
     }
-    
-    // Reports (e.g. from Discover)
+
+    // ── userTokens/{userId} ─────────────────────────────────────────────────
+
+    match /userTokens/{userId} {
+      // Owner read; no delete (prevents accidental token loss).
+      allow read:           if isSignedIn() && uid() == userId;
+      allow create, update: if isSignedIn() && uid() == userId;
+      allow delete:         if false;
+
+      // Per-device token records
+      match /devices/{deviceId} {
+        allow read, create,
+              update, delete: if isSignedIn() && uid() == userId;
+      }
+    }
+
+    // ── stories/{storyId} ───────────────────────────────────────────────────
+
+    match /stories/{storyId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId != null
+        && uid() == request.resource.data.userId
+        && request.resource.data.keys().hasAll([
+             'userId', 'mediaUrl', 'mediaType', 'createdAt',
+             'expiresAt', 'viewers', 'likes'
+           ]);
+
+      allow update: if isSignedIn()
+        && resource != null
+        && (uid() == resource.data.userId
+            || (request.resource.data.userId    == resource.data.userId
+                && request.resource.data.mediaUrl  == resource.data.mediaUrl
+                && request.resource.data.mediaType == resource.data.mediaType
+                && request.resource.data.createdAt == resource.data.createdAt
+                && request.resource.data.expiresAt == resource.data.expiresAt
+                && request.resource.data.caption   == resource.data.caption
+                && (uid() in request.resource.data.viewers
+                    || uid() in request.resource.data.likes)));
+
+      allow delete: if isSignedIn()
+        && resource != null
+        && uid() == resource.data.userId;
+    }
+
+    // ── reports/{reportId} ──────────────────────────────────────────────────
+
     match /reports/{reportId} {
-      allow create: if request.auth != null &&
-        request.resource.data.reporterId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.reporterId == uid();
       allow read, update, delete: if false;
     }
 
-    // Random (Omegle-style) matchmaking queue
-    // Document ID = request.auth.uid (one entry per user)
-    // Client: setDoc(uid), updateDoc(heartbeat), deleteDoc
-    // Cloud Function reads via Admin SDK (bypasses rules)
-    match /randomQueue/{queueId} {
-      allow create, update, delete: if request.auth != null &&
-        request.auth.uid == queueId;
-      allow read: if request.auth != null && request.auth.uid == queueId;
-    }
+    // ── randomQueue/{queueId} ───────────────────────────────────────────────
 
-    // Stories collection
-    match /stories/{storyId} {
-      // Allow read if authenticated (anyone can view active stories)
-      allow read: if request.auth != null;
-      
-      // Allow create if authenticated and user is the story owner
-      allow create: if request.auth != null && 
-        request.resource.data.userId != null &&
-        request.auth.uid == request.resource.data.userId &&
-        request.resource.data.keys().hasAll(['userId', 'mediaUrl', 'mediaType', 'createdAt', 'expiresAt', 'viewers', 'likes']);
-      
-      // Allow update if:
-      // 1. User is the story owner (can update anything), OR
-      // 2. User is adding themselves to viewers or likes (can only update viewers/likes arrays)
-      allow update: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        (
-          // Story owner can update anything
-          request.auth.uid == resource.data.userId ||
-          // Anyone can add themselves to viewers or likes
-          (
-            // Only viewers and likes arrays can be modified
-            request.resource.data.userId == resource.data.userId &&
-            request.resource.data.mediaUrl == resource.data.mediaUrl &&
-            request.resource.data.mediaType == resource.data.mediaType &&
-            request.resource.data.createdAt == resource.data.createdAt &&
-            request.resource.data.expiresAt == resource.data.expiresAt
-          )
-        );
-      
-      // Allow delete if user is the story owner
-      allow delete: if request.auth != null && 
-        resource != null &&
-        resource.data != null &&
-        request.auth.uid == resource.data.userId;
+    match /randomQueue/{queueId} {
+      allow create, update, delete: if isSignedIn() && uid() == queueId;
+      allow read:                   if isSignedIn() && uid() == queueId;
     }
 
   }
 }
-

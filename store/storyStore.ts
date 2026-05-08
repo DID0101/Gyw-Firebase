@@ -178,27 +178,21 @@ export const useStoryStore = create<StoryStore>((set) => ({
   
   // Load data from MMKV storage
   loadFromStorage: () => {
-    const stories = persistence.loadStories();
-    const storiesByUser: Record<string, Story[]> = {};
-    
-    stories.forEach((story) => {
-      if (!storiesByUser[story.userId]) {
-        storiesByUser[story.userId] = [];
-      }
-      storiesByUser[story.userId].push(story);
-    });
-    
-    Object.keys(storiesByUser).forEach((userId) => {
-      storiesByUser[userId].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-    });
-    
-    set({
-      storiesByUser,
-      allStories: stories,
-      lastUpdated: Date.now(),
-    });
+    persistence.loadStories().then((stories) => {
+      const storiesByUser: Record<string, Story[]> = {};
+      stories.forEach((story) => {
+        if (!storiesByUser[story.userId]) {
+          storiesByUser[story.userId] = [];
+        }
+        storiesByUser[story.userId].push(story);
+      });
+      Object.keys(storiesByUser).forEach((userId) => {
+        storiesByUser[userId].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      });
+      set({ storiesByUser, allStories: stories, lastUpdated: Date.now() });
+    }).catch(() => {});
   },
 }));
 

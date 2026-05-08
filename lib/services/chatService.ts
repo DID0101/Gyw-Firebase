@@ -1,32 +1,36 @@
-import { Platform } from 'react-native';
-import {
-  collection,
-  doc,
-  setDoc,
-  getDoc,
-  addDoc,
-  updateDoc,
-  serverTimestamp,
-  deleteField,
-  query,
-  where,
-  getDocs,
-  Timestamp,
-  increment,
-} from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
 import { db, storage } from '@/lib/firebase';
 import {
+  addMessageAndUpdateChatNativeBatch,
   addMessageNative,
   getOrCreateDirectChatNative,
   getUserDocNative,
   hasNativeFirestore,
   incrementUnreadForOtherParticipantsNative,
+  markMessageAsDeliveredNative,
+  markMessageAsSeenNative,
   markMessagesAsReadNative,
   setTypingIndicatorNative,
   updateChatLastMessageNative,
 } from '@/lib/firestoreNative';
-import { Chat, ChatMessage, User } from '@/lib/types/chat';
+import { Chat, User } from '@/lib/types/chat';
+import {
+    addDoc,
+    collection,
+    deleteField,
+    doc,
+    getDoc,
+  getDocs,
+  increment,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { Platform } from 'react-native';
 
 // Helper function to remove undefined values from objects (Firestore doesn't allow undefined)
 const removeUndefined = (obj: any): any => {
@@ -46,6 +50,41 @@ const removeUndefined = (obj: any): any => {
   }
   return cleaned;
 };
+
+/** Optional fast path: skip extra Firestore read when recipient ids are already known (e.g. from chat.participants). */
+export type SendChatMessageOptions = {
+  recipientUserIds?: string[];
+};
+
+async function addWebMessageAndUpdateChatBatch(
+  chatId: string,
+  cleanedMessageData: Record<string, any>,
+  lastMessagePreview: { text: string; senderId: string; createdAt: string },
+  senderId: string,
+  otherUserIds: string[]
+): Promise<string> {
+  const batch = writeBatch(db);
+  const msgRef = doc(collection(db, 'chats', chatId, 'messages'));
+  batch.set(msgRef, {
+    ...cleanedMessageData,
+    createdAt: serverTimestamp(),
+  });
+  const chatRef = doc(db, 'chats', chatId);
+  const chatUpdates: Record<string, unknown> = {
+    lastMessage: lastMessagePreview,
+    lastMessageAt: serverTimestamp(),
+    lastSenderId: senderId,
+    updatedAt: serverTimestamp(),
+  };
+  for (const uid of otherUserIds) {
+    if (uid && uid !== senderId) {
+      chatUpdates[`unreadCount.${uid}`] = increment(1);
+    }
+  }
+  batch.update(chatRef, chatUpdates as Record<string, any>);
+  await batch.commit();
+  return msgRef.id;
+}
 
 // Create or get a direct chat between two users
 export const getOrCreateDirectChat = async (userId1: string, userId2: string): Promise<string> => {
@@ -100,9 +139,12 @@ export const getOrCreateDirectChat = async (userId1: string, userId2: string): P
   participantData[userId1] = user1Participant;
   
   // User 2 data
-  const user2Participant: any = {
-    name: user2Data ? `${user2Data.firstName || ''} ${user2Data.lastName || ''}`.trim() : 'User',
-  };
+  const user2Participant: any =
+    userId2 === GYW_AI_SYSTEM_ID
+      ? { name: GYW_AI_DISPLAY_NAME }
+      : {
+          name: user2Data ? `${user2Data.firstName || ''} ${user2Data.lastName || ''}`.trim() : 'User',
+        };
   if (user2Data?.avatar) {
     user2Participant.avatar = user2Data.avatar;
   }
@@ -137,7 +179,8 @@ export const sendMessage = async (
   senderName: string,
   senderAvatar: string | undefined,
   text: string,
-  replyTo?: { messageId: string; senderName: string; text?: string; type?: string }
+  replyTo?: { messageId: string; senderName: string; text?: string; type?: string },
+  options?: SendChatMessageOptions
 ): Promise<string> => {
   const messageData: any = {
     chatId,
@@ -158,15 +201,38 @@ export const sendMessage = async (
   messageData.sentAt = now;
   const cleanedMessageData = removeUndefined(messageData);
 
+  const lastPreview = {
+    text: text.substring(0, 100),
+    senderId,
+    createdAt: now,
+  };
+  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const useParticipantBatch = otherIds.length > 0;
+
   let messageId: string;
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    messageId = await addMessageNative(chatId, cleanedMessageData);
-    await updateChatLastMessageNative(chatId, {
-      text: text.substring(0, 100),
+    if (useParticipantBatch) {
+      messageId = await addMessageAndUpdateChatNativeBatch(
+        chatId,
+        cleanedMessageData,
+        lastPreview,
+        otherIds
+      );
+    } else {
+      messageId = await addMessageNative(chatId, cleanedMessageData);
+      await Promise.all([
+        updateChatLastMessageNative(chatId, lastPreview),
+        incrementUnreadForOtherParticipants(chatId, senderId),
+      ]);
+    }
+  } else if (useParticipantBatch) {
+    messageId = await addWebMessageAndUpdateChatBatch(
+      chatId,
+      cleanedMessageData,
+      lastPreview,
       senderId,
-      createdAt: now,
-    });
-    await incrementUnreadForOtherParticipants(chatId, senderId);
+      otherIds
+    );
   } else {
     const messagesRef = collection(db, 'chats', chatId, 'messages');
     const docRef = await addDoc(messagesRef, {
@@ -175,17 +241,15 @@ export const sendMessage = async (
     });
     messageId = docRef.id;
     const chatRef = doc(db, 'chats', chatId);
-    await updateDoc(chatRef, {
-      lastMessage: {
-        text: text.substring(0, 100),
-        senderId,
-        createdAt: now,
-      },
-      lastMessageAt: serverTimestamp(),
-      lastSenderId: senderId,
-      updatedAt: serverTimestamp(),
-    });
-    await incrementUnreadForOtherParticipants(chatId, senderId);
+    await Promise.all([
+      updateDoc(chatRef, {
+        lastMessage: lastPreview,
+        lastMessageAt: serverTimestamp(),
+        lastSenderId: senderId,
+        updatedAt: serverTimestamp(),
+      }),
+      incrementUnreadForOtherParticipants(chatId, senderId),
+    ]);
   }
   return messageId;
 };
@@ -200,24 +264,30 @@ export const sendMediaMessage = async (
   type: 'image' | 'video' | 'file' | 'audio',
   fileName?: string,
   replyTo?: { messageId: string; senderName: string; text?: string; type?: string },
-  extraData?: { audioDuration?: number }
+  extraData?: { audioDuration?: number; imageWidth?: number; imageHeight?: number; blurhash?: string; thumbnailUri?: string },
+  options?: SendChatMessageOptions
 ): Promise<string> => {
+  const stamp = Date.now();
   const fileExtension = type === 'audio' ? 'm4a' : (fileUri.split('.').pop() || 'jpg');
-  const storagePath = `chats/${chatId}/${Date.now()}.${fileExtension}`;
+  const storagePath = `chats/${chatId}/${stamp}.${fileExtension}`;
+  const thumbStoragePath = `chats/${chatId}/thumbs/${stamp}.jpg`;
 
-  let downloadUrl: string;
-  if (Platform.OS !== 'web') {
+  // Helper: upload a single file URI on native using RN Firebase Storage
+  const uploadNative = async (uri: string, path: string): Promise<string> => {
     const { getRnStorage } = require('@/lib/rnFirebase');
-    const { ref, putFile, getDownloadURL } = require('@react-native-firebase/storage');
+    const { ref: rnRef, putFile: rnPutFile, getDownloadURL: rnGetDownloadURL } = require('@react-native-firebase/storage');
     const rnStorage = getRnStorage();
-    const storageRef = ref(rnStorage, storagePath);
-    await putFile(storageRef, fileUri);
-    downloadUrl = await getDownloadURL(storageRef);
-  } else {
+    const storageRef = rnRef(rnStorage, path);
+    await rnPutFile(storageRef, uri);
+    return rnGetDownloadURL(storageRef);
+  };
+
+  // Helper: upload a file URI on web using the web SDK
+  const uploadWeb = async (uri: string, path: string): Promise<string> => {
     let blob: Blob;
     try {
-      if (fileUri.startsWith('file://') || fileUri.startsWith('content://')) {
-        const response = await fetch(fileUri, { method: 'GET', headers: { 'Content-Type': 'application/octet-stream' } });
+      if (uri.startsWith('file://') || uri.startsWith('content://')) {
+        const response = await fetch(uri, { method: 'GET', headers: { 'Content-Type': 'application/octet-stream' } });
         if (!response.ok && response.status !== 0) throw new Error(`Failed to load file: ${response.status}`);
         try {
           blob = await response.blob();
@@ -225,7 +295,7 @@ export const sendMediaMessage = async (
           blob = new Blob([await response.arrayBuffer()]);
         }
       } else {
-        const response = await fetch(fileUri);
+        const response = await fetch(uri);
         if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
         blob = await response.blob();
       }
@@ -233,9 +303,24 @@ export const sendMediaMessage = async (
       if (__DEV__) console.error('Error converting file to blob:', error);
       throw new Error('Failed to process file for upload');
     }
-    const storageRef = ref(storage, storagePath);
+    const storageRef = ref(storage, path);
     await uploadBytes(storageRef, blob);
-    downloadUrl = await getDownloadURL(storageRef);
+    return getDownloadURL(storageRef);
+  };
+
+  const uploadFile = Platform.OS !== 'web' ? uploadNative : uploadWeb;
+
+  // For videos with a thumbnail URI, upload both in parallel
+  let downloadUrl: string;
+  let videoThumbnailUrl: string | undefined;
+
+  if (type === 'video' && extraData?.thumbnailUri) {
+    [downloadUrl, videoThumbnailUrl] = await Promise.all([
+      uploadFile(fileUri, storagePath),
+      uploadFile(extraData.thumbnailUri, thumbStoragePath).catch(() => undefined as unknown as string),
+    ]);
+  } else {
+    downloadUrl = await uploadFile(fileUri, storagePath);
   }
 
   const messageData: any = {
@@ -244,8 +329,16 @@ export const sendMediaMessage = async (
     senderName,
     type,
     readBy: [senderId],
-    ...(type === 'image' && { imageUrl: downloadUrl }),
-    ...(type === 'video' && { videoUrl: downloadUrl }),
+    ...(type === 'image' && {
+      imageUrl: downloadUrl,
+      ...(extraData?.imageWidth && { imageWidth: extraData.imageWidth }),
+      ...(extraData?.imageHeight && { imageHeight: extraData.imageHeight }),
+      ...(extraData?.blurhash && { blurhash: extraData.blurhash }),
+    }),
+    ...(type === 'video' && {
+      videoUrl: downloadUrl,
+      ...(videoThumbnailUrl && { videoThumbnailUrl }),
+    }),
     ...(type === 'audio' && { audioUrl: downloadUrl, audioDuration: extraData?.audioDuration }),
     ...(type === 'file' && { fileUrl: downloadUrl, ...(fileName && { fileName }) }),
   };
@@ -270,11 +363,33 @@ export const sendMediaMessage = async (
     createdAt: now,
   };
 
+  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const useParticipantBatch = otherIds.length > 0;
+
   let messageId: string;
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    messageId = await addMessageNative(chatId, cleanedMessageData);
-    await updateChatLastMessageNative(chatId, lastMessage);
-    await incrementUnreadForOtherParticipants(chatId, senderId);
+    if (useParticipantBatch) {
+      messageId = await addMessageAndUpdateChatNativeBatch(
+        chatId,
+        cleanedMessageData,
+        lastMessage,
+        otherIds
+      );
+    } else {
+      messageId = await addMessageNative(chatId, cleanedMessageData);
+      await Promise.all([
+        updateChatLastMessageNative(chatId, lastMessage),
+        incrementUnreadForOtherParticipants(chatId, senderId),
+      ]);
+    }
+  } else if (useParticipantBatch) {
+    messageId = await addWebMessageAndUpdateChatBatch(
+      chatId,
+      cleanedMessageData,
+      lastMessage,
+      senderId,
+      otherIds
+    );
   } else {
     const messagesRef = collection(db, 'chats', chatId, 'messages');
     const docRef = await addDoc(messagesRef, {
@@ -283,13 +398,15 @@ export const sendMediaMessage = async (
     });
     messageId = docRef.id;
     const chatRef = doc(db, 'chats', chatId);
-    await updateDoc(chatRef, {
-      lastMessage,
-      lastMessageAt: serverTimestamp(),
-      lastSenderId: senderId,
-      updatedAt: serverTimestamp(),
-    });
-    await incrementUnreadForOtherParticipants(chatId, senderId);
+    await Promise.all([
+      updateDoc(chatRef, {
+        lastMessage,
+        lastMessageAt: serverTimestamp(),
+        lastSenderId: senderId,
+        updatedAt: serverTimestamp(),
+      }),
+      incrementUnreadForOtherParticipants(chatId, senderId),
+    ]);
   }
   return messageId;
 };
@@ -344,39 +461,11 @@ export const markMessagesAsRead = async (chatId: string, userId: string) => {
     return;
   }
 
-  const messagesRef = collection(db, 'chats', chatId, 'messages');
-  const q = query(
-    messagesRef,
-    where('readBy', 'array-contains-any', []) // Get unread messages
-  );
-
-  const snapshot = await getDocs(q);
-  const batch = snapshot.docs
-    .filter((doc) => {
-      const data = doc.data();
-      return !data.readBy?.includes(userId) && data.senderId !== userId;
-    })
-    .map((doc) => {
-      const data = doc.data();
-      return updateDoc(doc.ref, {
-        readBy: [...(data.readBy || []), userId],
-      });
-    });
-
-  await Promise.all(batch);
-
-  // Reset unread count
+  // Reset unread count atomically using field path — does not overwrite other participants' counts.
   const chatRef = doc(db, 'chats', chatId);
-  const chatDoc = await getDoc(chatRef);
-  if (chatDoc.exists()) {
-    const chatData = chatDoc.data();
-    await updateDoc(chatRef, {
-      unreadCount: {
-        ...chatData.unreadCount,
-        [userId]: 0,
-      },
-    });
-  }
+  await updateDoc(chatRef, {
+    [`unreadCount.${userId}`]: 0,
+  });
 };
 
 // Mark message as delivered (when recipient device receives it)
@@ -384,68 +473,106 @@ export const markMessageAsDelivered = async (
   chatId: string,
   messageId: string
 ): Promise<void> => {
-  const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
-  const messageDoc = await getDoc(messageRef);
-  
-  if (!messageDoc.exists()) {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await markMessageAsDeliveredNative(chatId, messageId);
     return;
   }
-  
-  const messageData = messageDoc.data();
-  
-  // Only update if status is 'sent' (don't skip states)
-  if (messageData.status === 'sent') {
-    const now = new Date().toISOString();
-    await updateDoc(messageRef, {
-      status: 'delivered',
-      deliveredAt: now,
-      updatedAt: serverTimestamp(),
-    });
-  }
+  const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
+  const now = new Date().toISOString();
+  await updateDoc(messageRef, {
+    status: 'delivered',
+    deliveredAt: now,
+    updatedAt: serverTimestamp(),
+  });
 };
 
 // Mark message as seen (when recipient views it)
+// Pass `hint` to skip redundant Firestore reads when caller already has the data.
 export const markMessageAsSeen = async (
   chatId: string,
   messageId: string,
-  userId: string
+  userId: string,
+  hint?: {
+    chatType?: 'direct' | 'group';
+    messageReadBy?: string[];
+    messageSenderId?: string;
+    chatParticipants?: string[];
+  }
 ): Promise<void> => {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await markMessageAsSeenNative(chatId, messageId, userId, hint);
+    return;
+  }
+
   const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
+
+  // If caller passed hint data we can skip the reads entirely for direct chats,
+  // and skip the message read for group chats (still need participants from chatRef if not provided).
+  const knownSenderId = hint?.messageSenderId;
+  const knownReadBy = hint?.messageReadBy;
+  const knownChatType = hint?.chatType;
+  const knownParticipants = hint?.chatParticipants;
+
+  // Don't mark own messages as seen (caller checks this but guard here too)
+  if (knownSenderId && knownSenderId === userId) return;
+
+  if (knownChatType === 'direct') {
+    if (knownReadBy?.includes(userId)) return;
+    const now = new Date().toISOString();
+    await updateDoc(messageRef, {
+      status: 'seen',
+      seenAt: now,
+      readBy: [...(knownReadBy ?? []), userId],
+      updatedAt: serverTimestamp(),
+    });
+    return;
+  }
+
+  if (knownChatType === 'group' && knownReadBy !== undefined) {
+    if (knownReadBy.includes(userId)) return;
+    const nextReadBy = [...knownReadBy, userId];
+    await updateDoc(messageRef, {
+      readBy: nextReadBy,
+      updatedAt: serverTimestamp(),
+    });
+    if (knownParticipants && knownSenderId) {
+      const otherParticipants = knownParticipants.filter((p: string) => p !== knownSenderId);
+      const allRead = otherParticipants.every((p: string) => nextReadBy.includes(p));
+      if (allRead) {
+        const now = new Date().toISOString();
+        await updateDoc(messageRef, {
+          status: 'seen',
+          seenAt: now,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+    return;
+  }
+
+  // Fallback: fetch message and chat docs (original behavior for cases without hints)
   const messageDoc = await getDoc(messageRef);
-  
-  if (!messageDoc.exists()) {
-    return;
-  }
-  
+  if (!messageDoc.exists()) return;
   const messageData = messageDoc.data();
-  
-  // Only update if status is 'delivered' or 'sent' (progressive)
-  // For group chats, we need to check if all participants have seen
-  if (messageData.senderId === userId) {
-    // Don't mark own messages as seen
-    return;
-  }
-  
-  // Check if this is a group chat
+
+  if (messageData.senderId === userId) return;
+
   const chatRef = doc(db, 'chats', chatId);
   const chatDoc = await getDoc(chatRef);
   const chatData = chatDoc.data();
   const isGroupChat = chatData?.type === 'group';
-  
+
   if (isGroupChat) {
-    // For group chats, update readBy array
     const readBy = messageData.readBy || [];
     if (!readBy.includes(userId)) {
       await updateDoc(messageRef, {
         readBy: [...readBy, userId],
         updatedAt: serverTimestamp(),
       });
-      
-      // Check if all participants have read (except sender)
-      const participants = chatData.participants || [];
+      const participants = chatData?.participants || [];
       const otherParticipants = participants.filter((p: string) => p !== messageData.senderId);
-      const allRead = otherParticipants.every((p: string) => readBy.includes(p) || p === userId);
-      
+      const nextRead = [...readBy, userId];
+      const allRead = otherParticipants.every((p: string) => nextRead.includes(p));
       if (allRead && messageData.status !== 'seen') {
         const now = new Date().toISOString();
         await updateDoc(messageRef, {
@@ -456,13 +583,18 @@ export const markMessageAsSeen = async (
       }
     }
   } else {
-    // For direct chats, mark as seen when recipient views
-    if (messageData.status === 'delivered' || messageData.status === 'sent') {
+    const rb: string[] = messageData.readBy || [];
+    if (rb.includes(userId)) return;
+    if (
+      messageData.status === 'delivered' ||
+      messageData.status === 'sent' ||
+      messageData.status == null
+    ) {
       const now = new Date().toISOString();
       await updateDoc(messageRef, {
         status: 'seen',
         seenAt: now,
-        readBy: [...(messageData.readBy || []), userId],
+        readBy: [...rb, userId],
         updatedAt: serverTimestamp(),
       });
     }
