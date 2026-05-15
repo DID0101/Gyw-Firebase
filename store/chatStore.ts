@@ -14,7 +14,8 @@ function chatsConversationFingerprint(chats: Chat[]): string {
         ? `${lm.type ?? ''}\t${lm.senderId ?? ''}\t${(lm.text ?? '').slice(0, 160)}`
         : '';
       const ur = c.unreadCount ? JSON.stringify(c.unreadCount) : '';
-      return `${c.id}\t${c.lastMessageAt ?? ''}\t${c.updatedAt ?? ''}\t${ur}\t${lmSig}`;
+      const pc = Array.isArray(c.participants) ? c.participants.length : 0;
+      return `${c.id}\t${c.lastMessageAt ?? ''}\t${c.updatedAt ?? ''}\t${ur}\t${lmSig}\t${pc}`;
     })
     .join('\n');
 }
@@ -27,7 +28,8 @@ function messagesVisualSignature(msgs: ChatMessage[], cap = 80): string {
     const m = msgs[i]!;
     const rb = m.readBy?.length ? m.readBy!.join(',') : '';
     const tx = (m.text ?? '').slice(0, 48);
-    s += `\n${m.id}:${m.status}:${rb}:${tx}`;
+    const df = m.deletedFor?.length ?? 0;
+    s += `\n${m.id}:${m.status}:${rb}:${tx}:${m.edited ? 1 : 0}:${m.deleted ? 1 : 0}:${df}`;
   }
   return s;
 }
@@ -48,6 +50,8 @@ interface ChatStore {
   updateMessage: (chatId: string, messageId: string, updates: Partial<ChatMessage>) => void;
   setChats: (chats: Chat[]) => void;
   updateChat: (chatId: string, updates: Partial<Chat>) => void;
+  /** Single store update: set unread to 0 for user on many chats (optimistic mark-all-read). */
+  bulkResetUnreadForUser: (userId: string, chatIds: string[]) => void;
   clearChat: (chatId: string) => void;
   clearAll: () => void;
   // Persistence
@@ -65,12 +69,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Five O(1) checks cover: new/deleted messages, re-ordering, newest message
       // status change (sent→delivered→seen), and read-receipt accumulation.
       // This replaces two O(n) string-building passes that ran on every Firestore update.
-      const messagesChanged =
+      let messagesChanged =
         existing.length !== messages.length ||
         existing[0]?.id !== messages[0]?.id ||
         existing[existing.length - 1]?.id !== messages[messages.length - 1]?.id ||
         existing[0]?.status !== messages[0]?.status ||
         (existing[0]?.readBy?.length ?? 0) !== (messages[0]?.readBy?.length ?? 0);
+
+      // Mid-list edits/deletes/tombstones don't move head/tail — catch them with a capped signature.
+      if (!messagesChanged && messagesVisualSignature(existing) !== messagesVisualSignature(messages)) {
+        messagesChanged = true;
+      }
 
       if (!messagesChanged) {
         return state;
@@ -178,6 +187,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const updatedChats = [...state.chats];
       updatedChats[index] = { ...updatedChats[index], ...updates };
       
+      return { chats: updatedChats };
+    });
+  },
+
+  bulkResetUnreadForUser: (userId, chatIds) => {
+    if (!chatIds.length) return;
+    const idSet = new Set(chatIds);
+    set((state) => {
+      let changed = false;
+      const updatedChats = state.chats.map((c) => {
+        if (!idSet.has(c.id)) return c;
+        const prev = c.unreadCount?.[userId] ?? 0;
+        if (prev === 0) return c;
+        changed = true;
+        return {
+          ...c,
+          unreadCount: { ...c.unreadCount, [userId]: 0 },
+        };
+      });
+      if (!changed) return state;
+      queueSaveChats(updatedChats);
       return { chats: updatedChats };
     });
   },

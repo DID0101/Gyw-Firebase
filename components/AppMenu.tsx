@@ -22,7 +22,7 @@ const AppMenu = () => {
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const avatarRef = useRef<View>(null);
-  
+
   const menuBg = useThemeClassName('bg-white', 'bg-gray-900');
   const textColor = useThemeClassName('text-gray-900', 'text-gray-100');
   const iconBg = useThemeClassName('bg-gray-100', 'bg-gray-800');
@@ -57,7 +57,7 @@ const AppMenu = () => {
 
   return (
     <>
-      <Button variant="plain" ref={avatarRef} onPress={toggleMenu}>
+      <Button variant="plain" ref={avatarRef} onPress={toggleMenu} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
         <Avatar
           imageUrl={user?.photoURL || undefined}
           size={28}
@@ -91,13 +91,13 @@ const AppMenu = () => {
               </View>
               <Text className={clsx('flex-1 text-[15px] font-medium', textColor)}>{t('profile.title')}</Text>
             </Pressable>
-            
+
             <LanguageSwitcher variant="menu" />
-            
+
             <ThemeToggle variant="menu" />
-            
+
             <View className={clsx('h-[1px] mx-3 my-1', colorScheme === 'dark' ? 'bg-gray-700' : 'bg-gray-200')} />
-            
+
             <Pressable
               className="flex-row items-center gap-4 py-3.5 px-5"
               style={({ pressed }) => ({
@@ -108,7 +108,7 @@ const AppMenu = () => {
               <View className={clsx('w-9 h-9 rounded-full items-center justify-center', colorScheme === 'dark' ? 'bg-red-900/30' : 'bg-red-50')}>
                 <Feather name="log-out" size={18} color="#ef4444" />
               </View>
-              <Text className="flex-1 text-red-600 dark:text-red-400 text-[15px] font-medium">{t('auth.signOut')}</Text>
+              <Text className={clsx('flex-1 text-red-600 dark:text-red-400 text-[15px] font-medium')}>{t('auth.signOut')}</Text>
             </Pressable>
           </View>
         </Pressable>

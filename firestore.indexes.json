@@ -138,6 +138,26 @@
       ]
     },
 
+    // Q14: chats/*/messages — user profile gallery (direct): type in (image,video) + orderBy createdAt desc
+    {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    // Q15: chats/*/messages — user profile gallery (group member): senderId + type + createdAt
+    {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "senderId", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+
     // ── randomQueue ──────────────────────────────────────────────────────────
     //
     // Q12: matchmaking — where('status','==','waiting').orderBy('lastSeen','asc')

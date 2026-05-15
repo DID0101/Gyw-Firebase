@@ -3,26 +3,54 @@ import Feather from '@expo/vector-icons/Feather';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import clsx from 'clsx';
 import * as ImagePicker from 'expo-image-picker';
-import { Link, useRouter } from 'expo-router';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FlatList, Image as RNImage, Pressable, Text, View } from 'react-native';
+import {
+  Alert,
+  Image as RNImage,
+  InteractionManager,
+  Modal,
+  Platform,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { FlatList } from 'react-native-gesture-handler';
 
 import AppMenu from '@/components/AppMenu';
-import Button from '@/components/Button';
+import ChatListActionsSheet from '@/components/ChatListActionsSheet';
+import ChatsHeaderActions, { type ChatsHeaderHandlers } from '@/components/ChatsHeaderActions';
 import PreviewAvatar from '@/components/PreviewAvatar';
 import Screen from '@/components/Screen';
 import ScreenLoading from '@/components/ScreenLoading';
 import StoryPickerModal from '@/components/StoryPickerModal';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useChats } from '@/lib/hooks/useChats';
+import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
+import { useUserBlocks } from '@/lib/hooks/useUserBlocks';
+import { useUserChatMeta } from '@/lib/hooks/useUserChatMeta';
 import { useUsersData } from '@/lib/hooks/useUsersData';
-import { markChatNavStart, markChatTap } from '@/lib/chatOpenPerf';
+import { markChatNavStart, markChatRouterPushReturned, markChatTap } from '@/lib/chatOpenPerf';
+import { isLowTierAndroid } from '@/lib/perf/deviceProfile';
+import { scheduleLikelyRouteChunksIdle } from '@/lib/perf/navigationPreload';
 import { warmChat } from '@/lib/services/chatPreloadService';
-import { getOrCreateDirectChat } from '@/lib/services/chatService';
+import { getOrCreateDirectChat, markAllChatsReadForUser } from '@/lib/services/chatService';
 import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
 import { useThemeClassName } from '@/lib/themeUtils';
+import {
+  pinUserChat,
+  setUserChatArchived,
+  setUserChatDeletedForMe,
+  setUserChatMuted,
+  unpinUserChat,
+} from '@/lib/services/userChatMetaService';
 import { Chat, User } from '@/lib/types/chat';
+import type { UserChatMeta } from '@/lib/types/userChatMeta';
+import { useChatMetaStore } from '@/store/chatMetaStore';
+import { useUserBlocksStore } from '@/store/userBlocksStore';
 import { usePresenceStore } from '@/store/presenceStore';
 
 const formatTime = (timestamp?: string) => {
@@ -41,13 +69,33 @@ const formatTime = (timestamp?: string) => {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 };
 
+function compareMainChats(
+  a: Chat,
+  b: Chat,
+  meta: Record<string, UserChatMeta | undefined>
+): number {
+  const ma = meta[a.id];
+  const mb = meta[b.id];
+  const pa = ma?.pinnedAt ? Date.parse(ma.pinnedAt) || 0 : 0;
+  const pb = mb?.pinnedAt ? Date.parse(mb.pinnedAt) || 0 : 0;
+  if (pa !== pb) return pb - pa;
+  const ta = new Date(a.lastMessageAt || 0).getTime();
+  const tb = new Date(b.lastMessageAt || 0).getTime();
+  if (tb !== ta) return tb - ta;
+  return a.id.localeCompare(b.id);
+}
+
 interface ChatListItemProps {
   item: Chat;
   currentUserId: string;
   otherUser: User | null;
   onPress: (chatId: string) => void;
-  onPressIn: (chatId: string) => void;
+  onPressIn?: (chatId: string) => void;
+  onLongPress?: (chatId: string, displayTitle: string) => void;
 }
+
+/** WhatsApp-like: ~340ms; must stay <500ms so RNGH scroll lists don’t feel “stuck”. */
+const CHAT_ROW_LONG_PRESS_MS = 340;
 
 const ChatListItem = memo(function ChatListItem({
   item,
@@ -55,13 +103,16 @@ const ChatListItem = memo(function ChatListItem({
   otherUser,
   onPress,
   onPressIn,
+  onLongPress,
 }: ChatListItemProps) {
   const { colorScheme } = useTheme();
   const { t } = useTranslation();
+  const chatMeta = useChatMetaStore(useCallback((s) => s.byId[item.id], [item.id]));
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-600', 'text-gray-400');
   const borderColor = useThemeClassName('border-gray-200', 'border-gray-700');
   const bgColor = useThemeClassName('bg-white', 'bg-gray-900');
+  const iconMuted = colorScheme === 'dark' ? '#9ca3af' : '#6b7280';
 
   const otherParticipantId =
     item.type === 'direct' ? item.participants.find(p => p !== currentUserId) : undefined;
@@ -84,6 +135,10 @@ const ChatListItem = memo(function ChatListItem({
         otherUser.username ||
         t('calls.unknown')
       : t('calls.unknown');
+
+  const handleLongPress = useCallback(() => {
+    onLongPress?.(item.id, displayName);
+  }, [onLongPress, item.id, displayName]);
 
   const avatar = item.type === 'group' ? item.avatar : otherUser?.avatar;
   const unreadCount = item.unreadCount?.[currentUserId] || 0;
@@ -123,39 +178,65 @@ const ChatListItem = memo(function ChatListItem({
     }
   }
 
+  const isPinned = !!chatMeta?.pinnedAt;
+  const isMuted = !!chatMeta?.muted;
+
+  const rowRipple =
+    Platform.OS === 'android'
+      ? { color: colorScheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)' }
+      : undefined;
+
   return (
     <Pressable
-      onPressIn={() => onPressIn(item.id)}
+      onPressIn={() => onPressIn?.(item.id)}
       onPress={() => onPress(item.id)}
+      onLongPress={onLongPress ? handleLongPress : undefined}
+      delayPressIn={0}
+      delayLongPress={CHAT_ROW_LONG_PRESS_MS}
+      unstable_pressDelay={0}
+      pressRetentionOffset={{ top: 24, bottom: 24, left: 24, right: 24 }}
+      android_ripple={rowRipple}
       className={clsx('flex-row items-center px-4 py-3 border-b', borderColor, isUnread && bgColor)}
-      style={({ pressed }) => ({
-        opacity: pressed ? 0.7 : 1,
-        backgroundColor: pressed
-          ? colorScheme === 'dark'
-            ? 'rgba(255,255,255,0.05)'
-            : 'rgba(0,0,0,0.02)'
-          : undefined,
-      })}
+      style={({ pressed }) =>
+        Platform.OS === 'android'
+          ? undefined
+          : {
+              opacity: pressed ? 0.96 : 1,
+              backgroundColor: pressed
+                ? colorScheme === 'dark'
+                  ? 'rgba(255,255,255,0.06)'
+                  : 'rgba(0,0,0,0.04)'
+                : undefined,
+            }
+      }
     >
       <View className="relative">
-        <PreviewAvatar name={displayName} image={avatar} size={56} fontSize={20} />
+        <PreviewAvatar name={displayName} image={avatar} size={56} fontSize={20} imagePriority="low" />
         {isOnline && (
           <View className="absolute bottom-0 right-0 w-4 h-4 bg-[#FF5722] rounded-full border-2 border-white dark:border-gray-900" />
         )}
       </View>
       <View className="flex-1 ml-3">
         <View className="flex-row items-center justify-between mb-1">
-          <Text
-            className={clsx('text-base flex-1', isUnread ? 'font-bold' : 'font-semibold', textColor)}
-            numberOfLines={1}
-          >
-            {displayName}
-          </Text>
-          {item.lastMessageAt && (
-            <Text className={clsx('text-xs ml-2', textSecondaryColor)}>
-              {formatTime(item.lastMessageAt)}
+          <View className="flex-row items-center flex-1 min-w-0">
+            {isPinned && (
+              <Feather name="bookmark" size={14} color={iconMuted} style={{ marginRight: 6 }} />
+            )}
+            <Text
+              className={clsx('text-base flex-1 min-w-0', isUnread ? 'font-bold' : 'font-semibold', textColor)}
+              numberOfLines={1}
+            >
+              {displayName}
             </Text>
-          )}
+          </View>
+          <View className="flex-row items-center flex-shrink-0 ml-2">
+            {isMuted && (
+              <Feather name="bell-off" size={14} color={iconMuted} style={{ marginRight: 6 }} />
+            )}
+            {item.lastMessageAt && (
+              <Text className={clsx('text-xs', textSecondaryColor)}>{formatTime(item.lastMessageAt)}</Text>
+            )}
+          </View>
         </View>
         <View className="flex-row items-center justify-between">
           <Text
@@ -198,8 +279,19 @@ const ChatsScreen = () => {
   const { t } = useTranslation();
   const { colorScheme } = useTheme();
   const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
+  const chatsHandlersRef = useRef<ChatsHeaderHandlers>({} as ChatsHeaderHandlers);
+  const chatsRef = useRef<Chat[]>([]);
   const [showPicker, setShowPicker] = useState(false);
+  const [sheet, setSheet] = useState<{ id: string; title: string } | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const { chats, loading } = useChats(user?.uid || '');
+  chatsRef.current = chats;
+  useUserChatMeta(user?.uid);
+  useUserBlocks(user?.uid);
+  const blocksRevision = useUserBlocksStore((s) => s.revision);
+  const metaListRevision = useChatMetaStore((s) => s.listRevision);
+  const patchChatMeta = useChatMetaStore((s) => s.patchChatMeta);
+  const rollbackChatMeta = useChatMetaStore((s) => s.rollbackChatMeta);
   const appLogoUri = useMemo(() => {
     try {
       return RNImage.resolveAssetSource(require('../../../assets/images/gyw_fox_logo.png')).uri;
@@ -225,10 +317,50 @@ const ChatsScreen = () => {
     return chats.filter((c) => c.id !== gywAiChat.id);
   }, [chats, gywAiChat]);
 
-  const totalUnread = useMemo(() => {
-    if (!user?.uid) return 0;
-    return chats.reduce((sum, chat) => sum + (chat.unreadCount?.[user.uid] ?? 0), 0);
-  }, [chats, user?.uid]);
+  const mainListChats = useMemo(() => {
+    const byId = useChatMetaStore.getState().byId;
+    const blocked = useUserBlocksStore.getState().blockedPeerIds;
+    const uid = user?.uid;
+    const filtered = chatsWithoutAi.filter((c) => {
+      const m = byId[c.id];
+      if (m?.deletedAt) return false;
+      if (m?.archived) return false;
+      if (c.type === 'direct' && uid) {
+        const other = c.participants.find((p) => p !== uid);
+        if (other && blocked[other]) return false;
+      }
+      return true;
+    });
+    const out = [...filtered];
+    out.sort((a, b) => compareMainChats(a, b, byId));
+    return out;
+  }, [chatsWithoutAi, metaListRevision, blocksRevision, user?.uid]);
+
+  const archivedListChats = useMemo(() => {
+    const byId = useChatMetaStore.getState().byId;
+    const blocked = useUserBlocksStore.getState().blockedPeerIds;
+    const uid = user?.uid;
+    const filtered = chatsWithoutAi.filter((c) => {
+      const m = byId[c.id];
+      if (m?.deletedAt) return false;
+      if (!m?.archived) return false;
+      if (c.type === 'direct' && uid) {
+        const other = c.participants.find((p) => p !== uid);
+        if (other && blocked[other]) return false;
+      }
+      return true;
+    });
+    const out = [...filtered];
+    out.sort((a, b) => {
+      const ta = new Date(a.lastMessageAt || 0).getTime();
+      const tb = new Date(b.lastMessageAt || 0).getTime();
+      if (tb !== ta) return tb - ta;
+      return a.id.localeCompare(b.id);
+    });
+    return out;
+  }, [chatsWithoutAi, metaListRevision, blocksRevision, user?.uid]);
+
+  const archivedCount = archivedListChats.length;
 
   // Get all participant user IDs
   const participantIds = useMemo(() => {
@@ -242,7 +374,9 @@ const ChatsScreen = () => {
   }, [chats, user?.uid]);
   
   // Fetch user data for all participants
-  const { usersData } = useUsersData(participantIds);
+  const { usersData, usersRevision } = useUsersData(participantIds);
+  const usersDataRef = useRef(usersData);
+  usersDataRef.current = usersData;
   
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-600', 'text-gray-400');
@@ -320,29 +454,42 @@ const ChatsScreen = () => {
   };
 
   const goToChat = useCallback((chatId: string) => {
-    markChatTap(chatId);
-    markChatNavStart(chatId);
-    // Navigate immediately; defer all non-navigation work.
+    // Touch path: navigation only (no store work, no Firestore, no warm/prefetch here).
     router.push(`/chat/${chatId}`);
-  }, [router]);
-
-  const handlePressIn = useCallback((chatId: string) => {
-    warmChat(chatId, 30);
-    // Defer prefetch so it doesn't compete with the tap handler / transition worklet.
-    requestAnimationFrame(() => {
-      router.prefetch(`/chat/${chatId}`);
+    queueMicrotask(() => {
+      markChatTap(chatId);
+      markChatNavStart(chatId);
+      markChatRouterPushReturned(chatId);
+    });
+    InteractionManager.runAfterInteractions(() => {
+      warmChat(chatId, 30);
+      requestAnimationFrame(() => {
+        router.prefetch(`/chat/${chatId}`);
+      });
     });
   }, [router]);
 
   useEffect(() => {
     // Soft-preload top chats to reduce first-open blank/loading on slower devices.
-    const ids = chatsWithoutAi.slice(0, 3).map((c) => c.id).filter(Boolean);
+    const topN = isLowTierAndroid() ? 2 : 3;
+    const ids = mainListChats.slice(0, topN).map((c) => c.id).filter(Boolean);
     if (ids.length === 0) return;
+    const delay = isLowTierAndroid() ? 280 : 120;
     const timer = setTimeout(() => {
-      ids.forEach((id) => warmChat(id, 30));
-    }, 120);
+      ids.forEach((id) => warmChat(id, isLowTierAndroid() ? 22 : 30));
+    }, delay);
     return () => clearTimeout(timer);
-  }, [chatsWithoutAi]);
+  }, [mainListChats]);
+
+  useFocusEffect(
+    useCallback(() => {
+      scheduleLikelyRouteChunksIdle();
+    }, [])
+  );
+
+  const warmChatOnPressIn = useCallback((chatId: string) => {
+    warmChat(chatId, isLowTierAndroid() ? 22 : 28);
+  }, []);
 
   const openGywAi = useCallback(async () => {
     if (!user?.uid) return;
@@ -352,19 +499,113 @@ const ChatsScreen = () => {
       markChatTap(chatId);
       markChatNavStart(chatId);
       router.push(`/chat/${chatId}`);
+      markChatRouterPushReturned(chatId);
     } catch (e) {
       // Non-fatal: if creation fails, just do nothing
     }
   }, [user?.uid, gywAiChat?.id, router]);
 
   const handleGywAiHeaderPressIn = useCallback(() => {
-    if (gywAiChat?.id) {
-      warmChat(gywAiChat.id, 30);
-      router.prefetch(`/chat/${gywAiChat.id}`);
-    }
+    const id = gywAiChat?.id;
+    if (!id) return;
+    InteractionManager.runAfterInteractions(() => {
+      warmChat(id, 30);
+      requestAnimationFrame(() => router.prefetch(`/chat/${id}`));
+    });
   }, [gywAiChat?.id, router]);
 
   const chatKeyExtractor = useCallback((item: Chat) => item.id, []);
+
+  const openChatActionsSheet = useCallback((chatId: string, title: string) => {
+    setSheet({ id: chatId, title });
+  }, []);
+
+  const closeChatActionsSheet = useCallback(() => setSheet(null), []);
+
+  const runSheetAction = useCallback(
+    async (action: 'pin' | 'mute' | 'archive' | 'delete') => {
+      const uid = user?.uid;
+      if (!uid || !sheet) return;
+      const id = sheet.id;
+      const before = useChatMetaStore.getState().byId[id];
+
+      if (action === 'delete') {
+        closeChatActionsSheet();
+        Alert.alert(
+          t('chats.listActions.deleteTitle'),
+          t('chats.listActions.deleteMessage'),
+          [
+            { text: t('common.cancel'), style: 'cancel' },
+            {
+              text: t('common.delete'),
+              style: 'destructive',
+              onPress: async () => {
+                const snap = useChatMetaStore.getState().byId[id];
+                patchChatMeta(id, { deletedAt: new Date().toISOString(), archived: false });
+                try {
+                  await setUserChatDeletedForMe(uid, id);
+                } catch {
+                  rollbackChatMeta(id, snap);
+                  Alert.alert(t('common.error'), t('chats.listActions.deleteFailed'));
+                }
+              },
+            },
+          ],
+          { cancelable: true }
+        );
+        return;
+      }
+
+      try {
+        if (action === 'pin') {
+          if (before?.pinnedAt) {
+            patchChatMeta(id, { pinnedAt: undefined });
+            await unpinUserChat(uid, id);
+          } else {
+            patchChatMeta(id, { pinnedAt: new Date().toISOString() });
+            await pinUserChat(uid, id);
+          }
+        } else if (action === 'mute') {
+          const nextMuted = !before?.muted;
+          patchChatMeta(id, { muted: nextMuted });
+          await setUserChatMuted(uid, id, nextMuted);
+        } else if (action === 'archive') {
+          const nextArch = !before?.archived;
+          patchChatMeta(id, { archived: nextArch });
+          await setUserChatArchived(uid, id, nextArch);
+        }
+        closeChatActionsSheet();
+      } catch {
+        rollbackChatMeta(id, before);
+        Alert.alert(t('common.error'), t('chats.listActions.actionFailed'));
+      }
+    },
+    [user?.uid, sheet, t, patchChatMeta, rollbackChatMeta, closeChatActionsSheet]
+  );
+
+  const sheetMeta = useChatMetaStore(
+    useCallback((s) => (sheet ? s.byId[sheet.id] : undefined), [sheet?.id])
+  );
+
+  chatsHandlersRef.current = {
+    openCamera: () => setShowPicker(true),
+    openSearch: () => router.push('/(home)/(modal)/find-by-username' as never),
+    openNewGroup: () => router.push('/(home)/(modal)/new-group' as never),
+    markAllRead: async () => {
+      const uid = user?.uid;
+      if (!uid) return;
+      try {
+        await markAllChatsReadForUser(uid, chatsRef.current);
+      } catch {
+        Alert.alert(t('common.error'), t('chats.markAllReadFailed'));
+      }
+    },
+    openArchived: () => setShowArchived(true),
+    openSettings: () => router.push('/profile' as never),
+    inviteFriends: () => {
+      void Share.share({ message: t('chats.inviteShareMessage') }).catch(() => {});
+    },
+  };
 
   const gywAiListHeader = useMemo(
     () =>
@@ -372,11 +613,26 @@ const ChatsScreen = () => {
         <Pressable
           onPressIn={handleGywAiHeaderPressIn}
           onPress={openGywAi}
+          delayPressIn={0}
+          unstable_pressDelay={0}
+          android_ripple={
+            Platform.OS === 'android'
+              ? { color: colorScheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)' }
+              : undefined
+          }
           className={clsx('flex-row items-center px-4 py-3 border-b', borderColor)}
-          style={({ pressed }) => ({
-            opacity: pressed ? 0.7 : 1,
-            backgroundColor: pressed ? (colorScheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)') : undefined,
-          })}
+          style={({ pressed }) =>
+            Platform.OS === 'android'
+              ? undefined
+              : {
+                  opacity: pressed ? 0.96 : 1,
+                  backgroundColor: pressed
+                    ? colorScheme === 'dark'
+                      ? 'rgba(255,255,255,0.06)'
+                      : 'rgba(0,0,0,0.04)'
+                    : undefined,
+                }
+          }
         >
           <View className="relative">
             <PreviewAvatar name={GYW_AI_DISPLAY_NAME} image={appLogoUri} size={56} fontSize={20} />
@@ -428,28 +684,80 @@ const ChatsScreen = () => {
       textColor,
       textSecondaryColor,
       appLogoUri,
-      gywAiChat?.id,
       gywAiChat?.lastMessageAt,
       gywAiChat?.lastMessage?.text,
       gywAiChat?.unreadCount,
     ]
   );
 
+  const chatsFlatListHeader = useMemo(
+    () => (
+      <>
+        {gywAiListHeader}
+        {user?.uid && archivedCount > 0 ? (
+          <Pressable
+            onPress={() => setShowArchived(true)}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            android_ripple={
+              Platform.OS === 'android'
+                ? { color: colorScheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)' }
+                : undefined
+            }
+            className={clsx('flex-row items-center px-4 py-3 border-b', borderColor)}
+            style={({ pressed }) =>
+              Platform.OS === 'android'
+                ? undefined
+                : {
+                    opacity: pressed ? 0.96 : 1,
+                    backgroundColor: pressed
+                      ? colorScheme === 'dark'
+                        ? 'rgba(255,255,255,0.06)'
+                        : 'rgba(0,0,0,0.04)'
+                      : undefined,
+                  }
+            }
+          >
+            <Feather name="archive" size={TAB_HEADER_ICON_SIZE} color={iconColor} />
+            <Text className={clsx('ml-3 text-base font-medium flex-1', textColor)}>
+              {t('chats.archivedRow', { count: archivedCount })}
+            </Text>
+            <Feather name="chevron-right" size={TAB_HEADER_ICON_SIZE} color={iconColor} />
+          </Pressable>
+        ) : null}
+      </>
+    ),
+    [
+      gywAiListHeader,
+      user?.uid,
+      archivedCount,
+      borderColor,
+      colorScheme,
+      textColor,
+      iconColor,
+      t,
+    ]
+  );
+
+  const listExtraData = `${metaListRevision}:${usersRevision}`;
+
   const renderChatItem = useCallback(({ item }: { item: Chat }) => {
+    const uid = user?.uid;
     const otherParticipantId = item.type === 'direct'
-      ? item.participants.find(p => p !== user?.uid)
+      ? item.participants.find((p) => p !== uid)
       : undefined;
-    const otherUser = otherParticipantId ? (usersData[otherParticipantId] ?? null) : null;
+    const otherUser = otherParticipantId ? usersDataRef.current[otherParticipantId] ?? null : null;
     return (
       <ChatListItem
         item={item}
-        currentUserId={user?.uid || ''}
+        currentUserId={uid || ''}
         otherUser={otherUser}
         onPress={goToChat}
-        onPressIn={handlePressIn}
+        onPressIn={warmChatOnPressIn}
+        onLongPress={openChatActionsSheet}
       />
     );
-  }, [user?.uid, usersData, goToChat, handlePressIn]);
+  }, [user?.uid, goToChat, warmChatOnPressIn, openChatActionsSheet]);
 
   if (loading) {
     return <ScreenLoading />;
@@ -459,16 +767,7 @@ const ChatsScreen = () => {
     <Screen viewClassName="flex-1 px-2 sm:px-4">
       <View className="flex flex-row items-center justify-between w-full min-h-[40px] flex-shrink-0">
         <AppMenu />
-        <View className="flex flex-row items-center gap-2 sm:gap-4">
-          <Button variant="plain" onPress={() => setShowPicker(true)}>
-            <Feather name="camera" size={20} color={iconColor} />
-          </Button>
-          <Link href="/(home)/(modal)/find-by-username" asChild>
-            <Button variant="plain" className="pl-2 sm:pl-4 py-1">
-              <Feather name="search" size={20} color={iconColor} />
-            </Button>
-          </Link>
-        </View>
+        <ChatsHeaderActions iconColor={iconColor} handlersRef={chatsHandlersRef} />
       </View>
       <View className="flex-1 min-h-0">
         {chats.length === 0 && !user?.uid ? (
@@ -482,20 +781,56 @@ const ChatsScreen = () => {
           </View>
         ) : (
           <FlatList
-            data={chatsWithoutAi}
+            data={mainListChats}
             renderItem={renderChatItem}
             keyExtractor={chatKeyExtractor}
+            extraData={listExtraData}
             contentContainerStyle={{ paddingBottom: 10 }}
             removeClippedSubviews={true}
-            maxToRenderPerBatch={10}
-            updateCellsBatchingPeriod={50}
-            initialNumToRender={15}
-            windowSize={10}
+            maxToRenderPerBatch={isLowTierAndroid() ? 6 : 10}
+            updateCellsBatchingPeriod={isLowTierAndroid() ? 80 : 50}
+            initialNumToRender={isLowTierAndroid() ? 8 : 15}
+            windowSize={isLowTierAndroid() ? 5 : 10}
             keyboardShouldPersistTaps="handled"
-            ListHeaderComponent={gywAiListHeader}
+            ListHeaderComponent={chatsFlatListHeader}
           />
         )}
       </View>
+      <ChatListActionsSheet
+        visible={!!sheet}
+        chatTitle={sheet?.title ?? ''}
+        isPinned={!!sheetMeta?.pinnedAt}
+        isMuted={!!sheetMeta?.muted}
+        isArchived={!!sheetMeta?.archived}
+        onClose={closeChatActionsSheet}
+        onSelect={runSheetAction}
+      />
+      <Modal visible={showArchived} transparent animationType="fade" onRequestClose={() => setShowArchived(false)}>
+        <View className="flex-1 justify-end" style={{ backgroundColor: 'rgba(0,0,0,0.45)' }}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setShowArchived(false)} />
+          <View className={clsx('rounded-t-2xl flex-1', bgColor)} style={{ maxHeight: '85%' }}>
+            <View className={clsx('flex-row items-center justify-between px-4 py-3 border-b', borderColor)}>
+              <Text className={clsx('text-lg font-semibold', textColor)}>{t('chats.archivedTitle')}</Text>
+              <Pressable onPress={() => setShowArchived(false)} hitSlop={12} accessibilityRole="button">
+                <Feather name="x" size={24} color={iconColor} />
+              </Pressable>
+            </View>
+            <FlatList
+              data={archivedListChats}
+              renderItem={renderChatItem}
+              keyExtractor={chatKeyExtractor}
+              extraData={listExtraData}
+              keyboardShouldPersistTaps="handled"
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: 24, flexGrow: 1 }}
+              removeClippedSubviews={true}
+              maxToRenderPerBatch={8}
+              initialNumToRender={12}
+              windowSize={8}
+            />
+          </View>
+        </View>
+      </Modal>
       <StoryPickerModal
         visible={showPicker}
         onClose={() => setShowPicker(false)}

@@ -1,9 +1,9 @@
 import { Feather } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Modal, Pressable, Share, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, Pressable, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FlatList } from 'react-native';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,6 +15,7 @@ import CallItem from '@/components/CallItem';
 import Screen from '@/components/Screen';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useThemeClassName } from '@/lib/themeUtils';
+import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
 import { getCallHistory } from '@/lib/services/callService';
 import { getUser } from '@/lib/services/chatService';
 import { Call } from '@/lib/types/call';
@@ -38,65 +39,55 @@ const CallsScreen = () => {
   const calls = useCallStore((state) => state.calls);
   const chats = useChatStore((state) => state.chats);
   const [userData, setUserData] = useState<Record<string, User>>({});
-  const userDataLoadedRef = useRef(false);
+  const userDataRef = useRef(userData);
+  userDataRef.current = userData;
   const [creatingLink, setCreatingLink] = useState(false);
   const [creatingCall, setCreatingCall] = useState(false);
   const [showCallLinkModal, setShowCallLinkModal] = useState(false);
   const [showCallTypeModal, setShowCallTypeModal] = useState(false);
   const [callLink, setCallLink] = useState<string>('');
 
-  // Sync calls from Firestore in background (silent update)
-  const syncCallHistory = useCallback(async (force = false) => {
+  // Sync calls from Firestore whenever the tab is focused (history must include calleeId-backed docs).
+  const syncCallHistory = useCallback(async () => {
     if (!user?.uid) return;
-    // Skip if already loaded (unless forced)
-    if (userDataLoadedRef.current && !force) return;
 
     let callHistory: Call[] = [];
     try {
       callHistory = await getCallHistory(user.uid, 50);
       useCallStore.getState().setCalls(callHistory);
     } catch (error) {
-      // Fallback: use calls from store (e.g. from preload) when sync fails
+      if (__DEV__) console.warn('[Calls] syncCallHistory failed:', error);
       callHistory = useCallStore.getState().calls;
     }
 
-    // Fetch user data only for IDs not already cached
+    const prev = userDataRef.current;
     const userIds = new Set<string>();
-    callHistory.forEach(call => {
-      if (!userData[call.callerId]) userIds.add(call.callerId);
-      if (!userData[call.receiverId]) userIds.add(call.receiverId);
+    callHistory.forEach((call) => {
+      if (call.callerId && !prev[call.callerId]) userIds.add(call.callerId);
+      if (call.receiverId && !prev[call.receiverId]) userIds.add(call.receiverId);
     });
 
     if (userIds.size > 0) {
-      const userDataMap: Record<string, User> = { ...userData };
+      const userDataMap: Record<string, User> = { ...prev };
       await Promise.all(
-        Array.from(userIds).map(async (userId) => {
+        Array.from(userIds).map(async (uid) => {
           try {
-            const userInfo = await getUser(userId);
-            if (userInfo) userDataMap[userId] = userInfo;
-          } catch (error) {
-            // Silently fail - user fetch errors are not critical
+            const userInfo = await getUser(uid);
+            if (userInfo) userDataMap[uid] = userInfo;
+          } catch {
+            /* ignore */
           }
         })
       );
       setUserData(userDataMap);
     }
-    userDataLoadedRef.current = true;
   }, [user?.uid]);
 
-  // Sync on first focus only; re-sync when new calls arrive (calls array changes)
   useFocusEffect(
     useCallback(() => {
-      syncCallHistory();
+      void syncCallHistory();
     }, [syncCallHistory])
   );
-
-  // Re-fetch user data when new call participants appear
-  useEffect(() => {
-    if (!userDataLoadedRef.current) return;
-    const missing = calls.some(c => !userData[c.callerId] || !userData[c.receiverId]);
-    if (missing) syncCallHistory(true);
-  }, [calls]);
 
   // TODO: Enhance call records with user names from Firestore when WebRTC is implemented
 
@@ -256,12 +247,12 @@ const CallsScreen = () => {
   }, [user?.uid, t]);
 
   return (
-    <Screen viewClassName="flex-1 px-2 sm:px-4 items-start">
+    <Screen viewClassName="flex-1 w-full px-2 sm:px-4">
       <View className="flex flex-row items-center justify-between w-full min-h-[40px] flex-shrink-0">
         <AppMenu />
         <View className="flex flex-row items-center gap-4 sm:gap-8">
           <Button variant="plain" onPress={handleStartCall}>
-            <Feather name="phone" size={20} color={iconColor} />
+            <Feather name="phone" size={TAB_HEADER_ICON_SIZE} color={iconColor} />
           </Button>
         </View>
       </View>
@@ -271,7 +262,7 @@ const CallsScreen = () => {
         onPress={handleCreateCallLink}
         disabled={creatingLink}
       >
-        <Feather name="link" size={20} color={creatingLink ? iconSecondaryColor : iconColor} />
+        <Feather name="link" size={TAB_HEADER_ICON_SIZE} color={creatingLink ? iconSecondaryColor : iconColor} />
         <Text className={clsx('font-semibold text-sm sm:text-base', creatingLink ? textSecondaryColor : textColor)}>
           {creatingLink ? t('common.loading') : t('calls.createCallLink')}
         </Text>
@@ -284,10 +275,12 @@ const CallsScreen = () => {
           </Text>
         </View>
       ) : (
-        <View className="flex-1 w-full mt-4">
+        <View style={styles.listWrap} className="w-full mt-4">
           <FlatList
             data={calls}
             keyExtractor={(item) => item.id}
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
             removeClippedSubviews={true}
             maxToRenderPerBatch={10}
             updateCellsBatchingPeriod={50}
@@ -303,7 +296,7 @@ const CallsScreen = () => {
               : '';
             const participantName = nameFromUser || nameFromChat || t('calls.unknown');
             const isMissed = call.status === 'missed';
-            const isRejected = call.status === 'rejected';
+            const isRejected = call.status === 'rejected' || call.status === 'declined';
             const isCompleted = call.status === 'ended' && !!call.duration && call.duration > 0;
             const durationText = isCompleted ? formatDuration(call.duration || 0) : '';
             const dateText = formatDate(call.createdAt) || 'Unknown';
@@ -479,5 +472,11 @@ const CallsScreen = () => {
     </Screen>
   );
 };
+
+const styles = StyleSheet.create({
+  listWrap: { flex: 1, minHeight: 0 },
+  list: { flex: 1 },
+  listContent: { flexGrow: 1, paddingBottom: 24 },
+});
 
 export default CallsScreen;

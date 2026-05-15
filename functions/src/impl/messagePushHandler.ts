@@ -44,6 +44,10 @@ function previewText(msg: ChatMessageDoc): string {
       return "Voice message";
     case "file":
       return "Attachment";
+    case "document":
+      return "Document";
+    case "location":
+      return "Location";
     default:
       return "New message";
   }
@@ -64,8 +68,13 @@ export async function handleChatMessageCreated(
     functions.logger.info("[messagePush] skip call log message", { chatId, messageId });
     return;
   }
+  if (msg.type === "system") {
+    functions.logger.info("[messagePush] skip system message", { chatId, messageId });
+    return;
+  }
 
-  const chatSnap = await getDb().collection("chats").doc(chatId).get();
+  const db = getDb();
+  const chatSnap = await db.collection("chats").doc(chatId).get();
   if (!chatSnap.exists) {
     functions.logger.warn("[messagePush] chat not found", { chatId, messageId });
     return;
@@ -75,6 +84,32 @@ export async function handleChatMessageCreated(
   const targets = participants.filter((uid) => uid && uid !== senderId);
   if (targets.length === 0) return;
 
+  const metaRefs = targets.map((receiverId) =>
+    db.collection("users").doc(receiverId).collection("chatMeta").doc(chatId)
+  );
+  const prefRefs = targets.map((receiverId) =>
+    db.collection("users").doc(receiverId).collection("chatPreferences").doc(chatId)
+  );
+  const blockRefs = targets.map((receiverId) =>
+    db.collection("users").doc(receiverId).collection("blockedUsers").doc(senderId)
+  );
+  const allRefs = [...metaRefs, ...prefRefs, ...blockRefs];
+  const allSnaps = allRefs.length > 0 ? await db.getAll(...allRefs) : [];
+  const n = targets.length;
+  const mutedByReceiver = new Map<string, boolean>();
+  const blockedSenderByReceiver = new Map<string, boolean>();
+  targets.forEach((receiverId, i) => {
+    const metaSnap = allSnaps[i];
+    const prefSnap = allSnaps[n + i];
+    const blockSnap = allSnaps[2 * n + i];
+    const metaMuted = metaSnap?.exists === true && metaSnap.data()?.muted === true;
+    const prefMuted = prefSnap?.exists === true && prefSnap.data()?.muted === true;
+    mutedByReceiver.set(receiverId, !!(metaMuted || prefMuted));
+    const blocked =
+      blockSnap?.exists === true && (blockSnap.data() as { blocked?: boolean })?.blocked === true;
+    blockedSenderByReceiver.set(receiverId, !!blocked);
+  });
+
   const senderName = msg.senderName?.trim() || "Message";
   const text = previewText(msg);
   const avatar = msg.senderAvatar ?? "";
@@ -82,8 +117,20 @@ export async function handleChatMessageCreated(
 
   await Promise.all(
     targets.map(async (receiverId) => {
+      if (mutedByReceiver.get(receiverId)) {
+        functions.logger.info("[messagePush] skip muted chat for receiver", { chatId, receiverId });
+        return;
+      }
+      if (blockedSenderByReceiver.get(receiverId)) {
+        functions.logger.info("[messagePush] skip push — sender blocked by receiver", {
+          chatId,
+          receiverId,
+          senderId,
+        });
+        return;
+      }
       const unreadCount = chat.unreadCount?.[receiverId] ?? 1;
-      const tokenSnap = await getDb().collection("userTokens").doc(receiverId).get();
+      const tokenSnap = await db.collection("userTokens").doc(receiverId).get();
       if (!tokenSnap.exists) return;
       const { fcmToken } = (tokenSnap.data() ?? {}) as UserTokenDoc;
       if (!fcmToken) return;
@@ -117,7 +164,7 @@ export async function handleChatMessageCreated(
           error: err?.message,
         });
         if (err?.errorInfo?.code === "messaging/registration-token-not-registered") {
-          await getDb()
+          await db
             .collection("userTokens")
             .doc(receiverId)
             .update({ fcmToken: admin.firestore.FieldValue.delete() });

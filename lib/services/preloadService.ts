@@ -7,6 +7,7 @@ import { useCallStore } from '@/store/callStore';
 import { getStories } from './storyService';
 import { getCallHistory } from './callService';
 import { hasNativeFirestore, getChatsNative, getCallHistoryNative, getStoriesNative } from '@/lib/firestoreNative';
+import { runOnIdle } from '@/lib/perf/defer';
 
 function isFirestorePermissionDenied(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
@@ -86,27 +87,31 @@ async function preloadStoriesAndCalls(userId: string, chatCount: number) {
   await new Promise<void>((r) => setTimeout(r, 0));
 
   let callsCount = 0;
-  try {
-    const stories = hasNativeFirestore ? await getStoriesNative() : await getStories();
-    useStoryStore.getState().setStories(stories);
-  } catch (error) {
-    if (__DEV__) console.error('Error preloading stories:', error);
-  }
 
-  try {
-    const calls = hasNativeFirestore ? await getCallHistoryNative(userId, 30) : await getCallHistory(userId, 30);
-    useCallStore.getState().setCalls(calls);
-    callsCount = calls.length;
-  } catch (error) {
-    if (isFirestorePermissionDenied(error)) {
-      useCallStore.getState().clearAll();
-    } else if (__DEV__) {
-      console.error('Error preloading calls:', error);
-    }
-  }
+  runOnIdle(() => {
+    void (async () => {
+      try {
+        const stories = hasNativeFirestore ? await getStoriesNative() : await getStories();
+        useStoryStore.getState().setStories(stories);
+      } catch (error) {
+        if (__DEV__) console.error('Error preloading stories:', error);
+      }
+    })();
+  }, 40);
 
-  if (__DEV__) {
-    console.log(`Preloaded (deferred): chats=${chatCount}, calls=${callsCount}`);
-  }
+  runOnIdle(() => {
+    void (async () => {
+      try {
+        const calls = hasNativeFirestore ? await getCallHistoryNative(userId, 30) : await getCallHistory(userId, 30);
+        useCallStore.getState().setCalls(calls);
+        callsCount = calls.length;
+      } catch (error) {
+        if (__DEV__) console.error('Error preloading calls:', error);
+      }
+      if (__DEV__) {
+        console.log(`Preloaded (deferred): chats=${chatCount}, calls=${callsCount}`);
+      }
+    })();
+  }, 220);
 }
 

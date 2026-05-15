@@ -1,5 +1,6 @@
 import { stopAllAudioPlayback } from '@/components/AudioMessage';
 import EditMessageModal from '@/components/EditMessageModal';
+import GroupMembersSheet, { type GroupMemberRow } from '@/components/GroupMembersSheet';
 import EmojiPicker from '@/components/EmojiPicker';
 import ImageViewer from '@/components/ImageViewer';
 import MessageActionMenu from '@/components/MessageActionMenu';
@@ -12,36 +13,72 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { db } from '@/lib/firebase';
 import { hasNativeFirestore, subscribeToChatDocNative, subscribeToUserDocNative } from '@/lib/firestoreNative';
 import {
+  bumpChatPerfRender,
+  chatPerfSessionEnd,
+  chatPerfSessionStart,
   clearChatOpenMark,
+  markChatAfterInteractions,
+  markChatDocFirstSnapshot,
+  markChatDocTaskStart,
   markChatFirstLayout,
   markChatMessagesLoaded,
   markChatReady,
+  markChatScreenFnEnter,
   markChatScreenMount,
+  markFlatListContentSized,
+  markFlatListLayout,
+  markMessageListenerScheduled,
+  markPaginationComplete,
+  markUserDocFirstSnapshot,
 } from '@/lib/chatOpenPerf';
 import { loadOlderChatMessages, startChatMessageListener, stopChatMessageListener } from '@/lib/services/chatPreloadService';
 import {
   deleteMessageForEveryone,
   deleteMessageForMe,
   editMessage,
+  removeGroupMemberFromGroup,
   markMessageAsDelivered,
   markMessageAsSeen,
   markMessagesAsRead,
+  sendLocationMessage,
   sendMediaMessage,
   sendMessage,
   setTypingIndicator,
   toggleReaction,
   type SendChatMessageOptions,
 } from '@/lib/services/chatService';
+import { startLiveLocationPublisher } from '@/lib/location/liveLocationPublisher';
+import { formatGeocodeForLocationMessage } from '@/lib/maps/formatGeocodeForLocationMessage';
+import { openInNativeMaps } from '@/lib/maps/openInNativeMaps';
+import * as Location from 'expo-location';
 import {
   clearAndroidChatNotifications,
   consumeAndroidPendingReplyJson,
   setAndroidForegroundChatId,
 } from '@/lib/chatNotificationBridge';
-import { requestGywAiReply } from '@/lib/services/gywAiService';
+import { requestGywAiMultimodal, requestGywAiReply } from '@/lib/services/gywAiService';
 import { Chat, ChatMessage, User } from '@/lib/types/chat';
-import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
+import { CHAT_DELETED_FOR_EVERYONE_TEXT } from '@/lib/constants/chatMessages';
+import {
+  GYW_AI_DISPLAY_NAME,
+  GYW_AI_SYSTEM_ID,
+  type GywAiMultimodalRoutingMode,
+} from '@/lib/constants/gywAi';
 import { formatDateHeader, shouldShowSenderInverted, shouldShowTailInverted } from '@/lib/utils/chatUtils';
+import { setUserChatMuted } from '@/lib/services/userChatMetaService';
+import { isLegacyAndroid } from '@/lib/perf/deviceProfile';
 import { EMPTY_MESSAGES, useChatStore } from '@/store/chatStore';
+import { BlockedPeerSendError } from '@/lib/chatSendGuards';
+import {
+  DOCUMENT_PICKER_MIME_TYPES,
+  isAllowedChatDocument,
+  isDocumentLikeMime,
+  MAX_CHAT_DOCUMENT_BYTES,
+  resolveDocumentExtension,
+} from '@/lib/documents/documentUpload';
+import { openChatDocument } from '@/lib/documents/openChatDocument';
+import { useChatMetaStore } from '@/store/chatMetaStore';
+import { useUserBlocksStore } from '@/store/userBlocksStore';
 import { usePresenceStore } from '@/store/presenceStore';
 import Feather from '@expo/vector-icons/Feather';
 import * as Clipboard from 'expo-clipboard';
@@ -51,6 +88,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import clsx from 'clsx';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -72,6 +110,7 @@ import {
   InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -109,6 +148,15 @@ const HEADER_ACTION_HIT_SLOP = { top: 12, right: 12, bottom: 12, left: 12 } as c
 
 const CHAT_REACTION_EMOJIS = ['❤️', '😂', '👍', '😮', '😢'];
 
+/** Stable ref for MessageBubble — avoids allocating a new noop each list render. */
+const MESSAGE_BUBBLE_NOOP_LONG_PRESS = () => {};
+
+/** DEV: increments Composer render count for CHAT_PERF_RENDERS. */
+function ChatPerfComposerProbe() {
+  if (__DEV__) bumpChatPerfRender('Composer');
+  return null;
+}
+
 type ChatRoomHeaderProps = {
   displayName: string;
   avatarUri?: string | null;
@@ -138,7 +186,15 @@ type ChatRoomHeaderProps = {
   onMuteNotifications: () => void;
   onSearch: () => void;
   onMore: () => void;
+  /** Mute row label (Mute vs Unmute) — avoids rebuilding the whole menu. */
+  muteRowLabel: string;
   onAvatarPress: () => void;
+  /** When set, tap on display name + short tap on avatar opens user profile (direct chats). */
+  onOpenProfilePress?: () => void;
+  /** Group: tap title / subtitle area to open group info. */
+  onGroupInfoPress?: () => void;
+  /** Optional rows prepended to the header “…” sheet (e.g. group members). */
+  menuExtraRows?: { key: string; label: string; icon: keyof typeof Feather.glyphMap; onPress: () => void }[];
 };
 
 const HeaderCallRing = memo(function HeaderCallRing({
@@ -185,7 +241,7 @@ const HeaderTypingDots = memo(function HeaderTypingDots({ dotSurfaceStyle }: { d
       v.value = withDelay(
         delayMs,
         withRepeat(
-          withSequence(withTiming(0.8, { duration: 300 }), withTiming(0.3, { duration: 300 })),
+          withSequence(withTiming(0.8, { duration: 220 }), withTiming(0.3, { duration: 220 })),
           -1,
           false
         )
@@ -221,6 +277,8 @@ const HeaderMenuSheet = memo(function HeaderMenuSheet({
   onMute,
   onSearch,
   onMore,
+  menuExtraRows,
+  muteRowLabel,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -234,17 +292,21 @@ const HeaderMenuSheet = memo(function HeaderMenuSheet({
   onMute: () => void;
   onSearch: () => void;
   onMore: () => void;
+  menuExtraRows?: { key: string; label: string; icon: keyof typeof Feather.glyphMap; onPress: () => void }[];
+  muteRowLabel: string;
 }) {
+  const { t } = useTranslation();
   const rows: { key: string; label: string; icon: keyof typeof Feather.glyphMap; onPress: () => void }[] = [
-    { key: 'vc', label: 'View Contact', icon: 'user', onPress: onViewContact },
-    { key: 'mute', label: 'Mute Notifications', icon: 'bell-off', onPress: onMute },
-    { key: 'search', label: 'Search', icon: 'search', onPress: onSearch },
-    { key: 'more', label: 'More', icon: 'more-horizontal', onPress: onMore },
+    ...(menuExtraRows ?? []),
+    { key: 'vc', label: t('messages.viewContact'), icon: 'user', onPress: onViewContact },
+    { key: 'mute', label: muteRowLabel, icon: 'bell-off', onPress: onMute },
+    { key: 'search', label: t('messages.searchInChat'), icon: 'search', onPress: onSearch },
+    { key: 'more', label: t('messages.moreMenu'), icon: 'more-horizontal', onPress: onMore },
   ];
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel="Dismiss menu" />
+        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel={t('a11y.dismissMenu')} />
         <View style={[{ paddingBottom: insetBottom, minHeight: 180 }, sheetSurfaceStyle]}>
           {rows.map((row, i) => (
             <View key={row.key}>
@@ -303,6 +365,7 @@ const HeaderAvatarContextSheet = memo(function HeaderAvatarContextSheet({
   onSaveImage: () => void;
   displayName: string;
 }) {
+  const { t } = useTranslation();
   const copyName = async () => {
     await Clipboard.setStringAsync(displayName);
     onClose();
@@ -310,7 +373,7 @@ const HeaderAvatarContextSheet = memo(function HeaderAvatarContextSheet({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Pressable style={{ flex: 1 }} onPress={onClose} />
+        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel={t('a11y.dismissSheet')} />
         <View style={[{ paddingBottom: insetBottom }, sheetSurfaceStyle]}>
           <Pressable
             onPress={() => {
@@ -327,7 +390,7 @@ const HeaderAvatarContextSheet = memo(function HeaderAvatarContextSheet({
             }}
           >
             <Feather name="download" size={20} color={iconColor} />
-            <Text style={[{ flex: 1, fontSize: 15 }, rowLabelStyle]}>Save Image</Text>
+            <Text style={[{ flex: 1, fontSize: 15 }, rowLabelStyle]}>{t('messages.avatarSaveImage')}</Text>
           </Pressable>
           <View style={[{ height: StyleSheet.hairlineWidth, marginLeft: rtl ? 0 : 16, marginRight: rtl ? 16 : 0 }, dividerLineStyle]} />
           <Pressable
@@ -344,7 +407,7 @@ const HeaderAvatarContextSheet = memo(function HeaderAvatarContextSheet({
             }}
           >
             <Feather name="copy" size={20} color={iconColor} />
-            <Text style={[{ flex: 1, fontSize: 15 }, rowLabelStyle]}>Copy Name</Text>
+            <Text style={[{ flex: 1, fontSize: 15 }, rowLabelStyle]}>{t('messages.avatarCopyName')}</Text>
           </Pressable>
         </View>
       </View>
@@ -494,7 +557,7 @@ const ChatRoomTypingIncoming = memo(function ChatRoomTypingIncoming({
       v.value = withDelay(
         delayMs,
         withRepeat(
-          withSequence(withTiming(0.8, { duration: 300 }), withTiming(0.3, { duration: 300 })),
+          withSequence(withTiming(0.8, { duration: 220 }), withTiming(0.3, { duration: 220 })),
           -1,
           false
         )
@@ -538,6 +601,7 @@ const ChatRoomScrollFab = memo(function ChatRoomScrollFab({
   badgeCount: number;
   badgeLabelStyle?: object;
 }) {
+  const { t } = useTranslation();
   if (!visible) return null;
   return (
     <View
@@ -552,7 +616,9 @@ const ChatRoomScrollFab = memo(function ChatRoomScrollFab({
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={badgeCount > 0 ? `${badgeCount} new messages` : 'Scroll to bottom'}
+        accessibilityLabel={
+          badgeCount > 0 ? t('messages.newMessagesBadgeA11y', { count: badgeCount }) : t('messages.a11yScrollToBottom')
+        }
         hitSlop={ICON_HIT_SLOP}
         style={({ pressed }) => [
           {
@@ -603,17 +669,18 @@ const ChatRoomBodyContextSheet = memo(function ChatRoomBodyContextSheet({
   onDelete: () => void;
   onInfo: () => void;
 }) {
+  const { t } = useTranslation();
   const rows: { key: string; label: string; icon: keyof typeof Feather.glyphMap; onPress: () => void }[] = [
-    { key: 'reply', label: 'Reply', icon: 'corner-up-left', onPress: onReply },
-    { key: 'copy', label: 'Copy', icon: 'copy', onPress: onCopy },
-    { key: 'forward', label: 'Forward', icon: 'share', onPress: onForward },
-    { key: 'delete', label: 'Delete', icon: 'trash-2', onPress: onDelete },
-    { key: 'info', label: 'Info', icon: 'info', onPress: onInfo },
+    { key: 'reply', label: t('messages.contextMenuReply'), icon: 'corner-up-left', onPress: onReply },
+    { key: 'copy', label: t('common.copy'), icon: 'copy', onPress: onCopy },
+    { key: 'forward', label: t('messages.contextMenuForward'), icon: 'share', onPress: onForward },
+    { key: 'delete', label: t('common.delete'), icon: 'trash-2', onPress: onDelete },
+    { key: 'info', label: t('messages.contextMenuInfo'), icon: 'info', onPress: onInfo },
   ];
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel="Dismiss message menu" />
+        <Pressable style={{ flex: 1 }} onPress={onClose} accessibilityLabel={t('a11y.dismissMessageMenu')} />
         <View style={[{ paddingBottom: insetBottom, height: 220 }, sheetSurfaceStyle]}>
           {rows.map((row, i) => (
             <View key={row.key}>
@@ -662,10 +729,11 @@ const ChatRoomBodyReactionTray = memo(function ChatRoomBodyReactionTray({
   onDismiss: () => void;
   traySurfaceStyle?: object;
 }) {
+  const { t } = useTranslation();
   useEffect(() => {
     if (!visible) return;
-    const t = setTimeout(onDismiss, 1500);
-    return () => clearTimeout(t);
+    const timer = setTimeout(onDismiss, 1500);
+    return () => clearTimeout(timer);
   }, [visible, onDismiss]);
   if (!visible) return null;
   return (
@@ -686,7 +754,7 @@ const ChatRoomBodyReactionTray = memo(function ChatRoomBodyReactionTray({
             key={e}
             hitSlop={ICON_HIT_SLOP}
             accessibilityRole="button"
-            accessibilityLabel={`React ${e}`}
+            accessibilityLabel={t('messages.reactWithEmoji', { emoji: e })}
             onPress={() => onSelect(e)}
             style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
           >
@@ -698,7 +766,35 @@ const ChatRoomBodyReactionTray = memo(function ChatRoomBodyReactionTray({
   );
 });
 
+/** Lightweight shell so ChatRoom never shows a blank center while Firestore hydrates. */
+const ChatMessageListSkeleton = memo(function ChatMessageListSkeleton({
+  rowStyle,
+  count = 8,
+}: {
+  rowStyle: object;
+  count?: number;
+}) {
+  const rows = useMemo(() => Array.from({ length: count }, (_, i) => i), [count]);
+  return (
+    <View style={{ flex: 1, paddingHorizontal: 12, paddingTop: 12 }} pointerEvents="none">
+      {rows.map((i) => (
+        <View
+          key={i}
+          style={{
+            flexDirection: 'row',
+            justifyContent: i % 2 === 0 ? 'flex-end' : 'flex-start',
+            marginBottom: 10,
+          }}
+        >
+          <View style={[{ width: i % 3 === 0 ? '72%' : '48%', height: 14, borderRadius: 8 }, rowStyle]} />
+        </View>
+      ))}
+    </View>
+  );
+});
+
 const ChatRoomPaginationLoader = memo(function ChatRoomPaginationLoader({ labelStyle }: { labelStyle?: object }) {
+  const { t } = useTranslation();
   const o = useSharedValue(0.5);
   useEffect(() => {
     o.value = withRepeat(
@@ -710,7 +806,7 @@ const ChatRoomPaginationLoader = memo(function ChatRoomPaginationLoader({ labelS
   const anim = useAnimatedStyle(() => ({ opacity: o.value }));
   return (
     <Reanimated.View style={[{ height: 24, justifyContent: 'center', alignItems: 'center' }, anim]}>
-      <Text style={[{ fontSize: 12 }, labelStyle]}>Loading older messages...</Text>
+      <Text style={[{ fontSize: 12 }, labelStyle]}>{t('messages.loadingOlderMessages')}</Text>
     </Reanimated.View>
   );
 });
@@ -765,6 +861,12 @@ type ChatRoomBodyProps = {
   onReactionSelect: (emoji: string) => void;
   onReactionTrayDismiss: () => void;
   reactionTrayBottom: number;
+  /** First FlatList viewport layout (profiling). */
+  onListLayout?: () => void;
+  /** True until first message snapshot merged — show skeleton instead of blank. */
+  showInitialSkeleton?: boolean;
+  /** Opaque key so FlatList re-renders rows when in-chat search highlight changes without swapping `renderItem`. */
+  listExtraData?: string | number;
 };
 
 const ChatRoomBody = memo(function ChatRoomBody({
@@ -817,8 +919,15 @@ const ChatRoomBody = memo(function ChatRoomBody({
   onReactionSelect,
   onReactionTrayDismiss,
   reactionTrayBottom,
+  onListLayout,
+  showInitialSkeleton = false,
+  listExtraData,
 }: ChatRoomBodyProps) {
+  if (__DEV__ && messages.length > 0) bumpChatPerfRender('ChatRoomBody');
   const bubbleMax = Math.max(0, screenWidth * 0.72 - 16);
+  const listInitialRender = Platform.OS === 'android' ? (isLegacyAndroid() ? 6 : 8) : 14;
+  const listMaxBatch = Platform.OS === 'android' ? (isLegacyAndroid() ? 4 : 6) : 8;
+  const listWindow = Platform.OS === 'android' ? (isLegacyAndroid() ? 4 : 5) : 7;
   const listExtraBottomRef = useRef(new RNAnimated.Value(12));
   const animatedContentStyle = useMemo(
     () => ({
@@ -851,11 +960,19 @@ const ChatRoomBody = memo(function ChatRoomBody({
     return null;
   }, [paginationBlocking, showPaginationLoader, skeletonSurfaceStyle, dateLabelStyle]);
 
+  if (messages.length === 0 && showInitialSkeleton) {
+    return (
+      <SafeAreaView style={{ flex: 1 }} edges={['bottom']} pointerEvents="box-none">
+        <ChatMessageListSkeleton rowStyle={skeletonSurfaceStyle ?? { backgroundColor: '#e5e7eb' }} />
+      </SafeAreaView>
+    );
+  }
+
   if (messages.length === 0) {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={['bottom']} pointerEvents="box-none">
-        <View style={{ flex: 1, paddingTop: viewportHeight * 0.4, alignItems: 'center' }}>
-          <Text style={[{ fontSize: 15, lineHeight: 20, opacity: 0.6, alignSelf: 'center' }, dateLabelStyle]}>
+        <View style={{ flex: 1, paddingTop: viewportHeight * 0.35, alignItems: 'center', paddingHorizontal: 24 }}>
+          <Text style={[{ fontSize: 15, lineHeight: 20, opacity: 0.6, alignSelf: 'center', textAlign: 'center' }, dateLabelStyle]}>
             No messages yet
           </Text>
         </View>
@@ -871,16 +988,21 @@ const ChatRoomBody = memo(function ChatRoomBody({
           data={messages}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
+          extraData={listExtraData}
           inverted={true}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
           removeClippedSubviews
-          windowSize={7}
-          maxToRenderPerBatch={8}
-          updateCellsBatchingPeriod={50}
-          initialNumToRender={14}
-
+          windowSize={listWindow}
+          maxToRenderPerBatch={listMaxBatch}
+          updateCellsBatchingPeriod={Platform.OS === 'android' ? 80 : 50}
+          initialNumToRender={listInitialRender}
+          onLayout={onListLayout}
+          onScrollToIndexFailed={({ averageItemLength, index }) => {
+            const off = Math.max(0, averageItemLength * index);
+            listRef.current?.scrollToOffset({ offset: off, animated: true });
+          }}
           bounces={!paginationBlocking}
           scrollEnabled={!paginationBlocking}
           ListHeaderComponent={listHeader}
@@ -960,7 +1082,13 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
   onSearch,
   onMore,
   onAvatarPress,
+  onOpenProfilePress,
+  onGroupInfoPress,
+  menuExtraRows,
+  muteRowLabel,
 }: ChatRoomHeaderProps) {
+  if (__DEV__) bumpChatPerfRender('ChatRoomHeader');
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const rtl = I18nManager.isRTL;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1022,7 +1150,7 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
                   justifyContent: 'center',
                 }}
                 hitSlop={HEADER_ACTION_HIT_SLOP}
-                accessibilityLabel="Go back"
+                accessibilityLabel={t('a11y.goBack')}
               >
                 <View style={{ transform: [{ rotate: rtl ? '180deg' : '0deg' }] }}>
                   <Feather name="arrow-left" size={24} color={iconTint} />
@@ -1034,7 +1162,8 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onAvatarPress();
+                  if (onOpenProfilePress) onOpenProfilePress();
+                  else onAvatarPress();
                 }}
                 onLongPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -1086,45 +1215,149 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
             </View>
 
             <View style={rtl ? { marginRight: 12, maxWidth: 140, flexShrink: 1 } : { marginLeft: 12, maxWidth: 140, flexShrink: 1 }}>
-              <Text
-                style={[
-                  {
-                    fontSize: 17,
-                    lineHeight: 22,
-                    textAlign: nameAlign,
-                  },
-                  primaryGlyphStyle,
-                ]}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {displayName}
-              </Text>
-              <View style={{ marginTop: 2, minHeight: 16, justifyContent: 'center' }}>
-                <Reanimated.View style={[StyleSheet.absoluteFillObject, typingAnim]} pointerEvents="none">
-                  <HeaderTypingDots dotSurfaceStyle={typingDotSurfaceStyle} />
-                </Reanimated.View>
-                <Reanimated.View style={[statusAnim]} pointerEvents="none">
-                  <Reanimated.View style={[StyleSheet.absoluteFillObject, onlineAnim]}>
-                    <Text
-                      style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
-                      numberOfLines={1}
-                      ellipsizeMode="tail"
-                    >
-                      online
-                    </Text>
-                  </Reanimated.View>
-                  <Reanimated.View style={[StyleSheet.absoluteFillObject, lastSeenAnim]}>
-                    <Text
-                      style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
-                      numberOfLines={1}
-                      ellipsizeMode="tail"
-                    >
-                      {lastSeenLine}
-                    </Text>
-                  </Reanimated.View>
-                </Reanimated.View>
-              </View>
+              {onOpenProfilePress ? (
+                <Pressable
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    onOpenProfilePress();
+                  }}
+                  hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('a11y.openProfile')}
+                >
+                  <Text
+                    style={[
+                      {
+                        fontSize: 17,
+                        lineHeight: 22,
+                        textAlign: nameAlign,
+                      },
+                      primaryGlyphStyle,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {displayName}
+                  </Text>
+                  <View style={{ marginTop: 2, minHeight: 16, justifyContent: 'center' }}>
+                    <Reanimated.View style={[StyleSheet.absoluteFillObject, typingAnim]} pointerEvents="none">
+                      <HeaderTypingDots dotSurfaceStyle={typingDotSurfaceStyle} />
+                    </Reanimated.View>
+                    <Reanimated.View style={[statusAnim]} pointerEvents="none">
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, onlineAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {t('chats.online')}
+                        </Text>
+                      </Reanimated.View>
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, lastSeenAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {lastSeenLine}
+                        </Text>
+                      </Reanimated.View>
+                    </Reanimated.View>
+                  </View>
+                </Pressable>
+              ) : onGroupInfoPress ? (
+                <Pressable
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    onGroupInfoPress();
+                  }}
+                  hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('a11y.groupInfo')}
+                >
+                  <Text
+                    style={[
+                      {
+                        fontSize: 17,
+                        lineHeight: 22,
+                        textAlign: nameAlign,
+                      },
+                      primaryGlyphStyle,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {displayName}
+                  </Text>
+                  <View style={{ marginTop: 2, minHeight: 16, justifyContent: 'center' }}>
+                    <Reanimated.View style={[StyleSheet.absoluteFillObject, typingAnim]} pointerEvents="none">
+                      <HeaderTypingDots dotSurfaceStyle={typingDotSurfaceStyle} />
+                    </Reanimated.View>
+                    <Reanimated.View style={[statusAnim]} pointerEvents="none">
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, onlineAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {t('chats.online')}
+                        </Text>
+                      </Reanimated.View>
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, lastSeenAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {lastSeenLine}
+                        </Text>
+                      </Reanimated.View>
+                    </Reanimated.View>
+                  </View>
+                </Pressable>
+              ) : (
+                <>
+                  <Text
+                    style={[
+                      {
+                        fontSize: 17,
+                        lineHeight: 22,
+                        textAlign: nameAlign,
+                      },
+                      primaryGlyphStyle,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {displayName}
+                  </Text>
+                  <View style={{ marginTop: 2, minHeight: 16, justifyContent: 'center' }}>
+                    <Reanimated.View style={[StyleSheet.absoluteFillObject, typingAnim]} pointerEvents="none">
+                      <HeaderTypingDots dotSurfaceStyle={typingDotSurfaceStyle} />
+                    </Reanimated.View>
+                    <Reanimated.View style={[statusAnim]} pointerEvents="none">
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, onlineAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {t('chats.online')}
+                        </Text>
+                      </Reanimated.View>
+                      <Reanimated.View style={[StyleSheet.absoluteFillObject, lastSeenAnim]}>
+                        <Text
+                          style={[{ fontSize: 12, lineHeight: 16, textAlign: nameAlign }, secondaryGlyphStyle]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {lastSeenLine}
+                        </Text>
+                      </Reanimated.View>
+                    </Reanimated.View>
+                  </View>
+                </>
+              )}
             </View>
           </View>
 
@@ -1141,6 +1374,7 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
                 disabled={callDisabled || activeVideoRing}
                 style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: callDisabled ? 0.4 : 1 }}
                 hitSlop={HEADER_ACTION_HIT_SLOP}
+                accessibilityLabel={t('calls.videoCall')}
               >
                 <Reanimated.View style={[{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }, videoScaleStyle]}>
                   <HeaderCallRing active={activeVideoRing} size={48} circleProps={callRingCircleProps} />
@@ -1160,6 +1394,7 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
                 disabled={callDisabled || activeVoiceRing}
                 style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: callDisabled ? 0.4 : 1 }}
                 hitSlop={HEADER_ACTION_HIT_SLOP}
+                accessibilityLabel={t('calls.audioCall')}
               >
                 <Reanimated.View style={[{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }, voiceScaleStyle]}>
                   <HeaderCallRing active={activeVoiceRing} size={48} circleProps={callRingCircleProps} />
@@ -1174,6 +1409,7 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
               }}
               style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
               hitSlop={HEADER_ACTION_HIT_SLOP}
+              accessibilityLabel={t('messages.moreMenu')}
             >
               <Feather name="more-vertical" size={24} color={iconTint} />
             </Pressable>
@@ -1204,10 +1440,12 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
         sheetSurfaceStyle={menuSheetSurfaceStyle}
         insetBottom={insets.bottom}
         rtl={rtl}
+        menuExtraRows={menuExtraRows}
         onViewContact={onViewContact}
         onMute={onMuteNotifications}
         onSearch={onSearch}
         onMore={onMore}
+        muteRowLabel={muteRowLabel}
       />
 
       <HeaderAvatarContextSheet
@@ -1228,19 +1466,78 @@ const ChatRoomHeader = memo(function ChatRoomHeader({
   );
 });
 
+function isFirestorePermissionDenied(e: unknown): boolean {
+  const code = (e as { code?: string })?.code;
+  const msg = typeof (e as Error)?.message === 'string' ? (e as Error).message.toLowerCase() : '';
+  return (
+    code === 'permission-denied' ||
+    code === 'firestore/permission-denied' ||
+    msg.includes('permission-denied') ||
+    msg.includes('missing or insufficient permissions')
+  );
+}
+
 const ChatScreen = () => {
   const { id: chatId, pendingMedia, markRead } = useLocalSearchParams<{
     id: string;
     pendingMedia?: string;
     markRead?: string;
   }>();
+
+  const perfChatSessionRef = useRef<string | null>(null);
+  if (chatId && perfChatSessionRef.current !== chatId) {
+    if (perfChatSessionRef.current) chatPerfSessionEnd();
+    perfChatSessionRef.current = chatId;
+    chatPerfSessionStart(chatId);
+    markChatScreenFnEnter(chatId);
+  }
+  if (__DEV__) bumpChatPerfRender('ChatScreen');
+
   const { user } = useAuth();
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { colorScheme, isDark } = useTheme();
   const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
   const openPerfReadyRef = useRef(false);
   const openPerfMessagesLoadedRef = useRef(false);
+  const listContentSizedRef = useRef(false);
+  /** First Firestore message snapshot merged — ends skeleton; enables typing + read-receipt work. */
+  const messageStreamHydratedRef = useRef(false);
+  const hydrateFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [messageStreamHydrated, setMessageStreamHydrated] = useState(false);
+
+  const markMessagesStreamHydrated = useCallback(() => {
+    if (messageStreamHydratedRef.current) return;
+    messageStreamHydratedRef.current = true;
+    setMessageStreamHydrated(true);
+    if (hydrateFallbackTimerRef.current) {
+      clearTimeout(hydrateFallbackTimerRef.current);
+      hydrateFallbackTimerRef.current = null;
+    }
+  }, []);
+  const chatDocFirstSnapRef = useRef(false);
+  const userDocFirstSnapRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      chatPerfSessionEnd();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      pendingTextSendInteractionRef.current?.cancel?.();
+      pendingTextSendInteractionRef.current = null;
+    };
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      void import('@/lib/services/callService').catch(() => {});
+    });
+    return () => task.cancel?.();
+  }, [chatId]);
   
   // State
   const [messageText, setMessageText] = useState('');
@@ -1249,6 +1546,8 @@ const ChatScreen = () => {
   const [otherUser, setOtherUser] = useState<User | null>(null);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [showAttachOptions, setShowAttachOptions] = useState(false);
+  const [locationSheetOpen, setLocationSheetOpen] = useState(false);
+  const liveLocationCleanupRef = useRef<(() => void) | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -1271,12 +1570,21 @@ const ChatScreen = () => {
   const [mediaComposerUri, setMediaComposerUri] = useState<string | null>(null);
   const [mediaComposerDimensions, setMediaComposerDimensions] = useState<{ width: number; height: number } | null>(null);
   const [mediaComposerCaption, setMediaComposerCaption] = useState('');
+  const [mediaComposerAiMode, setMediaComposerAiMode] = useState<GywAiMultimodalRoutingMode>('auto');
   const [mediaComposerSending, setMediaComposerSending] = useState(false);
   const [mediaComposerProgress, setMediaComposerProgress] = useState(0);
   const [bodyContextMessage, setBodyContextMessage] = useState<ChatMessage | null>(null);
   const [reactionTrayMessageId, setReactionTrayMessageId] = useState<string | null>(null);
+  const [groupMembersOpen, setGroupMembersOpen] = useState(false);
+  const [inChatSearchOpen, setInChatSearchOpen] = useState(false);
+  const [inChatSearchQuery, setInChatSearchQuery] = useState('');
+  const [searchHighlightMessageId, setSearchHighlightMessageId] = useState<string | null>(null);
+  const [accessRevoked, setAccessRevoked] = useState(false);
+  const accessRevokedAlertRef = useRef(false);
   const lastReadCountRef = useRef(0);
   const keyboardPad = useRef(new RNAnimated.Value(0)).current;
+  /** Always 0 — used on Android so FlatList does not add keyboard height (composer is outside the list). */
+  const listKeyboardPadAndroid = useRef(new RNAnimated.Value(0)).current;
   const { width: windowWidth, height: viewportHeight } = useWindowDimensions();
 
   const sendOpacity = useSharedValue(0);
@@ -1306,6 +1614,11 @@ const ChatScreen = () => {
   const lastStartTimestampRef = useRef<number>(0);
   const isMicPressedRef = useRef(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  /** After optimistic prepend at bottom, skip one auto scrollToOffset (fights keyboard + duplicate scroll). */
+  const suppressNextBottomScrollRef = useRef(false);
+  /** Latest post-interaction send task — cancelled on chat change/unmount only. */
+  const pendingTextSendInteractionRef = useRef<{ cancel: () => void } | null>(null);
+  const inChatSearchCursorRef = useRef(-1);
   const viewedMessageIdsRef = useRef<Set<string>>(new Set());
   const deliveredMessageIdsRef = useRef<Set<string>>(new Set());
   const insets = useSafeAreaInsets();
@@ -1315,8 +1628,14 @@ const ChatScreen = () => {
   const mediaSendingGuardRef = useRef(false);
 
   useEffect(() => {
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    // Android: rely on `softwareKeyboardLayoutMode: "resize"` + KeyboardAvoidingView. Padding only
+    // the inverted list does not move the composer (sibling below the list) and can double-offset
+    // when resize works. iOS keeps JS-driven pad for inverted list + typing row.
+    if (Platform.OS === 'android') {
+      return;
+    }
+    const showEvt = 'keyboardWillShow' as const;
+    const hideEvt = 'keyboardWillHide' as const;
     const subShow = Keyboard.addListener(showEvt, (e: { endCoordinates?: { height?: number } }) => {
       const h = (e.endCoordinates?.height ?? 0) + 8;
       RNAnimated.timing(keyboardPad, {
@@ -1451,6 +1770,11 @@ const ChatScreen = () => {
   // addMessage (prepend). No sort needed — just use rawMessages directly.
   const messages = rawMessages;
 
+  const prevMessagesLengthRef = useRef(0);
+  const isAtBottomRef = useRef(true);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   const onScrollFabPressStable = useCallback(() => {
     setIsAtBottom(true);
     setShowNewMessagesButton(false);
@@ -1475,10 +1799,6 @@ const ChatScreen = () => {
   // ========================================
   
   // Track if user is at bottom for smart scroll (inverted: offset 0 = bottom)
-  const prevMessagesLengthRef = useRef(0);
-  const isAtBottomRef = useRef(true);
-  const messagesRef = useRef(messages);
-  useEffect(() => { messagesRef.current = messages; });
   useEffect(() => {
     isAtBottomRef.current = isAtBottom;
   }, [isAtBottom]);
@@ -1487,29 +1807,91 @@ const ChatScreen = () => {
     setHasMoreOlderMessages(true);
   }, [chatId]);
 
-  // Defer message subscription until after transition frames so tap→paint stays light.
+  useEffect(() => {
+    accessRevokedAlertRef.current = false;
+    setAccessRevoked(false);
+  }, [chatId]);
+
+  useEffect(() => {
+    listContentSizedRef.current = false;
+    chatDocFirstSnapRef.current = false;
+    userDocFirstSnapRef.current = false;
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    messageStreamHydratedRef.current = false;
+    setMessageStreamHydrated(false);
+    if (hydrateFallbackTimerRef.current) {
+      clearTimeout(hydrateFallbackTimerRef.current);
+      hydrateFallbackTimerRef.current = null;
+    }
+    hydrateFallbackTimerRef.current = setTimeout(() => {
+      hydrateFallbackTimerRef.current = null;
+      if (!messageStreamHydratedRef.current) {
+        messageStreamHydratedRef.current = true;
+        setMessageStreamHydrated(true);
+      }
+    }, 900);
+    return () => {
+      if (hydrateFallbackTimerRef.current) {
+        clearTimeout(hydrateFallbackTimerRef.current);
+        hydrateFallbackTimerRef.current = null;
+      }
+    };
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      markChatAfterInteractions(chatId);
+    });
+    return () => task.cancel?.();
+  }, [chatId]);
+
+  // Defer message subscription until after one paint. iOS keeps double rAF to avoid
+  // transition hitch; Android uses a single frame to shave ~16ms off first snapshot.
   useEffect(() => {
     if (!chatId) return;
     let cancelled = false;
     let raf1 = 0;
-    let raf2 = 0;
+    let raf2: number | null = null;
+    const startListener = () => {
+      if (cancelled) return;
+      markChatScreenMount(chatId);
+      startChatMessageListener(
+        chatId,
+        30,
+        () => {
+          markMessagesStreamHydrated();
+        },
+        { viewerUid: user?.uid }
+      );
+    };
     raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        if (cancelled) return;
-        markChatScreenMount(chatId);
-        startChatMessageListener(chatId, 30);
-      });
+      markMessageListenerScheduled(chatId);
+      if (Platform.OS === 'android') {
+        if (isLegacyAndroid()) {
+          InteractionManager.runAfterInteractions(() => {
+            if (!cancelled) startListener();
+          });
+        } else {
+          startListener();
+        }
+      } else {
+        raf2 = requestAnimationFrame(startListener);
+      }
     });
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
+      if (raf2 != null) cancelAnimationFrame(raf2);
       stopChatMessageListener();
       openPerfReadyRef.current = false;
       openPerfMessagesLoadedRef.current = false;
       clearChatOpenMark(chatId);
     };
-  }, [chatId]);
+  }, [chatId, markMessagesStreamHydrated, user?.uid]);
 
   useEffect(() => {
     if (!chatId || openPerfMessagesLoadedRef.current) return;
@@ -1533,11 +1915,16 @@ const ChatScreen = () => {
     let unsubscribe: (() => void) | null = null;
     const task = InteractionManager.runAfterInteractions(() => {
       if (cancelled) return;
+      markChatDocTaskStart(chatId);
       if (Platform.OS !== 'web' && hasNativeFirestore) {
         unsubscribe = subscribeToChatDocNative(
           chatId,
           (chatData) => {
             if (chatData && isMountedRef.current) {
+              if (!chatDocFirstSnapRef.current) {
+                chatDocFirstSnapRef.current = true;
+                markChatDocFirstSnapshot(chatId);
+              }
               unstable_batchedUpdates(() => {
                 setChat(chatData as Chat);
                 useChatStore.getState().updateChat(chatId, chatData as Chat);
@@ -1552,6 +1939,9 @@ const ChatScreen = () => {
           },
           (error) => {
             if (__DEV__) console.error('Chat listener error:', error);
+            if (isFirestorePermissionDenied(error)) {
+              triggerAccessRevoked();
+            }
           }
         );
       } else {
@@ -1566,6 +1956,10 @@ const ChatScreen = () => {
               createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
               updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
             } as Chat;
+            if (!chatDocFirstSnapRef.current) {
+              chatDocFirstSnapRef.current = true;
+              markChatDocFirstSnapshot(chatId);
+            }
             unstable_batchedUpdates(() => {
               setChat(chatData);
               useChatStore.getState().updateChat(chatId, chatData);
@@ -1579,6 +1973,9 @@ const ChatScreen = () => {
           }
         }, (error) => {
           if (__DEV__) console.error('Chat listener error:', error);
+          if (isFirestorePermissionDenied(error)) {
+            triggerAccessRevoked();
+          }
         });
       }
     });
@@ -1588,7 +1985,35 @@ const ChatScreen = () => {
       task.cancel?.();
       if (unsubscribe) unsubscribe();
     };
-  }, [chatId, user?.uid]);
+  }, [chatId, user?.uid, triggerAccessRevoked]);
+
+  const triggerAccessRevoked = useCallback(() => {
+    if (accessRevokedAlertRef.current) return;
+    accessRevokedAlertRef.current = true;
+    setAccessRevoked(true);
+    stopChatMessageListener();
+    if (chatId) {
+      useChatStore.getState().clearChat(chatId);
+    }
+    Alert.alert(t('groups.removedFromGroupTitle'), t('groups.removedFromGroupBody'), [
+      {
+        text: t('common.close'),
+        onPress: () => {
+          try {
+            router.replace('/(home)/(tabs)/chats' as never);
+          } catch {
+            router.back();
+          }
+        },
+      },
+    ]);
+  }, [chatId, router, t]);
+
+  useEffect(() => {
+    if (!user?.uid || !chat || chat.type !== 'group') return;
+    if (chat.participants.includes(user.uid)) return;
+    triggerAccessRevoked();
+  }, [chat, user?.uid, triggerAccessRevoked]);
   
   // Get other participant ID
   const otherParticipantId = useMemo(() => {
@@ -1596,13 +2021,228 @@ const ChatScreen = () => {
     return chat.participants.find(p => p !== user?.uid) || null;
   }, [chat, user?.uid]);
 
+  const isGroupAdmin = useMemo(() => {
+    if (!chat || chat.type !== 'group' || !user?.uid) return false;
+    if (chat.participantRoles?.[user.uid] === 'admin') return true;
+    if (chat.createdBy === user.uid) return true;
+    if (!chat.participantRoles && !chat.createdBy && chat.participants?.[0] === user.uid) return true;
+    return false;
+  }, [chat, user?.uid]);
+
   const isGywAiChat = !!otherParticipantId && otherParticipantId === GYW_AI_SYSTEM_ID && chat?.type === 'direct';
 
-  /** Fast Firestore path: one batch write instead of message + chat + unread read. */
+  const directPeerBlocked = useUserBlocksStore((s) =>
+    !!(chat?.type === 'direct' && otherParticipantId && s.blockedPeerIds[otherParticipantId])
+  );
+  const composerInputLocked = accessRevoked || directPeerBlocked;
+
+  /** Fast Firestore path: one batch write + skip per-send `getDoc(chats)` when participants are known. */
   const recipientSendOptions: SendChatMessageOptions | undefined = useMemo(() => {
     const ids = chat?.participants?.filter((p) => p !== user?.uid) ?? [];
-    return ids.length > 0 ? { recipientUserIds: ids } : undefined;
+    const participants = chat?.participants;
+    const guard =
+      Array.isArray(participants) && participants.length > 0 ? { participantsForSendGuard: participants } : {};
+    if (ids.length > 0) {
+      return { recipientUserIds: ids, ...guard };
+    }
+    return Object.keys(guard).length > 0 ? guard : undefined;
   }, [chat?.participants, user?.uid]);
+
+  useEffect(() => {
+    return () => {
+      liveLocationCleanupRef.current?.();
+      liveLocationCleanupRef.current = null;
+    };
+  }, []);
+
+  const requestLocationPermission = useCallback(async (): Promise<boolean> => {
+    const perm = await Location.requestForegroundPermissionsAsync();
+    if (perm.status === Location.PermissionStatus.GRANTED) return true;
+    Alert.alert(t('common.permissionRequired'), t('location.permissionDenied'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('location.openSettings'), onPress: () => void Linking.openSettings() },
+    ]);
+    return false;
+  }, [t]);
+
+  const openLocationAttach = useCallback(() => {
+    setShowAttachOptions(false);
+    setLocationSheetOpen(true);
+  }, []);
+
+  const handleOpenLocation = useCallback((message: ChatMessage) => {
+    if (message.type !== 'location') return;
+    const lat = message.latitude ?? 0;
+    const lng = message.longitude ?? 0;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    void openInNativeMaps({
+      latitude: lat,
+      longitude: lng,
+      label: message.placeName || message.placeAddress,
+    });
+  }, []);
+
+  const sendCurrentLocationAttachment = useCallback(async () => {
+    if (!user?.uid || !chatId) return;
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
+    setLocationSheetOpen(false);
+    const ok = await requestLocationPermission();
+    if (!ok) return;
+    setSending(true);
+    try {
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      let placeName: string | undefined;
+      let placeAddress: string | undefined;
+      try {
+        const geo = await Location.reverseGeocodeAsync({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        });
+        const g = geo[0];
+        if (g) {
+          const fmt = formatGeocodeForLocationMessage(g);
+          placeName = fmt.placeName;
+          placeAddress = fmt.placeAddress;
+        }
+      } catch {
+        /* optional */
+      }
+      await sendLocationMessage(
+        chatId,
+        user.uid,
+        user.displayName || user.phoneNumber || 'User',
+        user.photoURL || undefined,
+        pos.coords.latitude,
+        pos.coords.longitude,
+        {
+          ...recipientSendOptions,
+          placeName,
+          placeAddress,
+          replyTo: replyingTo
+            ? {
+                messageId: replyingTo.id,
+                senderName: replyingTo.senderName,
+                text: replyingTo.text,
+                type: replyingTo.type,
+              }
+            : undefined,
+        }
+      );
+      setReplyingTo(null);
+    } catch (e) {
+      if (__DEV__) console.warn('[chat] send location', e);
+      Alert.alert(t('common.error'), t('location.failed'));
+    } finally {
+      setSending(false);
+    }
+  }, [
+    user,
+    chatId,
+    directPeerBlocked,
+    requestLocationPermission,
+    recipientSendOptions,
+    replyingTo,
+    t,
+  ]);
+
+  const sendLiveLocationAttachment = useCallback(
+    async (durationMs: number) => {
+      if (!user?.uid || !chatId) return;
+      if (directPeerBlocked) {
+        Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+        return;
+      }
+      setLocationSheetOpen(false);
+      const ok = await requestLocationPermission();
+      if (!ok) return;
+      setSending(true);
+      const expiresAtIso = new Date(Date.now() + durationMs).toISOString();
+      try {
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        let placeName: string | undefined;
+        let placeAddress: string | undefined;
+        try {
+          const geo = await Location.reverseGeocodeAsync({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+          });
+          const g = geo[0];
+          if (g) {
+            const fmt = formatGeocodeForLocationMessage(g);
+            placeName = fmt.placeName;
+            placeAddress = fmt.placeAddress;
+          }
+        } catch {
+          /* optional */
+        }
+        const messageId = await sendLocationMessage(
+          chatId,
+          user.uid,
+          user.displayName || user.phoneNumber || 'User',
+          user.photoURL || undefined,
+          pos.coords.latitude,
+          pos.coords.longitude,
+          {
+            ...recipientSendOptions,
+            placeName,
+            placeAddress,
+            isLive: true,
+            liveDurationMs: durationMs,
+            replyTo: replyingTo
+              ? {
+                  messageId: replyingTo.id,
+                  senderName: replyingTo.senderName,
+                  text: replyingTo.text,
+                  type: replyingTo.type,
+                }
+              : undefined,
+          }
+        );
+        setReplyingTo(null);
+        liveLocationCleanupRef.current?.();
+        liveLocationCleanupRef.current = null;
+        try {
+          const stop = await startLiveLocationPublisher({
+            chatId,
+            messageId,
+            expiresAt: expiresAtIso,
+            onError: (err) => {
+              if (__DEV__) console.warn('[chat] live location publish', err);
+            },
+          });
+          liveLocationCleanupRef.current = stop;
+        } catch (err) {
+          if (__DEV__) console.warn('[chat] live location watcher', err);
+        }
+      } catch (e) {
+        if (__DEV__) console.warn('[chat] send live location', e);
+        Alert.alert(t('common.error'), t('location.failed'));
+      } finally {
+        setSending(false);
+      }
+    },
+    [
+      user,
+      chatId,
+      directPeerBlocked,
+      requestLocationPermission,
+      recipientSendOptions,
+      replyingTo,
+      t,
+    ]
+  );
+
+  const openLocationOnMapPicker = useCallback(() => {
+    setLocationSheetOpen(false);
+    if (!chatId) return;
+    router.push({
+      pathname: '/(home)/(modal)/location-picker',
+      params: { chatId },
+    });
+  }, [chatId, router]);
 
   // Gyw AI: always try to show the latest message on first open.
   const didInitialAiScrollRef = useRef(false);
@@ -1641,6 +2281,10 @@ const ChatScreen = () => {
 
     const applyUser = (data: { id: string; lastActive?: any; [k: string]: any } | null) => {
       if (!data || !isMountedRef.current) return;
+      if (chatId && !userDocFirstSnapRef.current) {
+        userDocFirstSnapRef.current = true;
+        markUserDocFirstSnapshot(chatId);
+      }
       const lastActiveTimestamp = typeof data.lastActive === 'number' ? data.lastActive : (data.lastActive ? new Date(data.lastActive).getTime() : undefined);
       const lastActiveDate = typeof data.lastActive === 'string' ? data.lastActive : (data.lastActive ? new Date(data.lastActive).toISOString() : undefined);
       const now = Date.now();
@@ -1882,6 +2526,7 @@ const ChatScreen = () => {
   const openImageComposer = useCallback((uri: string, dimensions?: { width: number; height: number }) => {
     if (!uri) return;
     setMediaComposerCaption('');
+    setMediaComposerAiMode('auto');
     setMediaComposerProgress(0);
     setMediaComposerUri(uri);
     setMediaComposerDimensions(dimensions ?? null);
@@ -1915,6 +2560,10 @@ const ChatScreen = () => {
 
   const handleSendComposedImage = useCallback(async () => {
     if (!chatId || !user || !mediaComposerUri) return;
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
     if (mediaSendingGuardRef.current) return;
     mediaSendingGuardRef.current = true;
     setMediaComposerSending(true);
@@ -1941,7 +2590,22 @@ const ChatScreen = () => {
           };
         }
       }
-      await sendMediaMessage(
+      const mediaSendOptions: SendChatMessageOptions | undefined =
+        recipientSendOptions || isGywAiChat
+          ? {
+              ...(recipientSendOptions ?? {}),
+              ...(isGywAiChat
+                ? {
+                    gywAiMultimodal: {
+                      aiMode: mediaComposerAiMode,
+                      prompt: mediaComposerCaption.trim() || undefined,
+                    },
+                  }
+                : {}),
+            }
+          : undefined;
+
+      const userImageMessageId = await sendMediaMessage(
         chatId,
         user.uid,
         user?.displayName || user?.phoneNumber || 'User',
@@ -1958,19 +2622,78 @@ const ChatScreen = () => {
             }
           : undefined,
         Object.keys(imageDimensions).length > 0 ? imageDimensions : undefined,
-        recipientSendOptions
+        mediaSendOptions
       );
+
+      if (isGywAiChat && userImageMessageId) {
+        const aiTempId = `ai-pending-mm-${Date.now()}`;
+        const workingLabel = t('messages.gywAiImageWorking');
+        useChatStore.getState().addMessage(chatId, {
+          id: aiTempId,
+          chatId,
+          senderId: GYW_AI_SYSTEM_ID,
+          senderName: GYW_AI_DISPLAY_NAME,
+          senderAvatar: undefined,
+          isAI: true,
+          text: workingLabel,
+          type: 'text',
+          createdAt: new Date().toISOString(),
+          sentAt: new Date().toISOString(),
+          readBy: [GYW_AI_SYSTEM_ID],
+          status: 'pending',
+          aiMultimodalSourceMessageId: userImageMessageId,
+        });
+
+        requestGywAiMultimodal({ chatId, userMessageId: userImageMessageId })
+          .then((res) => {
+            if (res.kind === 'image' && res.imageUrl) {
+              useChatStore.getState().updateMessage(chatId, aiTempId, {
+                id: res.messageId,
+                type: 'image',
+                imageUrl: res.imageUrl,
+                text: res.text,
+                status: 'sent',
+                aiError: undefined,
+                aiMultimodalSourceMessageId: userImageMessageId,
+              });
+            } else {
+              useChatStore.getState().updateMessage(chatId, aiTempId, {
+                id: res.messageId,
+                type: 'text',
+                text: res.text ?? '',
+                imageUrl: undefined,
+                status: 'sent',
+                aiError: undefined,
+                aiMultimodalSourceMessageId: userImageMessageId,
+              });
+            }
+          })
+          .catch((e) => {
+            if (__DEV__) console.error('Gyw AI multimodal error:', e);
+            useChatStore.getState().updateMessage(chatId, aiTempId, {
+              status: 'failed',
+              text: t('messages.gywAiUnavailableRetry'),
+              aiError: 'unavailable',
+            });
+          });
+      }
+
       setReplyingTo(null);
       setMediaComposerProgress(1);
       setMediaComposerVisible(false);
       setMediaComposerUri(null);
       setMediaComposerCaption('');
+      setMediaComposerAiMode('auto');
       if (pendingMedia === 'true') {
         await AsyncStorage.removeItem('pendingMediaForChannel').catch(() => {});
       }
     } catch (error) {
       if (__DEV__) console.error('Error sending composed image:', error);
-      Alert.alert(t('common.error'), t('messages.failedToSendImage'));
+      if (error instanceof BlockedPeerSendError) {
+        Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      } else {
+        Alert.alert(t('common.error'), t('messages.failedToSendImage'));
+      }
     } finally {
       if (mediaProgressRef.current) {
         clearInterval(mediaProgressRef.current);
@@ -1994,6 +2717,9 @@ const ChatScreen = () => {
     recipientSendOptions,
     pendingMedia,
     t,
+    directPeerBlocked,
+    isGywAiChat,
+    mediaComposerAiMode,
   ]);
   
   
@@ -2001,18 +2727,30 @@ const ChatScreen = () => {
   useEffect(() => {
     const handlePendingMedia = async () => {
       if (pendingMedia === 'true' && user && chatId) {
+        if (directPeerBlocked) {
+          await AsyncStorage.removeItem('pendingMediaForChannel').catch(() => {});
+          return;
+        }
         try {
           const stored = await AsyncStorage.getItem('pendingMediaForChannel');
           if (stored) {
             const { media: pendingMediaData } = JSON.parse(stored);
             if (pendingMediaData) {
-              const mediaType = pendingMediaData.type?.includes('video') ? 'video' :
-                pendingMediaData.type?.includes('image') ? 'image' : 'file';
+              const mime = pendingMediaData.type as string | undefined;
+              const mediaType: 'video' | 'image' | 'file' | 'document' =
+                mime?.includes('video') ? 'video' :
+                mime?.includes('image') ? 'image' :
+                isDocumentLikeMime(mime) ? 'document' : 'file';
               if (mediaType === 'image') {
                 await AsyncStorage.removeItem('pendingMediaForChannel');
                 openImageComposer(pendingMediaData.uri);
                 return;
               }
+              const pendingName: string | undefined =
+                pendingMediaData.fileName || pendingMediaData.name;
+              const pendingSize: number | undefined =
+                typeof pendingMediaData.size === 'number' ? pendingMediaData.size : undefined;
+              const ext = resolveDocumentExtension(pendingName, mime);
               await sendMediaMessage(
                 chatId,
                 user.uid,
@@ -2020,9 +2758,15 @@ const ChatScreen = () => {
                 user?.photoURL || undefined,
                 pendingMediaData.uri,
                 mediaType,
+                pendingName,
                 undefined,
-                undefined,
-                undefined,
+                mediaType === 'document'
+                  ? {
+                      mimeType: mime || 'application/octet-stream',
+                      ...(typeof pendingSize === 'number' ? { fileSize: pendingSize } : {}),
+                      extension: ext,
+                    }
+                  : undefined,
                 recipientSendOptions
               );
               await AsyncStorage.removeItem('pendingMediaForChannel');
@@ -2035,20 +2779,35 @@ const ChatScreen = () => {
     };
     
     handlePendingMedia();
-  }, [pendingMedia, chatId, user, recipientSendOptions, openImageComposer]);
+  }, [pendingMedia, chatId, user, recipientSendOptions, openImageComposer, directPeerBlocked]);
   
   // ========================================
   // HANDLERS
   // ========================================
   
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
+    if (accessRevoked) return;
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
+    if (chat && user && !chat.participants.includes(user.uid)) return;
     if (!chatId || !messageText.trim() || !user) return;
-    
+
     const text = messageText.trim();
+    const replySnapshot = replyingTo
+      ? {
+          messageId: replyingTo.id,
+          senderName: replyingTo.senderName,
+          text: replyingTo.text,
+          type: replyingTo.type,
+        }
+      : undefined;
+
     const tempId = `pending-${Date.now()}`;
     const now = new Date().toISOString();
-    
-    // Optimistic UI: show message immediately with clock icon
+
+    // Optimistic UI first — do not await Firestore before this commit (WhatsApp-style).
     const optimisticMessage: ChatMessage = {
       id: tempId,
       chatId,
@@ -2061,95 +2820,133 @@ const ChatScreen = () => {
       sentAt: now,
       readBy: [user.uid],
       status: 'pending',
-      replyTo: replyingTo ? { messageId: replyingTo.id, senderName: replyingTo.senderName, text: replyingTo.text, type: replyingTo.type } : undefined,
+      replyTo: replySnapshot,
     };
-    useChatStore.getState().addMessage(chatId, optimisticMessage);
-    
-    if (draftSaveTimerRef.current) {
-      clearTimeout(draftSaveTimerRef.current);
-      draftSaveTimerRef.current = null;
-    }
-    setMessageText('');
-    updateComposerSendMic(false);
-    if (chatId) AsyncStorage.removeItem(`draft_${chatId}`).catch(() => {});
-    setReplyingTo(null);
-    setShowEmojiPicker(false);
-    Keyboard.dismiss();
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-    setSending(true);
-    try {
-      setTimeout(() => {
-        listRef.current?.scrollToOffset({ offset: 0, animated: true });
-      }, 200);
-      const messageId = await sendMessage(
-        chatId,
-        user.uid,
-        user?.displayName || user?.phoneNumber || 'User',
-        user?.photoURL || undefined,
-        text,
-        replyingTo ? {
-          messageId: replyingTo.id,
-          senderName: replyingTo.senderName,
-          text: replyingTo.text,
-          type: replyingTo.type,
-        } : undefined,
-        recipientSendOptions
-      );
-      useChatStore.getState().updateMessage(chatId, tempId, { id: messageId, status: 'sent' });
-      textInputRef.current?.focus();
-
-      // If this is a Gyw AI direct chat, trigger the AI reply via Cloud Function.
-      if (isGywAiChat) {
-        const aiTempId = `ai-pending-${Date.now()}`;
-        const aiOptimistic: ChatMessage = {
-          id: aiTempId,
-          chatId,
-          senderId: GYW_AI_SYSTEM_ID,
-          senderName: GYW_AI_DISPLAY_NAME,
-          senderAvatar: undefined,
-          isAI: true,
-          text: 'Gyw AI is thinking…',
-          type: 'text',
-          createdAt: new Date().toISOString(),
-          sentAt: new Date().toISOString(),
-          readBy: [GYW_AI_SYSTEM_ID],
-          status: 'pending',
-        };
-        useChatStore.getState().addMessage(chatId, aiOptimistic);
-
-        requestGywAiReply({ chatId, text, contextLimit: 10 })
-          .then(({ messageId: aiMessageId, text: aiText }) => {
-            useChatStore.getState().updateMessage(chatId, aiTempId, {
-              id: aiMessageId,
-              text: aiText,
-              status: 'sent',
-              aiError: undefined,
-            });
-          })
-          .catch((e) => {
-            if (__DEV__) console.error('Gyw AI error:', e);
-            useChatStore.getState().updateMessage(chatId, aiTempId, {
-              status: 'failed',
-              text: 'Gyw AI is unavailable. Tap to retry.',
-              aiError: 'unavailable',
-            });
-          });
+    unstable_batchedUpdates(() => {
+      suppressNextBottomScrollRef.current = true;
+      useChatStore.getState().addMessage(chatId, optimisticMessage);
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
       }
-    } catch (error) {
-      if (__DEV__) console.error('Error sending message:', error);
-      useChatStore.getState().updateMessage(chatId, tempId, { status: 'failed' });
-      Alert.alert(t('common.error'), t('messages.failedToSend'));
-    } finally {
-      setSending(false);
-    }
+      setMessageText('');
+      updateComposerSendMic(false);
+      setReplyingTo(null);
+      setShowEmojiPicker(false);
+    });
+    if (chatId) AsyncStorage.removeItem(`draft_${chatId}`).catch(() => {});
+    queueMicrotask(() => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    });
+
+    pendingTextSendInteractionRef.current = InteractionManager.runAfterInteractions(() => {
+      void (async () => {
+        try {
+          const messageId = await sendMessage(
+            chatId,
+            user.uid,
+            user?.displayName || user?.phoneNumber || 'User',
+            user?.photoURL || undefined,
+            text,
+            replySnapshot,
+            recipientSendOptions
+          );
+          useChatStore.getState().updateMessage(chatId, tempId, { id: messageId, status: 'sent' });
+
+          if (isGywAiChat) {
+            const aiTempId = `ai-pending-${Date.now()}`;
+            const aiOptimistic: ChatMessage = {
+              id: aiTempId,
+              chatId,
+              senderId: GYW_AI_SYSTEM_ID,
+              senderName: GYW_AI_DISPLAY_NAME,
+              senderAvatar: undefined,
+              isAI: true,
+              text: 'Gyw AI is thinking…',
+              type: 'text',
+              createdAt: new Date().toISOString(),
+              sentAt: new Date().toISOString(),
+              readBy: [GYW_AI_SYSTEM_ID],
+              status: 'pending',
+            };
+            useChatStore.getState().addMessage(chatId, aiOptimistic);
+
+            requestGywAiReply({ chatId, text, contextLimit: 10 })
+              .then(({ messageId: aiMessageId, text: aiText }) => {
+                useChatStore.getState().updateMessage(chatId, aiTempId, {
+                  id: aiMessageId,
+                  text: aiText,
+                  status: 'sent',
+                  aiError: undefined,
+                });
+              })
+              .catch((e) => {
+                if (__DEV__) console.error('Gyw AI error:', e);
+                useChatStore.getState().updateMessage(chatId, aiTempId, {
+                  status: 'failed',
+                  text: t('messages.gywAiUnavailableRetry'),
+                  aiError: 'unavailable',
+                });
+              });
+          }
+        } catch (error) {
+          if (__DEV__) console.error('Error sending message:', error);
+          useChatStore.getState().updateMessage(chatId, tempId, { status: 'failed' });
+          if (error instanceof BlockedPeerSendError) {
+            Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+          } else {
+            Alert.alert(t('common.error'), t('messages.failedToSend'));
+          }
+        }
+      })();
+    });
   };
 
   const handleRetryAi = useCallback(async (message: ChatMessage) => {
     if (!chatId || !user || !isGywAiChat) return;
+
+    if (message.aiMultimodalSourceMessageId) {
+      const srcId = message.aiMultimodalSourceMessageId;
+      useChatStore.getState().updateMessage(chatId, message.id, {
+        status: 'pending',
+        text: t('messages.gywAiImageWorking'),
+        aiError: undefined,
+      });
+      try {
+        const res = await requestGywAiMultimodal({ chatId, userMessageId: srcId });
+        if (res.kind === 'image' && res.imageUrl) {
+          useChatStore.getState().updateMessage(chatId, message.id, {
+            id: res.messageId,
+            type: 'image',
+            imageUrl: res.imageUrl,
+            text: res.text,
+            status: 'sent',
+            aiError: undefined,
+            aiMultimodalSourceMessageId: srcId,
+          });
+        } else {
+          useChatStore.getState().updateMessage(chatId, message.id, {
+            id: res.messageId,
+            type: 'text',
+            text: res.text ?? '',
+            imageUrl: undefined,
+            status: 'sent',
+            aiError: undefined,
+            aiMultimodalSourceMessageId: srcId,
+          });
+        }
+      } catch (e) {
+        if (__DEV__) console.error('Gyw AI multimodal retry error:', e);
+        useChatStore.getState().updateMessage(chatId, message.id, {
+          status: 'failed',
+          text: t('messages.gywAiUnavailableRetry'),
+          aiError: 'unavailable',
+        });
+      }
+      return;
+    }
+
     const lastUserText = (() => {
-      // Retry uses the most recent non-AI text in this chat as the prompt.
-      // This keeps the UI simple and avoids storing extra state.
       const msgs = useChatStore.getState().messagesByChat[chatId] || [];
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
@@ -2172,11 +2969,11 @@ const ChatScreen = () => {
       if (__DEV__) console.error('Gyw AI retry error:', e);
       useChatStore.getState().updateMessage(chatId, message.id, {
         status: 'failed',
-        text: 'Gyw AI is unavailable. Tap to retry.',
+        text: t('messages.gywAiUnavailableRetry'),
         aiError: 'unavailable',
       });
     }
-  }, [chatId, user, isGywAiChat]);
+  }, [chatId, user, isGywAiChat, t]);
   
   const handleEmojiSelect = (emoji: string) => {
     setMessageText((prev) => {
@@ -2193,7 +2990,9 @@ const ChatScreen = () => {
   }, []);
 
   const handleLongPress = useCallback((message: ChatMessage) => {
-    setBodyContextMessage(message);
+    if (message.deleted) return;
+    setBodyContextMessage(null);
+    setActionMenuMessage(message);
   }, []);
 
   // Stable tap handlers — no deps, never recreated, safe to pass directly to BodySwipeableRow
@@ -2217,6 +3016,10 @@ const ChatScreen = () => {
 
   const handleRetryMessage = useCallback(async (message: ChatMessage) => {
     if (!user || !chatId || !message.text || message.senderId !== user.uid) return;
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
     setSending(true);
     try {
       const messageId = await sendMessage(
@@ -2236,11 +3039,15 @@ const ChatScreen = () => {
       useChatStore.getState().updateMessage(chatId, message.id, { id: messageId, status: 'sent' });
     } catch (error) {
       if (__DEV__) console.error('Retry send error:', error);
-      Alert.alert(t('common.error'), t('messages.failedToSend'));
+      if (error instanceof BlockedPeerSendError) {
+        Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      } else {
+        Alert.alert(t('common.error'), t('messages.failedToSend'));
+      }
     } finally {
       setSending(false);
     }
-  }, [user, chatId, t]);
+  }, [user, chatId, t, directPeerBlocked]);
   
   const getRecordingDuration = useCallback(() => {
     if (!recordingRef.current) return 0;
@@ -2287,6 +3094,7 @@ const ChatScreen = () => {
   };
   
   const startRecording = async (): Promise<boolean> => {
+    if (composerInputLocked) return false;
     if (isRecording || isStartingRef.current || isCleaningUpRef.current) return false;
     
     isMicPressedRef.current = true;
@@ -2460,6 +3268,10 @@ const ChatScreen = () => {
       recordingRef.current = null;
       
       if (!cancel && uri && user && duration >= 0.5) {
+        if (directPeerBlocked) {
+          Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+          return;
+        }
         setSending(true);
         try {
           await sendMediaMessage(
@@ -2482,7 +3294,11 @@ const ChatScreen = () => {
           setReplyingTo(null);
         } catch (err) {
           if (__DEV__) console.error('Error sending audio:', err);
-          Alert.alert(t('common.error'), t('messages.failedToSendAudio'));
+          if (err instanceof BlockedPeerSendError) {
+            Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+          } else {
+            Alert.alert(t('common.error'), t('messages.failedToSendAudio'));
+          }
         } finally {
           if (isMountedRef.current) setSending(false);
         }
@@ -2526,6 +3342,10 @@ const ChatScreen = () => {
   };
   
   const handlePickVideo = async () => {
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
@@ -2572,7 +3392,11 @@ const ChatScreen = () => {
           setReplyingTo(null);
         } catch (error) {
           if (__DEV__) console.error('Error sending video:', error);
-          Alert.alert(t('common.error'), t('messages.failedToSendVideo'));
+          if (error instanceof BlockedPeerSendError) {
+            Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+          } else {
+            Alert.alert(t('common.error'), t('messages.failedToSendVideo'));
+          }
         } finally {
           if (isMountedRef.current) {
             setSending(false);
@@ -2584,6 +3408,96 @@ const ChatScreen = () => {
       if (__DEV__) console.error('Error picking video:', error);
     }
   };
+
+  const handlePickDocument = useCallback(async () => {
+    if (directPeerBlocked) {
+      Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+      return;
+    }
+    if (!user || !chatId) return;
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [...DOCUMENT_PICKER_MIME_TYPES],
+        // Android: content:// grants read access to the picker result; Storage `putFile` reads later in another
+        // context → Permission Denial. Copying yields file:// under app cache. iOS usually returns a readable tmp path.
+        copyToCacheDirectory: Platform.OS === 'android',
+        multiple: false,
+      });
+
+      if (result.canceled) return;
+
+      const asset = result.assets?.[0];
+      if (!asset?.uri) {
+        Alert.alert(t('common.error'), t('messages.documentInvalid'));
+        return;
+      }
+
+      const name = asset.name?.trim() ? asset.name.trim() : 'document';
+      const mimeType = asset.mimeType || 'application/octet-stream';
+      const size = typeof asset.size === 'number' ? asset.size : 0;
+
+      if (!isAllowedChatDocument(mimeType, name)) {
+        Alert.alert(t('common.error'), t('messages.documentUnsupported'));
+        return;
+      }
+
+      if (size > MAX_CHAT_DOCUMENT_BYTES) {
+        Alert.alert(t('common.error'), t('messages.documentTooLarge'));
+        return;
+      }
+
+      const extension = resolveDocumentExtension(name, mimeType);
+
+      setShowAttachOptions(false);
+      setSending(true);
+      try {
+        await sendMediaMessage(
+          chatId,
+          user.uid,
+          user?.displayName || user?.phoneNumber || 'User',
+          user?.photoURL || undefined,
+          asset.uri,
+          'document',
+          name,
+          replyingTo
+            ? {
+                messageId: replyingTo.id,
+                senderName: replyingTo.senderName,
+                text: replyingTo.text,
+                type: replyingTo.type,
+              }
+            : undefined,
+          {
+            mimeType,
+            fileSize: size,
+            extension,
+          },
+          recipientSendOptions
+        );
+        setReplyingTo(null);
+      } catch (error) {
+        if (__DEV__) console.error('Error sending document:', error);
+        if (error instanceof BlockedPeerSendError) {
+          Alert.alert(t('common.error'), t('messages.blockedCannotSend'));
+        } else {
+          Alert.alert(t('common.error'), t('messages.failedToSendDocument'));
+        }
+      } finally {
+        if (isMountedRef.current) setSending(false);
+      }
+    } catch (error) {
+      if (__DEV__) console.error('Error picking document:', error);
+      Alert.alert(t('common.error'), t('messages.failedToSendDocument'));
+    }
+  }, [chatId, user, directPeerBlocked, t, replyingTo, recipientSendOptions]);
+
+  const handleOpenDocument = useCallback(
+    (message: ChatMessage) => {
+      openChatDocument(message, t, chatId ? { nav: { push: router.push }, chatId } : undefined);
+    },
+    [t, chatId, router]
+  );
   
   const handleTakePhoto = async () => {
     try {
@@ -2618,6 +3532,11 @@ const ChatScreen = () => {
     if (!chatId) return false;
     return s.getTypingNames(chatId, user?.uid).length > 0;
   });
+
+  const typingUiActive = useMemo(
+    () => messageStreamHydrated && typingActive,
+    [messageStreamHydrated, typingActive]
+  );
 
   const displayName = useMemo(() => {
     if (!chat) return 'Chat';
@@ -2658,20 +3577,146 @@ const ChatScreen = () => {
       const lastActive = otherUser.lastActive ? new Date(otherUser.lastActive).getTime() : 0;
       const now = Date.now();
       const diffMs = now - lastActive;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-    if (diffMins < 1) return 'last seen just now';
-    if (diffMins < 60) return `last seen ${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-    if (diffHours < 24) return `last seen ${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    if (diffDays < 7) return `last seen ${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-    const date = new Date(lastActive);
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return `last seen ${monthNames[date.getMonth()]} ${date.getDate()}`;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      if (diffMins < 1) return t('messages.lastSeenJustNow');
+      if (diffMins < 60) return t('messages.lastSeenMinutesAgo', { count: diffMins });
+      if (diffHours < 24) return t('messages.lastSeenHoursAgo', { count: diffHours });
+      if (diffDays < 7) return t('messages.lastSeenDaysAgo', { count: diffDays });
+      const dateStr = new Date(lastActive).toLocaleDateString(i18n.language || 'en', {
+        month: 'short',
+        day: 'numeric',
+      });
+      return t('messages.lastSeenOn', { date: dateStr });
     } catch {
       return '';
     }
-  }, [otherUser?.lastActive, chat?.type, isOnlineStatus]);
+  }, [otherUser?.lastActive, chat?.type, isOnlineStatus, t, i18n.language]);
+
+  const headerLastSeenLine = useMemo(() => {
+    if (chat?.type === 'group') {
+      const n = chat.participantCount ?? chat.participants?.length ?? 0;
+      return t('groups.memberCount', { count: n });
+    }
+    if (isGywAiChat) return GYW_AI_DISPLAY_NAME;
+    return lastSeenText || '\u00a0';
+  }, [
+    chat?.type,
+    chat?.participantCount,
+    chat?.participants?.length,
+    isGywAiChat,
+    lastSeenText,
+    t,
+  ]);
+
+  const chatMuted = useChatMetaStore(
+    useCallback((s) => (chatId ? !!s.byId[chatId]?.muted : false), [chatId])
+  );
+  const headerMuteRowLabel = useMemo(
+    () => (chatMuted ? t('chats.listActions.unmute') : t('chats.listActions.mute')),
+    [chatMuted, t]
+  );
+
+  const handleHeaderViewContact = useCallback(() => {
+    if (!chat) return;
+    if (chat.type === 'group') {
+      setGroupMembersOpen(true);
+      return;
+    }
+    if (isGywAiChat) {
+      Alert.alert(t('messages.viewContact'), t('messages.gywAiNoContact'));
+      return;
+    }
+    const u = otherUser?.username?.trim();
+    if (u) {
+      router.push({
+        pathname: '/(home)/(modal)/find-by-username' as never,
+        params: { initialQuery: u } as never,
+      });
+      return;
+    }
+    Alert.alert(t('messages.viewContact'), t('messages.contactNoUsername'));
+  }, [chat, isGywAiChat, otherUser, router, t]);
+
+  const handleHeaderMuteToggle = useCallback(async () => {
+    if (!user?.uid || !chatId) return;
+    const before = useChatMetaStore.getState().byId[chatId];
+    const next = !before?.muted;
+    useChatMetaStore.getState().patchChatMeta(chatId, { muted: next });
+    try {
+      await setUserChatMuted(user.uid, chatId, next);
+    } catch {
+      useChatMetaStore.getState().rollbackChatMeta(chatId, before);
+      Alert.alert(t('common.error'), t('chats.listActions.actionFailed'));
+    }
+  }, [user?.uid, chatId, t]);
+
+  const handleHeaderOpenSearch = useCallback(() => {
+    setInChatSearchOpen(true);
+    setInChatSearchQuery('');
+    setSearchHighlightMessageId(null);
+    inChatSearchCursorRef.current = -1;
+  }, []);
+
+  const handleHeaderMorePlaceholder = useCallback(() => {
+    Alert.alert(t('messages.moreMenu'), t('messages.moreMenuPlaceholder'));
+  }, [t]);
+
+  const handleOpenUserProfile = useCallback(() => {
+    if (!chatId) return;
+    if (chat?.type === 'group') return;
+    if (isGywAiChat) {
+      Alert.alert(t('messages.viewContact'), t('messages.gywAiNoContact'));
+      return;
+    }
+    if (!otherParticipantId) return;
+    router.push({
+      pathname: '/(home)/user-profile' as never,
+      params: { userId: otherParticipantId, chatId, chatType: 'direct' } as never,
+    });
+  }, [chatId, chat?.type, isGywAiChat, otherParticipantId, router, t]);
+
+  const headerOpenProfilePress = useMemo(
+    () =>
+      chat?.type === 'direct' && !isGywAiChat && otherParticipantId ? handleOpenUserProfile : undefined,
+    [chat?.type, isGywAiChat, otherParticipantId, handleOpenUserProfile]
+  );
+
+  const handleCloseInChatSearch = useCallback(() => {
+    setInChatSearchOpen(false);
+    setInChatSearchQuery('');
+    setSearchHighlightMessageId(null);
+    inChatSearchCursorRef.current = -1;
+  }, []);
+
+  const runInChatFind = useCallback(() => {
+    const q = inChatSearchQuery.trim().toLowerCase();
+    if (!q) {
+      Alert.alert(t('messages.searchInChat'), t('messages.searchNeedQuery'));
+      return;
+    }
+    const msgs = messagesRef.current;
+    if (!msgs.length) return;
+    const start = inChatSearchCursorRef.current;
+    for (let step = 1; step <= msgs.length; step++) {
+      const i = (start + step) % msgs.length;
+      const m = msgs[i];
+      if (!m || m.type === 'system' || m.deleted || m.type === 'call') continue;
+      const text = (m.text || '').toLowerCase();
+      if (text.includes(q)) {
+        inChatSearchCursorRef.current = i;
+        setSearchHighlightMessageId(m.id);
+        requestAnimationFrame(() => {
+          listRef.current?.scrollToIndex({ index: i, animated: true, viewPosition: 0.35 });
+        });
+        return;
+      }
+    }
+    Alert.alert(t('messages.searchInChat'), t('messages.searchNoMatch'));
+  }, [inChatSearchQuery, t]);
+
+  const listSearchExtraData = `${searchHighlightMessageId ?? ''}|${inChatSearchOpen ? 1 : 0}`;
   
   // ========================================
   // SCROLL & VIEWABILITY
@@ -2679,7 +3724,8 @@ const ChatScreen = () => {
   
   const handleViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: Array<{ item: ChatMessage }> }) => {
     if (!user || !chatId) return;
-    
+    if (!messageStreamHydratedRef.current) return;
+
     viewableItems.forEach(({ item }) => {
       const message = item as ChatMessage;
       
@@ -2723,13 +3769,27 @@ const ChatScreen = () => {
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
   
   // Inverted list: index 0 = newest = always at offset 0. No initial scroll needed.
-  const onContentSizeChange = useCallback(() => {}, []);
+  const onListLayout = useCallback(() => {
+    if (chatId) markFlatListLayout(chatId);
+  }, [chatId]);
+
+  const onContentSizeChange = useCallback(() => {
+    if (!chatId || listContentSizedRef.current) return;
+    if (messages.length === 0) return;
+    listContentSizedRef.current = true;
+    markFlatListContentSized(chatId, messages.length);
+  }, [chatId, messages.length]);
 
   useEffect(() => {
     const prev = prevMessagesLengthRef.current;
     if (messages.length > prev && prev > 0 && isAtBottomRef.current) {
-      // Inverted: newest = index 0 = offset 0
-      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+      if (suppressNextBottomScrollRef.current) {
+        suppressNextBottomScrollRef.current = false;
+      } else {
+        // Android: animated scroll + keyboard resize often fight; iOS keeps a light animation.
+        const animated = Platform.OS !== 'android';
+        listRef.current?.scrollToOffset({ offset: 0, animated });
+      }
     }
     prevMessagesLengthRef.current = messages.length;
   }, [messages.length]);
@@ -2799,12 +3859,15 @@ const ChatScreen = () => {
     if (!chatId) return;
     setListRefreshing(true);
     setPaginationBlocking(true);
+    const t0 = typeof globalThis !== 'undefined' && (globalThis as any).performance?.now ? (globalThis as any).performance.now() : Date.now();
     try {
       const { loaded, hasMore } = await loadOlderChatMessages(chatId, 30);
       setHasMoreOlderMessages(hasMore);
       if (__DEV__ && loaded === 0 && hasMore) {
         console.warn('[chat] loadOlderChatMessages: no batch loaded; check Firestore / network');
       }
+      const t1 = typeof globalThis !== 'undefined' && (globalThis as any).performance?.now ? (globalThis as any).performance.now() : Date.now();
+      markPaginationComplete(chatId, t1 - t0);
     } catch (e) {
       if (__DEV__) console.error('[chat] loadOlderChatMessages failed', e);
     } finally {
@@ -2861,8 +3924,50 @@ const ChatScreen = () => {
     if (item.deletedFor && user && item.deletedFor.includes(user.uid)) {
       return null;
     }
+
+    if (item.type === 'system') {
+      return (
+        <View style={{ marginTop }}>
+          {showDateHeader ? (
+            <ChatRoomDateDivider
+              label={formatDateHeader(item.createdAt)}
+              pillSurfaceStyle={bodyDatePillStyle}
+              labelStyle={dateLabelFullStyle}
+            />
+          ) : null}
+          <MessageBubble
+            message={item}
+            isMyMessage={false}
+            textColor={textColor}
+            textSecondaryColor={textSecondaryColor}
+            colorScheme={colorScheme}
+            isDark={isDark}
+            isGroupChat={!!isGroupChat}
+            onReplyPress={handleReplyPress}
+            onMediaPress={handleMediaPress}
+            onDocumentPress={handleOpenDocument}
+            onLocationPress={handleOpenLocation}
+            onLongPress={MESSAGE_BUBBLE_NOOP_LONG_PRESS}
+            showTail={false}
+            showSenderName={false}
+            showAvatar={false}
+          />
+        </View>
+      );
+    }
     
     if (item.type === 'call') {
+      if (item.deleted) {
+        return (
+          <View style={{ marginTop, alignItems: 'center' }}>
+            <Text
+              className={clsx('text-xs italic', isDark ? 'text-gray-500' : 'text-gray-500')}
+            >
+              {CHAT_DELETED_FOR_EVERYONE_TEXT}
+            </Text>
+          </View>
+        );
+      }
       return (
         <View style={{ marginTop, alignItems: 'center' }}>
           <View className={clsx(
@@ -2880,8 +3985,21 @@ const ChatScreen = () => {
       );
     }
     
+    const isSearchHit = searchHighlightMessageId !== null && item.id === searchHighlightMessageId;
+
     return (
-      <View style={{ marginTop }}>
+      <View
+        style={[
+          { marginTop },
+          isSearchHit && {
+            paddingHorizontal: 2,
+            paddingVertical: 2,
+            borderRadius: 14,
+            borderWidth: 2,
+            borderColor: isDark ? '#60a5fa' : '#2563eb',
+          },
+        ]}
+      >
         {showDateHeader ? (
           <ChatRoomDateDivider
             label={formatDateHeader(item.createdAt)}
@@ -2893,7 +4011,6 @@ const ChatScreen = () => {
         <View
           style={{ maxWidth: bubbleMax, alignSelf: isMyMessage ? 'flex-end' : 'flex-start' }}
           shouldRasterizeIOS
-          removeClippedSubviews
         >
           <BodySwipeableRow
             message={item}
@@ -2914,7 +4031,9 @@ const ChatScreen = () => {
                 isGroupChat={!!isGroupChat}
                 onReplyPress={handleReplyPress}
                 onMediaPress={handleMediaPress}
-                onLongPress={() => {}}
+                onDocumentPress={handleOpenDocument}
+                onLocationPress={handleOpenLocation}
+                onLongPress={MESSAGE_BUBBLE_NOOP_LONG_PRESS}
                 onRetry={
                   item.isAI || item.senderId === GYW_AI_SYSTEM_ID
                     ? handleRetryAi
@@ -2939,9 +4058,9 @@ const ChatScreen = () => {
   }, [
     user?.uid, isDark, colorScheme, textColor, textSecondaryColor, isGroupChat,
     handleReplyPress, handleSwipeToReply, handleLongPress, handleRetryMessage, handleRetryAi,
-    handleReactionSelect, handleMediaPress, shouldShowDateHeader,
+    handleReactionSelect, handleMediaPress, handleOpenDocument, handleOpenLocation, shouldShowDateHeader,
     handleTapStable, handleDoubleTapItem,
-    dateLabelFullStyle, bubbleMaxWidth, bodyDatePillStyle,
+    dateLabelFullStyle, bubbleMaxWidth, bodyDatePillStyle, searchHighlightMessageId,
   ]);
 
   const closeBodyContext = useCallback(() => setBodyContextMessage(null), []);
@@ -2960,9 +4079,8 @@ const ChatScreen = () => {
 
   const handleBodyContextForward = useCallback(() => {
     setBodyContextMessage(null);
-    // TODO: attach forward flow
-    Alert.alert('Forward', 'TODO: attach forward flow');
-  }, []);
+    Alert.alert(t('messages.forwardNotAvailableTitle'), t('messages.forwardNotAvailableBody'));
+  }, [t]);
 
   const handleBodyContextDelete = useCallback(() => {
     if (bodyContextMessage) setActionMenuMessage(bodyContextMessage);
@@ -2971,9 +4089,8 @@ const ChatScreen = () => {
 
   const handleBodyContextInfo = useCallback(() => {
     setBodyContextMessage(null);
-    // TODO: attach message info
-    Alert.alert('Info', 'TODO: attach message info');
-  }, []);
+    Alert.alert(t('messages.messageInfoNotAvailableTitle'), t('messages.messageInfoNotAvailableBody'));
+  }, [t]);
 
   const handleReactionTrayPick = useCallback(
     async (emoji: string) => {
@@ -2986,6 +4103,45 @@ const ChatScreen = () => {
       }
     },
     [reactionTrayMessageId, user, chatId]
+  );
+
+  const groupSheetLabels = useMemo(
+    () => ({
+      title: t('groups.groupMembers'),
+      viewProfile: t('groups.viewProfile'),
+      removeFromGroup: t('groups.removeFromGroup'),
+      cancel: t('common.cancel'),
+      removeConfirmTitle: t('groups.removeMemberConfirmTitle'),
+      removeConfirmMessage: t('groups.removeMemberConfirmMessage'),
+      removeConfirmAction: t('groups.removeMemberConfirmAction'),
+      youBadge: t('groups.memberRowYou'),
+    }),
+    [t]
+  );
+
+  const handleRemoveGroupMemberLocal = useCallback(
+    async (targetUid: string) => {
+      if (!chatId) return;
+      try {
+        await removeGroupMemberFromGroup(chatId, targetUid);
+        setGroupMembersOpen(false);
+      } catch (e) {
+        if (__DEV__) console.error(e);
+        Alert.alert(t('common.error'), t('groups.removeMemberFailed'));
+      }
+    },
+    [chatId, t]
+  );
+
+  const handleViewGroupMemberProfile = useCallback(
+    (row: GroupMemberRow) => {
+      if (!chatId) return;
+      router.push({
+        pathname: '/(home)/user-profile' as never,
+        params: { userId: row.uid, chatId, chatType: 'group' } as never,
+      });
+    },
+    [router, chatId]
   );
 
   const openAttachTray = useCallback(() => {
@@ -3006,15 +4162,9 @@ const ChatScreen = () => {
       <ChatRoomHeader
         displayName={displayName}
         avatarUri={displayAvatar}
-        typing={typingActive}
+        typing={typingUiActive}
         online={!isGywAiChat && chat?.type === 'direct' && isOnlineStatus}
-        lastSeenLine={
-          chat?.type === 'group'
-            ? `${chat.participants?.length ?? 0} members`
-            : isGywAiChat
-              ? 'Gyw AI'
-              : lastSeenText || '\u00a0'
-        }
+        lastSeenLine={headerLastSeenLine}
         showOnlineAvatarBadge={!isGywAiChat && chat?.type === 'direct' && isOnlineStatus}
         callDisabled={isGywAiChat || creatingCall || chat?.type === 'group'}
         hideCallButtons={!!isGywAiChat}
@@ -3067,37 +4217,118 @@ const ChatScreen = () => {
             setCreatingCall(false);
           }
         }}
-        onViewContact={() => {
-          // TODO: attach navigation to contact / profile screen
-        }}
-        onMuteNotifications={() => {
-          // TODO: attach mute-notifications action
-        }}
-        onSearch={() => {
-          // TODO: attach in-chat search
-        }}
-        onMore={() => setShowEmojiPicker(true)}
+        onViewContact={handleHeaderViewContact}
+        onMuteNotifications={handleHeaderMuteToggle}
+        onSearch={handleHeaderOpenSearch}
+        onMore={handleHeaderMorePlaceholder}
+        muteRowLabel={headerMuteRowLabel}
+        onOpenProfilePress={headerOpenProfilePress}
+        onGroupInfoPress={
+          chat?.type === 'group' && chatId
+            ? () => {
+                router.push(`/(home)/group-info/${chatId}` as never);
+              }
+            : undefined
+        }
         onAvatarPress={() => {
           if (displayAvatar) setViewingImage(displayAvatar);
-          // TODO: attach profile route when avatar is missing
         }}
+        menuExtraRows={
+          chat?.type === 'group' && chatId
+            ? [
+                {
+                  key: 'group-info',
+                  label: t('groups.groupInfo'),
+                  icon: 'info',
+                  onPress: () => {
+                    router.push(`/(home)/group-info/${chatId}` as never);
+                  },
+                },
+                {
+                  key: 'group-members',
+                  label: t('groups.groupMembers'),
+                  icon: 'users',
+                  onPress: () => setGroupMembersOpen(true),
+                },
+              ]
+            : undefined
+        }
       />
+
+      {inChatSearchOpen ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            columnGap: 8,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            borderBottomColor: isDark ? '#374151' : '#e5e7eb',
+            backgroundColor: isDark ? '#111827' : '#ffffff',
+          }}
+        >
+          <TextInput
+            value={inChatSearchQuery}
+            onChangeText={setInChatSearchQuery}
+            placeholder={t('messages.searchInChatPlaceholder')}
+            placeholderTextColor={isDark ? '#9ca3af' : '#6b7280'}
+            style={{
+              flex: 1,
+              minHeight: 40,
+              paddingHorizontal: 12,
+              borderRadius: 10,
+              fontSize: 16,
+              color: isDark ? '#f9fafb' : '#111827',
+              backgroundColor: isDark ? '#1f2937' : '#f3f4f6',
+            }}
+            returnKeyType="search"
+            onSubmitEditing={runInChatFind}
+          />
+          <Pressable
+            onPress={runInChatFind}
+            style={{ paddingHorizontal: 12, paddingVertical: 10 }}
+            hitSlop={ICON_HIT_SLOP}
+          >
+            <Text style={{ fontSize: 16, fontWeight: '600', color: isDark ? '#93c5fd' : '#2563eb' }}>
+              {t('messages.findInChat')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleCloseInChatSearch}
+            style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityLabel={t('common.cancel')}
+          >
+            <Feather name="x" size={22} color={iconColor} />
+          </Pressable>
+        </View>
+      ) : null}
       
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={undefined}
+        enabled={Platform.OS !== 'android'}
+        keyboardVerticalOffset={0}
+      >
       <View style={{ flex: 1 }}>
         <ChatRoomBody
           messages={messages}
           screenWidth={windowWidth}
           viewportHeight={viewportHeight}
-          keyboardPadAnim={keyboardPad}
+          keyboardPadAnim={Platform.OS === 'android' ? listKeyboardPadAndroid : keyboardPad}
           listRef={listRef}
           renderItem={renderMessage}
           keyExtractor={keyExtractor}
-          typingIncoming={typingActive}
+          typingIncoming={typingUiActive}
+          showInitialSkeleton={!messageStreamHydrated && messages.length === 0}
           typingDotSurfaceStyle={headerTypingDotStyle}
           showPaginationLoader={showLoadingOlderBanner}
           paginationBlocking={paginationBlocking}
           onScroll={handleScroll}
           onContentSizeChange={onContentSizeChange}
+          onListLayout={onListLayout}
+          listExtraData={listSearchExtraData}
           onViewableItemsChanged={handleViewableItemsChanged}
           viewabilityConfig={viewabilityConfigMemo}
           disableMaintainVisibleContentPosition={!!isGywAiChat}
@@ -3146,6 +4377,22 @@ const ChatScreen = () => {
             minHeight: 52,
           }}
         >
+          <ChatPerfComposerProbe />
+          {directPeerBlocked && !accessRevoked ? (
+            <View
+              style={{
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                backgroundColor: isDark ? '#450a0a' : '#fee2e2',
+                borderBottomWidth: StyleSheet.hairlineWidth,
+                borderBottomColor: isDark ? '#7f1d1d' : '#fecaca',
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: '600', color: isDark ? '#fecaca' : '#991b1b', textAlign: 'center' }}>
+                {t('messages.blockedBanner')}
+              </Text>
+            </View>
+          ) : null}
           {replyingTo ? (
             <View
               style={{
@@ -3189,6 +4436,8 @@ const ChatScreen = () => {
                   {replyingTo.text
                     || (replyingTo.type === 'image' ? `📷 ${t('messages.photo')}`
                     : replyingTo.type === 'video' ? `🎥 ${t('messages.video')}`
+                    : replyingTo.type === 'document' || replyingTo.type === 'file' ? `📎 ${t('messages.document')}`
+                    : replyingTo.type === 'location' ? `📍 ${t('location.share')}`
                     : t('messages.media'))}
                 </Text>
               </View>
@@ -3196,7 +4445,7 @@ const ChatScreen = () => {
                 onPress={() => setReplyingTo(null)}
                 hitSlop={ICON_HIT_SLOP}
                 accessibilityRole="button"
-                accessibilityLabel="Close reply preview"
+                accessibilityLabel={t('a11y.closeReplyPreview')}
                 style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}
               >
                 <Feather name="x" size={16} color={isDark ? '#9ca3af' : '#6b7280'} />
@@ -3221,8 +4470,8 @@ const ChatScreen = () => {
                 {[
                   { icon: 'image' as const, label: t('messages.photo'), onPress: () => { setShowAttachOptions(false); handlePickImage(); } },
                   { icon: 'video' as const, label: t('messages.video'), onPress: () => { setShowAttachOptions(false); handlePickVideo(); } },
-                  { icon: 'file-text' as const, label: t('messages.media'), onPress: () => { setShowAttachOptions(false); /* TODO: document picker */ Alert.alert('Document', 'TODO: wire document picker'); } },
-                  { icon: 'map-pin' as const, label: 'Location', onPress: () => { setShowAttachOptions(false); /* TODO: location share */ Alert.alert('Location', 'TODO: wire location share'); } },
+                  { icon: 'file-text' as const, label: t('messages.document'), onPress: () => { void handlePickDocument(); } },
+                  { icon: 'map-pin' as const, label: t('location.share'), onPress: () => { if (!composerInputLocked) openLocationAttach(); } },
                 ].map(({ icon, label, onPress }, optIdx) => (
                   <Pressable
                     key={icon}
@@ -3256,6 +4505,68 @@ const ChatScreen = () => {
             </View>
           ) : null}
 
+          <Modal
+            visible={locationSheetOpen}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setLocationSheetOpen(false)}
+          >
+            <Pressable
+              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}
+              onPress={() => setLocationSheetOpen(false)}
+            >
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
+                style={{
+                  backgroundColor: isDark ? '#1f2937' : '#ffffff',
+                  borderTopLeftRadius: 16,
+                  borderTopRightRadius: 16,
+                  paddingBottom: insets.bottom + 16,
+                  paddingTop: 4,
+                }}
+              >
+                <Text
+                  style={{
+                    fontWeight: '700',
+                    fontSize: 16,
+                    paddingHorizontal: 18,
+                    paddingVertical: 12,
+                    color: isDark ? '#f9fafb' : '#111827',
+                  }}
+                >
+                  {t('location.sheetTitle')}
+                </Text>
+                {(
+                  [
+                    { label: t('location.sendCurrent'), onPress: () => void sendCurrentLocationAttachment() },
+                    { label: t('location.live15'), onPress: () => void sendLiveLocationAttachment(15 * 60 * 1000) },
+                    { label: t('location.live1h'), onPress: () => void sendLiveLocationAttachment(60 * 60 * 1000) },
+                    { label: t('location.live8h'), onPress: () => void sendLiveLocationAttachment(8 * 60 * 60 * 1000) },
+                    { label: t('location.pickOnMap'), onPress: () => openLocationOnMapPicker() },
+                  ] as const
+                ).map((row, i) => (
+                  <Pressable
+                    key={row.label}
+                    onPress={() => {
+                      if (composerInputLocked) return;
+                      row.onPress();
+                    }}
+                    disabled={composerInputLocked}
+                    style={{
+                      paddingVertical: 14,
+                      paddingHorizontal: 18,
+                      borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth,
+                      borderTopColor: isDark ? '#374151' : '#e5e7eb',
+                      opacity: composerInputLocked ? 0.45 : 1,
+                    }}
+                  >
+                    <Text style={{ fontSize: 16, color: isDark ? '#f3f4f6' : '#1f2937' }}>{row.label}</Text>
+                  </Pressable>
+                ))}
+              </Pressable>
+            </Pressable>
+          </Modal>
+
           {(isRecording || isRecordingLocked) ? (
             <View style={{ minHeight: 60, justifyContent: 'flex-end' }}>
               <VoiceRecorderBar
@@ -3283,17 +4594,25 @@ const ChatScreen = () => {
           >
             <Pressable
               onPress={() => {
+                if (composerInputLocked) return;
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 openAttachTray();
               }}
               onLongPress={() => {
+                if (composerInputLocked) return;
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 openAttachTray();
               }}
               delayLongPress={400}
-              style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
+              style={{
+                width: 48,
+                height: 48,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: composerInputLocked ? 0.45 : 1,
+              }}
               hitSlop={ICON_HIT_SLOP}
-              accessibilityLabel="Attachment"
+              accessibilityLabel={t('a11y.attachment')}
             >
               <View style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
                 <Feather name="paperclip" size={22} color={iconColor} />
@@ -3331,6 +4650,7 @@ const ChatScreen = () => {
                 multiline
                 scrollEnabled
                 maxLength={4000}
+                editable={!composerInputLocked}
                 style={{
                   fontSize: 16,
                   lineHeight: 22,
@@ -3342,6 +4662,7 @@ const ChatScreen = () => {
                 returnKeyType="default"
                 blurOnSubmit={false}
                 onFocus={() => {
+                  if (composerInputLocked) return;
                   setShowEmojiPicker(false);
                   setShowAttachOptions(false);
                 }}
@@ -3349,19 +4670,21 @@ const ChatScreen = () => {
             </View>
 
             <Pressable
-              disabled={sending}
-              onPress={messageText.trim() && !sending ? handleSendMessage : undefined}
-              onPressIn={!messageText.trim() && !sending ? startRecording : undefined}
-              onPressOut={!messageText.trim() && !sending ? () => stopRecording(false) : undefined}
+              disabled={sending || composerInputLocked}
+              onPress={messageText.trim() && !sending && !composerInputLocked ? handleSendMessage : undefined}
+              onPressIn={!messageText.trim() && !sending && !composerInputLocked ? startRecording : undefined}
+              onPressOut={!messageText.trim() && !sending && !composerInputLocked ? () => stopRecording(false) : undefined}
               style={{
                 width: 48,
                 height: 48,
                 alignItems: 'center',
                 justifyContent: 'center',
-                opacity: sending ? 0.5 : 1,
+                opacity: sending || composerInputLocked ? 0.5 : 1,
               }}
               hitSlop={ICON_HIT_SLOP}
-              accessibilityLabel={messageText.trim() ? 'Send message' : 'Record voice message'}
+              accessibilityLabel={
+                messageText.trim() ? t('messages.sendMessageA11y') : t('messages.recordVoiceMessageA11y')
+              }
             >
               {sending ? (
                 <ActivityIndicator size="small" color={iconColor} />
@@ -3394,9 +4717,39 @@ const ChatScreen = () => {
           </View>
         </View>
       </View>
+      </KeyboardAvoidingView>
+
+      {accessRevoked ? (
+        <View
+          style={{
+            paddingVertical: 10,
+            paddingHorizontal: 16,
+            backgroundColor: isDark ? '#422006' : '#fef3c7',
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: isDark ? '#78350f' : '#fcd34d',
+          }}
+        >
+          <Text style={{ fontSize: 13, color: isDark ? '#fde68a' : '#92400e', textAlign: 'center' }}>
+            {t('groups.removedFromGroupTitle')}
+          </Text>
+        </View>
+      ) : null}
 
         </RNAnimated.View>
       </SafeAreaView>
+
+      {user && chat?.type === 'group' ? (
+        <GroupMembersSheet
+          visible={groupMembersOpen}
+          chat={chat}
+          currentUserId={user.uid}
+          isAdmin={isGroupAdmin}
+          onClose={() => setGroupMembersOpen(false)}
+          onRemoveMember={handleRemoveGroupMemberLocal}
+          onViewProfile={handleViewGroupMemberProfile}
+          labels={groupSheetLabels}
+        />
+      ) : null}
 
       <Modal
         visible={mediaComposerVisible}
@@ -3413,7 +4766,7 @@ const ChatScreen = () => {
           }}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
             style={{ flex: 1 }}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
           >
@@ -3508,6 +4861,49 @@ const ChatScreen = () => {
                 />
               </View>
 
+              {isGywAiChat && !mediaComposerSending ? (
+                <View style={{ marginTop: 10 }}>
+                  <Text style={{ color: '#9ca3af', fontSize: 12, marginBottom: 8 }}>
+                    {t('messages.gywAiImageModeHint')}
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {(
+                      [
+                        { mode: 'auto' as const, label: t('messages.gywAiImageModeAuto') },
+                        { mode: 'vision' as const, label: t('messages.gywAiImageModeDescribe') },
+                        { mode: 'image_gen' as const, label: t('messages.gywAiImageModeCreate') },
+                      ] as const
+                    ).map(({ mode, label }) => {
+                      const selected = mediaComposerAiMode === mode;
+                      return (
+                        <Pressable
+                          key={mode}
+                          onPress={() => setMediaComposerAiMode(mode)}
+                          style={{
+                            paddingHorizontal: 14,
+                            paddingVertical: 8,
+                            borderRadius: 20,
+                            backgroundColor: selected ? '#FF5722' : 'rgba(255,255,255,0.1)',
+                            borderWidth: StyleSheet.hairlineWidth,
+                            borderColor: selected ? '#FF5722' : 'rgba(255,255,255,0.2)',
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 13,
+                              fontWeight: '600',
+                              color: selected ? '#ffffff' : '#e5e7eb',
+                            }}
+                          >
+                            {label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
+
               {mediaComposerSending ? (
                 <View style={{ marginTop: 10 }}>
                   <View style={{ height: 4, backgroundColor: 'rgba(255,255,255,0.14)', borderRadius: 999 }}>
@@ -3589,20 +4985,43 @@ const ChatScreen = () => {
             }
           }}
           onDeleteForEveryone={async () => {
-            if (!actionMenuMessage || !user || !chatId) return;
+            const msg = actionMenuMessage;
+            if (!msg || !user || !chatId) return;
+            const messageId = msg.id;
+            const nowIso = new Date().toISOString();
+            const rollback: Partial<ChatMessage> = {
+              deleted: msg.deleted,
+              deletedForEveryone: msg.deletedForEveryone,
+              deletedAt: msg.deletedAt,
+              text: msg.text,
+            };
+            useChatStore.getState().updateMessage(chatId, messageId, {
+              deleted: true,
+              deletedForEveryone: true,
+              deletedAt: nowIso,
+              text: CHAT_DELETED_FOR_EVERYONE_TEXT,
+            });
             try {
-              await deleteMessageForEveryone(chatId, actionMenuMessage.id, user.uid);
+              await deleteMessageForEveryone(chatId, messageId, user.uid);
             } catch (error) {
               if (__DEV__) console.error('Error deleting message for everyone:', error);
+              useChatStore.getState().updateMessage(chatId, messageId, rollback);
               Alert.alert(t('common.error'), t('messages.failedToDelete'));
             }
           }}
           onDeleteForMe={async () => {
-            if (!actionMenuMessage || !user || !chatId) return;
+            const msg = actionMenuMessage;
+            if (!msg || !user || !chatId) return;
+            const messageId = msg.id;
+            const prevDeletedFor = msg.deletedFor ?? [];
+            if (prevDeletedFor.includes(user.uid)) return;
+            const nextDeletedFor = [...prevDeletedFor, user.uid];
+            useChatStore.getState().updateMessage(chatId, messageId, { deletedFor: nextDeletedFor });
             try {
-              await deleteMessageForMe(chatId, actionMenuMessage.id, user.uid);
+              await deleteMessageForMe(chatId, messageId, user.uid);
             } catch (error) {
               if (__DEV__) console.error('Error deleting message for me:', error);
+              useChatStore.getState().updateMessage(chatId, messageId, { deletedFor: prevDeletedFor });
               Alert.alert(t('common.error'), t('messages.failedToDelete'));
             }
           }}
@@ -3615,11 +5034,31 @@ const ChatScreen = () => {
         onClose={() => setEditingMessage(null)}
         onSave={async (newText) => {
           if (!editingMessage || !user || !chatId) return;
-          try {
-            await editMessage(chatId, editingMessage.id, newText, user.uid);
+          const messageId = editingMessage.id;
+          const trimmed = newText.trim();
+          if (!trimmed || trimmed === (editingMessage.text ?? '').trim()) {
             setEditingMessage(null);
+            return;
+          }
+          const rollback: Partial<ChatMessage> = {
+            text: editingMessage.text,
+            edited: editingMessage.edited,
+            isEdited: editingMessage.isEdited,
+            editedAt: editingMessage.editedAt,
+          };
+          const nowIso = new Date().toISOString();
+          useChatStore.getState().updateMessage(chatId, messageId, {
+            text: trimmed,
+            edited: true,
+            isEdited: true,
+            editedAt: nowIso,
+          });
+          setEditingMessage(null);
+          try {
+            await editMessage(chatId, messageId, trimmed, user.uid);
           } catch (error) {
             if (__DEV__) console.error('Error editing message:', error);
+            useChatStore.getState().updateMessage(chatId, messageId, rollback);
             Alert.alert(t('common.error'), t('messages.failedToEdit'));
           }
         }}

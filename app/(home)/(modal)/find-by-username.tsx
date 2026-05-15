@@ -35,7 +35,11 @@ function UserSearchScreen() {
   const { colorScheme } = useTheme();
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { callType, media } = useLocalSearchParams<{ callType?: string; media?: string }>();
+  const { callType, media, initialQuery } = useLocalSearchParams<{
+    callType?: string;
+    media?: string;
+    initialQuery?: string;
+  }>();
 
   const region = useMemo(() => getDeviceRegionCode(), []);
   const {
@@ -46,7 +50,7 @@ function UserSearchScreen() {
     phoneLines: recPhoneLines,
   } = useContactRecommendedUsers(user?.uid, user?.phoneNumber ?? undefined);
 
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(typeof initialQuery === 'string' ? initialQuery : '');
   const [searchHits, setSearchHits] = useState<User[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchTouched, setSearchTouched] = useState(false);
@@ -157,45 +161,48 @@ function UserSearchScreen() {
     }
   }, [router]);
 
+  // Fire-and-forget: tap returns immediately so Pressable / transition feels instant.
   const onSelectUser = useCallback(
-    async (userId: string) => {
+    (userId: string) => {
       if (!user) return;
-      try {
-        const chatId = await getOrCreateDirectChat(user.uid, userId);
+      void (async () => {
+        try {
+          const chatId = await getOrCreateDirectChat(user.uid, userId);
 
-        if (media === 'true' && pendingMedia) {
-          try {
-            await AsyncStorage.setItem(
-              'pendingMediaForChannel',
-              JSON.stringify({ channelId: chatId, media: pendingMedia })
-            );
-            await AsyncStorage.removeItem('pendingMedia');
-            router.dismissTo({
-              pathname: '/chat/[id]',
-              params: { id: chatId, pendingMedia: 'true' },
-            });
-          } catch {
-            router.dismissTo({ pathname: '/chat/[id]', params: { id: chatId } });
+          if (media === 'true' && pendingMedia) {
+            try {
+              await AsyncStorage.setItem(
+                'pendingMediaForChannel',
+                JSON.stringify({ channelId: chatId, media: pendingMedia })
+              );
+              await AsyncStorage.removeItem('pendingMedia');
+              router.dismissTo({
+                pathname: '/chat/[id]',
+                params: { id: chatId, pendingMedia: 'true' },
+              });
+            } catch {
+              router.dismissTo({ pathname: '/chat/[id]', params: { id: chatId } });
+            }
+            return;
           }
-          return;
-        }
 
-        if (callType === 'audio' || callType === 'video') {
-          router.dismissTo({
-            pathname: '/call/[id]',
-            params: {
-              id: chatId,
-              updateCall: 'true',
-              ...(callType === 'video' ? { video: 'true' } : {}),
-            },
-          });
-          return;
-        }
+          if (callType === 'audio' || callType === 'video') {
+            router.dismissTo({
+              pathname: '/call/[id]',
+              params: {
+                id: chatId,
+                updateCall: 'true',
+                ...(callType === 'video' ? { video: 'true' } : {}),
+              },
+            });
+            return;
+          }
 
-        router.dismissTo({ pathname: '/chat/[id]', params: { id: chatId } });
-      } catch (e) {
-        if (__DEV__) console.error(e);
-      }
+          router.dismissTo({ pathname: '/chat/[id]', params: { id: chatId } });
+        } catch (e) {
+          if (__DEV__) console.error(e);
+        }
+      })();
     },
     [callType, media, pendingMedia, router, user]
   );

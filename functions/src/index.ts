@@ -143,6 +143,57 @@ export const gywAiReplyV1 = functions
     });
   });
 
+export const gywAiMultimodalV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 300, memory: "1GB" })
+  .https.onCall(async (data, context) => {
+    const { handleGywAiMultimodal } = require("./impl/gywAi/multimodalHandler") as typeof import("./impl/gywAi/multimodalHandler");
+    return handleGywAiMultimodal({
+      auth: context.auth ? { uid: context.auth.uid } : null,
+      data,
+    });
+  });
+
+export const removeGroupMember = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 20, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleRemoveGroupMember } = require("./impl/removeGroupMember") as typeof import("./impl/removeGroupMember");
+    return handleRemoveGroupMember(data, context);
+  });
+
+export const createGroupV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 25, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleCreateGroup } = require("./impl/groupCallables") as typeof import("./impl/groupCallables");
+    return handleCreateGroup(data, context);
+  });
+
+export const leaveGroupV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 20, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleLeaveGroup } = require("./impl/groupCallables") as typeof import("./impl/groupCallables");
+    return handleLeaveGroup(data, context);
+  });
+
+export const addGroupMembersV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 25, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleAddGroupMembers } = require("./impl/groupCallables") as typeof import("./impl/groupCallables");
+    return handleAddGroupMembers(data, context);
+  });
+
+export const updateGroupInfoV1 = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 20, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleUpdateGroupInfo } = require("./impl/groupCallables") as typeof import("./impl/groupCallables");
+    return handleUpdateGroupInfo(data, context);
+  });
+
 export const gywAiHealthV1 = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 10, memory: "128MB" })

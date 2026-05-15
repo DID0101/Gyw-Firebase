@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { View, Text, Pressable } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Ionicons } from '@expo/vector-icons';
@@ -44,6 +45,12 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
     creatingCall = false,
   } = (props ?? ({} as any)) as ChatHeaderProps;
 
+  const { t } = useTranslation();
+  const memberLine =
+    chat?.type === 'group'
+      ? t('groups.memberCount', { count: chat.participants?.length ?? 0 })
+      : '';
+
   return (
     <View
       style={{
@@ -71,7 +78,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
           })}
           hitSlop={4}
           android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
-          accessibilityLabel="Go back"
+          accessibilityLabel={t('a11y.goBack')}
         >
           <Ionicons name="chevron-back" size={26} color={iconColor} />
         </Pressable>
@@ -123,7 +130,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
               style={{ fontSize: 11.5, marginTop: 1, color: isDark ? '#6b7280' : '#6b7280' }}
               numberOfLines={1}
             >
-              {chat.participants.length} members
+              {memberLine}
             </Text>
           ) : null}
         </View>
@@ -144,7 +151,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
           })}
           hitSlop={4}
           android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
-          accessibilityLabel="Video call"
+          accessibilityLabel={t('calls.videoCall')}
         >
           <Feather name="video" size={22} color={creatingCall ? '#9ca3af' : iconColor} />
         </Pressable>
@@ -162,7 +169,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
           })}
           hitSlop={4}
           android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
-          accessibilityLabel="Voice call"
+          accessibilityLabel={t('calls.audioCall')}
         >
           <Feather name="phone" size={21} color={creatingCall ? '#9ca3af' : iconColor} />
         </Pressable>

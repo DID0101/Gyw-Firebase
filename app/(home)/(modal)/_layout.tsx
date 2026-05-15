@@ -126,6 +126,27 @@ const ModalLayout = () => {
           presentation: 'fullScreenModal',
         }}
       />
+      <Stack.Screen
+        name="pdf-viewer"
+        options={{
+          title: t('messages.pdfViewerTitle'),
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen
+        name="location-map"
+        options={{
+          title: t('location.title'),
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen
+        name="location-picker"
+        options={{
+          title: t('location.pickOnMap'),
+          presentation: 'modal',
+        }}
+      />
     </Stack>
   );
 };

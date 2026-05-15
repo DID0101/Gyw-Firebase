@@ -84,7 +84,7 @@ type CallableRequest = {
   data?: any;
 };
 
-function classifyGeminiError(e: any): { reason: string; status?: number; message: string } {
+export function classifyGeminiError(e: any): { reason: string; status?: number; message: string } {
   const status = typeof e?.status === "number" ? e.status : undefined;
   const message = e?.message ? String(e.message) : String(e);
   const m = message.toLowerCase();

@@ -4,7 +4,7 @@
     "slug": "gyw",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/gyw_fox_logo.png",
+    "icon": "./assets/images/icon.png",
     "scheme": "gyw",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
@@ -16,7 +16,8 @@
         "UIBackgroundModes": ["audio", "fetch", "voip", "remote-notification"],
         "NSMicrophoneUsageDescription": "$(PRODUCT_NAME) needs microphone access for voice and video calls.",
         "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls.",
-        "NSContactsUsageDescription": "$(PRODUCT_NAME) uses your contacts to suggest people you know who are already on the app. Phone numbers are matched securely."
+        "NSContactsUsageDescription": "$(PRODUCT_NAME) uses your contacts to suggest people you know who are already on the app. Phone numbers are matched securely.",
+        "LSApplicationQueriesSchemes": ["maps", "comgooglemaps", "googlemaps"]
       },
       "entitlements": {
         "com.apple.developer.pushkit.voip": true,
@@ -25,8 +26,9 @@
       }
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/gyw_fox_logo.png",
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -52,17 +54,18 @@
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.CALL_PHONE",
         "android.permission.READ_PHONE_NUMBERS",
-        "android.permission.READ_PHONE_STATE"
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "package": "com.gyw1.chat",
       "versionCode": 2,
-      "privacyPolicy": "https://serverless-token-api.vercel.app/privacy-policy",
       "googleServicesFile": "./google-services.json"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/gyw_fox_logo.png"
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       [
@@ -103,6 +106,13 @@
         }
       ],
       [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "$(PRODUCT_NAME) uses your location only when you share it in a chat.",
+          "locationAlwaysAndWhenInUsePermission": "$(PRODUCT_NAME) uses your location only when you share it in a chat."
+        }
+      ],
+      [
         "expo-media-library",
         {
           "photosPermission": "$(PRODUCT_NAME) would like access to your photo gallery to share image or video in a message.",
@@ -139,6 +149,7 @@
     },
     "extra": {
       "router": {},
+      "privacyPolicyUrl": "https://serverless-token-api.vercel.app/privacy-policy",
       "eas": {
         "projectId": "4d1aa22a-7531-4d6c-8967-62d6d176abeb"
       }

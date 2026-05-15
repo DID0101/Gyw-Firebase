@@ -201,7 +201,7 @@ const CallScreen = () => {
             } catch {
               /* ignore */
             }
-            Alert.alert(t('calls.callEnded'), t('calls.busyLine') || 'The line is busy.');
+            Alert.alert(t('calls.callEnded'), t('calls.busyLine'));
             safeBack();
             return;
           }

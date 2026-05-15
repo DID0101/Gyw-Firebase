@@ -1,5 +1,11 @@
-import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
-import { db, storage } from '@/lib/firebase';
+import { CHAT_DELETED_FOR_EVERYONE_TEXT } from '@/lib/constants/chatMessages';
+import {
+  GYW_AI_DISPLAY_NAME,
+  GYW_AI_SYSTEM_ID,
+  type GywAiMultimodalRoutingMode,
+} from '@/lib/constants/gywAi';
+import { auth, db, functions, httpsCallable, storage } from '@/lib/firebase';
+import { createGroupOnServer } from '@/lib/services/groupService';
 import {
   addMessageAndUpdateChatNativeBatch,
   addMessageNative,
@@ -10,13 +16,24 @@ import {
   markMessageAsDeliveredNative,
   markMessageAsSeenNative,
   markMessagesAsReadNative,
+  markManyChatsReadNative,
   setTypingIndicatorNative,
   updateChatLastMessageNative,
+  editMessageNative,
+  deleteMessageForEveryoneNative,
+  deleteMessageForMeNative,
+  toggleReactionNative,
+  setLiveLocationSessionNative,
+  updateLiveLocationCoordsNative,
+  deleteLiveLocationSessionNative,
+  updateMessageDocNative,
 } from '@/lib/firestoreNative';
+import { buildStaticMapPreviewUrl } from '@/lib/location/staticMapPreviewUrl';
 import { Chat, User } from '@/lib/types/chat';
 import {
     addDoc,
     collection,
+    deleteDoc,
     deleteField,
     doc,
     getDoc,
@@ -30,7 +47,22 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { assertChatSendAllowed } from '@/lib/chatSendGuards';
+import { getRnAuth, hasRnFirebase } from '@/lib/rnFirebase';
 import { Platform } from 'react-native';
+
+/** JS SDK `auth` is not populated on native when using @react-native-firebase/auth — use RN user for checks/callables. */
+function getSignedInUid(): string | null {
+  if (Platform.OS !== 'web' && hasRnFirebase) {
+    try {
+      const uid = getRnAuth()?.currentUser?.uid;
+      if (uid) return uid;
+    } catch {
+      /* fall through */
+    }
+  }
+  return auth.currentUser?.uid ?? null;
+}
 
 // Helper function to remove undefined values from objects (Firestore doesn't allow undefined)
 const removeUndefined = (obj: any): any => {
@@ -53,7 +85,23 @@ const removeUndefined = (obj: any): any => {
 
 /** Optional fast path: skip extra Firestore read when recipient ids are already known (e.g. from chat.participants). */
 export type SendChatMessageOptions = {
+  /** Full participant list from UI — enables blocked-peer check without `getDoc(chats/{id})` on each send. */
+  participantsForSendGuard?: string[];
   recipientUserIds?: string[];
+  /** Story reply bubble (Instagram-style context on the text message). */
+  storyReply?: {
+    storyId: string;
+    storyOwnerId: string;
+    previewLabel?: string;
+    mediaUrl?: string;
+    thumbnailUrl?: string;
+    mediaType?: string;
+  };
+  /** Gyw AI direct chat: image caption as `text` + multimodal routing hint. */
+  gywAiMultimodal?: {
+    aiMode: GywAiMultimodalRoutingMode;
+    prompt?: string;
+  };
 };
 
 async function addWebMessageAndUpdateChatBatch(
@@ -196,10 +244,17 @@ export const sendMessage = async (
   if (replyTo) {
     messageData.replyTo = removeUndefined(replyTo);
   }
+  if (options?.storyReply) {
+    messageData.storyReply = removeUndefined(options.storyReply);
+  }
   const now = new Date().toISOString();
   messageData.status = 'sent';
   messageData.sentAt = now;
   const cleanedMessageData = removeUndefined(messageData);
+
+  await assertChatSendAllowed(chatId, senderId, {
+    participants: options?.participantsForSendGuard,
+  });
 
   const lastPreview = {
     text: text.substring(0, 100),
@@ -261,14 +316,38 @@ export const sendMediaMessage = async (
   senderName: string,
   senderAvatar: string | undefined,
   fileUri: string,
-  type: 'image' | 'video' | 'file' | 'audio',
+  type: 'image' | 'video' | 'file' | 'document' | 'audio',
   fileName?: string,
   replyTo?: { messageId: string; senderName: string; text?: string; type?: string },
-  extraData?: { audioDuration?: number; imageWidth?: number; imageHeight?: number; blurhash?: string; thumbnailUri?: string },
+  extraData?: {
+    audioDuration?: number;
+    imageWidth?: number;
+    imageHeight?: number;
+    blurhash?: string;
+    thumbnailUri?: string;
+    /** Document / generic file uploads — avoids wrong extension on `content://` URIs */
+    mimeType?: string;
+    fileSize?: number;
+    extension?: string;
+  },
   options?: SendChatMessageOptions
 ): Promise<string> => {
   const stamp = Date.now();
-  const fileExtension = type === 'audio' ? 'm4a' : (fileUri.split('.').pop() || 'jpg');
+  const fileExtension = (() => {
+    if (type === 'audio') return 'm4a';
+    const explicit = extraData?.extension?.replace(/^\./, '').trim().toLowerCase();
+    if (explicit) return explicit.slice(0, 16);
+    if (fileName?.includes('.')) {
+      const e = fileName.split('.').pop()?.trim().toLowerCase();
+      if (e) return e.slice(0, 16);
+    }
+    const tail = fileUri.split('.').pop()?.split('?')[0]?.toLowerCase();
+    if (tail && tail.length <= 8 && !tail.includes('/')) return tail.slice(0, 16);
+    if (type === 'video') return 'mp4';
+    if (type === 'image') return 'jpg';
+    if (type === 'document' || type === 'file') return 'bin';
+    return 'jpg';
+  })();
   const storagePath = `chats/${chatId}/${stamp}.${fileExtension}`;
   const thumbStoragePath = `chats/${chatId}/thumbs/${stamp}.jpg`;
 
@@ -310,6 +389,10 @@ export const sendMediaMessage = async (
 
   const uploadFile = Platform.OS !== 'web' ? uploadNative : uploadWeb;
 
+  await assertChatSendAllowed(chatId, senderId, {
+    participants: options?.participantsForSendGuard,
+  });
+
   // For videos with a thumbnail URI, upload both in parallel
   let downloadUrl: string;
   let videoThumbnailUrl: string | undefined;
@@ -334,6 +417,12 @@ export const sendMediaMessage = async (
       ...(extraData?.imageWidth && { imageWidth: extraData.imageWidth }),
       ...(extraData?.imageHeight && { imageHeight: extraData.imageHeight }),
       ...(extraData?.blurhash && { blurhash: extraData.blurhash }),
+      ...(options?.gywAiMultimodal && {
+        aiMode: options.gywAiMultimodal.aiMode,
+        ...(options.gywAiMultimodal.prompt?.trim()
+          ? { text: options.gywAiMultimodal.prompt.trim() }
+          : {}),
+      }),
     }),
     ...(type === 'video' && {
       videoUrl: downloadUrl,
@@ -341,6 +430,13 @@ export const sendMediaMessage = async (
     }),
     ...(type === 'audio' && { audioUrl: downloadUrl, audioDuration: extraData?.audioDuration }),
     ...(type === 'file' && { fileUrl: downloadUrl, ...(fileName && { fileName }) }),
+    ...(type === 'document' && {
+      fileUrl: downloadUrl,
+      fileName: fileName || 'Document',
+      ...(extraData?.mimeType && { mimeType: extraData.mimeType }),
+      ...(typeof extraData?.fileSize === 'number' && extraData.fileSize > 0 ? { fileSize: extraData.fileSize } : {}),
+      ...(extraData?.extension && { extension: extraData.extension.replace(/^\./, '').toLowerCase() }),
+    }),
   };
   if (senderAvatar !== undefined && senderAvatar !== null) {
     messageData.senderAvatar = senderAvatar;
@@ -356,7 +452,10 @@ export const sendMediaMessage = async (
   const previewText =
     type === 'image' ? '📷 Photo' :
     type === 'video' ? '🎥 Video' :
-    type === 'audio' ? '🎤 Audio message' : '📎 File';
+    type === 'audio' ? '🎤 Audio message' :
+    type === 'document'
+      ? `📎 ${(fileName || 'Document').slice(0, 120)}`
+      : '📎 File';
   const lastMessage = {
     text: previewText,
     senderId,
@@ -410,6 +509,193 @@ export const sendMediaMessage = async (
   }
   return messageId;
 };
+
+export type SendLocationMessageOptions = SendChatMessageOptions & {
+  placeName?: string;
+  placeAddress?: string;
+  isLive?: boolean;
+  /** Default 15 minutes when `isLive` and omitted. */
+  liveDurationMs?: number;
+};
+
+/** Static or live location message (`live` coords: `chats/{chatId}/liveLocationUpdates/{messageId}`). */
+export const sendLocationMessage = async (
+  chatId: string,
+  senderId: string,
+  senderName: string,
+  senderAvatar: string | undefined,
+  latitude: number,
+  longitude: number,
+  options?: SendLocationMessageOptions
+): Promise<string> => {
+  const previewUrl = buildStaticMapPreviewUrl(latitude, longitude, 640, 360, { showMarker: false });
+  const isLive = !!options?.isLive;
+  const durationMs =
+    typeof options?.liveDurationMs === 'number' && options.liveDurationMs > 0
+      ? options.liveDurationMs
+      : 15 * 60 * 1000;
+  const expiresAt = isLive ? new Date(Date.now() + durationMs).toISOString() : undefined;
+  const now = new Date().toISOString();
+
+  const messageData: any = {
+    chatId,
+    senderId,
+    senderName,
+    type: 'location',
+    latitude,
+    longitude,
+    previewUrl,
+    readBy: [senderId],
+    status: 'sent',
+    sentAt: now,
+  };
+  if (senderAvatar !== undefined && senderAvatar !== null) {
+    messageData.senderAvatar = senderAvatar;
+  }
+  if (options?.placeName?.trim()) {
+    messageData.placeName = options.placeName.trim();
+  }
+  if (options?.placeAddress?.trim()) {
+    messageData.placeAddress = options.placeAddress.trim();
+  }
+  if (isLive && expiresAt) {
+    messageData.isLive = true;
+    messageData.expiresAt = expiresAt;
+  }
+  if (options?.replyTo) {
+    messageData.replyTo = removeUndefined(options.replyTo);
+  }
+  if (options?.storyReply) {
+    messageData.storyReply = removeUndefined(options.storyReply);
+  }
+
+  const cleanedMessageData = removeUndefined(messageData);
+  await assertChatSendAllowed(chatId, senderId, {
+    participants: options?.participantsForSendGuard,
+  });
+
+  const previewText = isLive ? '📍 Live location' : '📍 Location';
+  const lastPreview: Record<string, any> = {
+    text: previewText,
+    senderId,
+    createdAt: now,
+    type: 'location',
+  };
+
+  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const useParticipantBatch = otherIds.length > 0;
+
+  let messageId: string;
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    if (useParticipantBatch) {
+      messageId = await addMessageAndUpdateChatNativeBatch(
+        chatId,
+        cleanedMessageData,
+        lastPreview,
+        otherIds
+      );
+    } else {
+      messageId = await addMessageNative(chatId, cleanedMessageData);
+      await Promise.all([
+        updateChatLastMessageNative(chatId, lastPreview),
+        incrementUnreadForOtherParticipants(chatId, senderId),
+      ]);
+    }
+  } else if (useParticipantBatch) {
+    messageId = await addWebMessageAndUpdateChatBatch(
+      chatId,
+      cleanedMessageData,
+      lastPreview,
+      senderId,
+      otherIds
+    );
+  } else {
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const docRef = await addDoc(messagesRef, {
+      ...cleanedMessageData,
+      createdAt: serverTimestamp(),
+    });
+    messageId = docRef.id;
+    const chatRef = doc(db, 'chats', chatId);
+    await Promise.all([
+      updateDoc(chatRef, {
+        lastMessage: lastPreview,
+        lastMessageAt: serverTimestamp(),
+        lastSenderId: senderId,
+        updatedAt: serverTimestamp(),
+      }),
+      incrementUnreadForOtherParticipants(chatId, senderId),
+    ]);
+  }
+
+  if (isLive && expiresAt && messageId) {
+    await setLiveLocationSession(chatId, messageId, {
+      senderId,
+      latitude,
+      longitude,
+      expiresAt,
+    });
+    const sessionPatch = removeUndefined({ liveSessionId: messageId });
+    if (Platform.OS !== 'web' && hasNativeFirestore) {
+      await updateMessageDocNative(chatId, messageId, sessionPatch);
+    } else {
+      await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), sessionPatch);
+    }
+  }
+
+  return messageId;
+};
+
+async function setLiveLocationSession(
+  chatId: string,
+  messageId: string,
+  payload: { senderId: string; latitude: number; longitude: number; expiresAt: string }
+): Promise<void> {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await setLiveLocationSessionNative(chatId, messageId, payload);
+    return;
+  }
+  const ref = doc(db, 'chats', chatId, 'liveLocationUpdates', messageId);
+  await setDoc(
+    ref,
+    removeUndefined({
+      ...payload,
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+}
+
+/** Throttled live GPS writes — updates subcollection only. */
+export async function publishLiveLocationCoords(
+  chatId: string,
+  messageId: string,
+  latitude: number,
+  longitude: number
+): Promise<void> {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await updateLiveLocationCoordsNative(chatId, messageId, latitude, longitude);
+    return;
+  }
+  const ref = doc(db, 'chats', chatId, 'liveLocationUpdates', messageId);
+  await updateDoc(ref, {
+    latitude,
+    longitude,
+    updatedAt: serverTimestamp(),
+  } as any);
+}
+
+export async function deleteLiveLocationSession(chatId: string, messageId: string): Promise<void> {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await deleteLiveLocationSessionNative(chatId, messageId);
+    return;
+  }
+  try {
+    await deleteDoc(doc(db, 'chats', chatId, 'liveLocationUpdates', messageId));
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Increment unread count for all participants except sender. Atomic. Do not increment for sender. */
 export async function incrementUnreadForOtherParticipants(chatId: string, senderId: string): Promise<void> {
@@ -467,6 +753,38 @@ export const markMessagesAsRead = async (chatId: string, userId: string) => {
     [`unreadCount.${userId}`]: 0,
   });
 };
+
+const MARK_ALL_READ_CHUNK = 450;
+
+/**
+ * Clears unread badges for every chat in `chats` where the user has unread > 0.
+ * Optimistic single Zustand update, then chunked Firestore batches (no per-chat round trips).
+ */
+export async function markAllChatsReadForUser(userId: string, chats: Chat[]): Promise<void> {
+  const chatIds = chats
+    .filter((c) => (c.unreadCount?.[userId] ?? 0) > 0)
+    .map((c) => c.id);
+  if (chatIds.length === 0) return;
+
+  useChatStore.getState().bulkResetUnreadForUser(userId, chatIds);
+
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await markManyChatsReadNative(userId, chatIds);
+    return;
+  }
+
+  for (let i = 0; i < chatIds.length; i += MARK_ALL_READ_CHUNK) {
+    const slice = chatIds.slice(i, i + MARK_ALL_READ_CHUNK);
+    const batch = writeBatch(db);
+    for (const id of slice) {
+      batch.update(doc(db, 'chats', id), {
+        [`unreadCount.${userId}`]: 0,
+        updatedAt: serverTimestamp(),
+      } as { [k: string]: unknown });
+    }
+    await batch.commit();
+  }
+}
 
 // Mark message as delivered (when recipient device receives it)
 export const markMessageAsDelivered = async (
@@ -647,36 +965,34 @@ export const getUser = async (userId: string): Promise<User | null> => {
   return null;
 };
 
-// Create a group chat
+/**
+ * Create a group chat (server callable writes participantData + first system message).
+ * `creatorId` must match the signed-in user.
+ */
 export const createGroupChat = async (
   creatorId: string,
   name: string,
-  participantIds: string[]
+  participantIds: string[],
+  options?: { description?: string }
 ): Promise<string> => {
-  const chatsRef = collection(db, 'chats');
-  const allParticipants = [creatorId, ...participantIds];
-  
-  const newChat: Omit<Chat, 'id'> = {
-    type: 'group',
-    participants: allParticipants,
+  const uid = getSignedInUid();
+  if (!uid || uid !== creatorId) {
+    throw new Error('Not signed in or creator mismatch');
+  }
+  return createGroupOnServer({
     name,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    unreadCount: allParticipants.reduce((acc, id) => {
-      acc[id] = 0;
-      return acc;
-    }, {} as Record<string, number>),
-  };
-
-  const chatDocRef = doc(chatsRef);
-  await setDoc(chatDocRef, {
-    ...newChat,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    lastMessageAt: serverTimestamp(), // Required for chats list ordering (treat as createdAt when no messages)
+    description: options?.description,
+    participantIds,
   });
+};
 
-  return chatDocRef.id;
+/** Removes a member from a group (admin only). Server callable updates participants + system message. */
+export const removeGroupMemberFromGroup = async (chatId: string, targetUserId: string): Promise<void> => {
+  const fn = httpsCallable<{ chatId: string; targetUserId: string }, { ok: boolean }>(functions, 'removeGroupMember');
+  const res = await fn({ chatId, targetUserId });
+  if (!res.data?.ok) {
+    throw new Error('removeGroupMember failed');
+  }
 };
 
 // Toggle reaction on a message
@@ -686,6 +1002,10 @@ export const toggleReaction = async (
   userId: string,
   emoji: string
 ): Promise<void> => {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return toggleReactionNative(chatId, messageId, userId, emoji);
+  }
+
   const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
   const messageDoc = await getDoc(messageRef);
   
@@ -753,6 +1073,10 @@ export const editMessage = async (
     throw new Error('Message text cannot be empty');
   }
 
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return editMessageNative(chatId, messageId, newText, userId);
+  }
+
   const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
   const messageDoc = await getDoc(messageRef);
 
@@ -780,6 +1104,7 @@ export const editMessage = async (
   await updateDoc(messageRef, {
     text: newText.trim(),
     edited: true,
+    isEdited: true,
     editedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -791,6 +1116,10 @@ export const deleteMessageForEveryone = async (
   messageId: string,
   userId: string
 ): Promise<void> => {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return deleteMessageForEveryoneNative(chatId, messageId, userId);
+  }
+
   const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
   const messageDoc = await getDoc(messageRef);
 
@@ -805,10 +1134,11 @@ export const deleteMessageForEveryone = async (
     throw new Error('Only message sender can delete for everyone');
   }
 
-  // Update message to show as deleted
   await updateDoc(messageRef, {
     deleted: true,
-    text: '', // Clear text content
+    deletedForEveryone: true,
+    deletedAt: serverTimestamp(),
+    text: CHAT_DELETED_FOR_EVERYONE_TEXT,
     updatedAt: serverTimestamp(),
   });
 };
@@ -819,6 +1149,10 @@ export const deleteMessageForMe = async (
   messageId: string,
   userId: string
 ): Promise<void> => {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return deleteMessageForMeNative(chatId, messageId, userId);
+  }
+
   const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
   const messageDoc = await getDoc(messageRef);
 

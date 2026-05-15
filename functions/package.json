@@ -11,7 +11,7 @@
     "deploy:functions": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
     "deploy:function": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions",
     "deploy:fast": "firebase deploy --only functions",
-    "deploy:noAi": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:rejectCallAnon,functions:markStaleRingingCallsMissed,functions:tryRandomMatch,functions:checkSkipRateLimit,functions:checkAndBanFromReports,functions:cleanupRandomQueue,functions:gywAiReplyV1,functions:gywAiHealthV1,functions:initiateCall,functions:endCall",
+    "deploy:noAi": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:rejectCallAnon,functions:markStaleRingingCallsMissed,functions:tryRandomMatch,functions:checkSkipRateLimit,functions:checkAndBanFromReports,functions:cleanupRandomQueue,functions:gywAiReplyV1,functions:gywAiMultimodalV1,functions:gywAiHealthV1,functions:initiateCall,functions:endCall,functions:removeGroupMember,functions:createGroupV1,functions:leaveGroupV1,functions:addGroupMembersV1,functions:updateGroupInfoV1",
     "deploy:call": "cross-env FUNCTIONS_DISCOVERY_TIMEOUT=120 firebase deploy --only functions:initiateCall,functions:endCall",
     "logs": "firebase functions:log",
     "android": "expo run:android",

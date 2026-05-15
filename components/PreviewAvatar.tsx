@@ -1,3 +1,4 @@
+import type { ImageProps } from 'expo-image';
 import Avatar from './Avatar';
 
 export interface PreviewAvatarProps {
@@ -5,6 +6,7 @@ export interface PreviewAvatarProps {
   image?: string;
   size?: number;
   fontSize?: number;
+  imagePriority?: ImageProps['priority'];
 }
 
 const PreviewAvatar = ({
@@ -12,6 +14,7 @@ const PreviewAvatar = ({
   image,
   size = 44,
   fontSize = 20,
+  imagePriority = 'normal',
 }: PreviewAvatarProps) => {
   return (
     <Avatar
@@ -20,6 +23,7 @@ const PreviewAvatar = ({
       fontSize={fontSize}
       imageUrl={image}
       placeholderType="text"
+      imagePriority={imagePriority}
     />
   );
 };

@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import type { ImageProps } from 'expo-image';
 import { Text, TextStyle, View } from 'react-native';
 import AppImage from './AppImage';
 
@@ -9,6 +10,8 @@ interface AvatarProps {
   fontSize?: TextStyle['fontSize'];
   fontWeight?: TextStyle['fontWeight'];
   placeholderType?: 'text' | 'icon';
+  /** List rows: use `low` to prioritize visible chat bubbles over avatars. */
+  imagePriority?: ImageProps['priority'];
 }
 
 const Avatar = ({
@@ -18,6 +21,7 @@ const Avatar = ({
   fontSize = 20,
   fontWeight = '500',
   placeholderType = 'text',
+  imagePriority = 'normal',
 }: AvatarProps) => {
   if (imageUrl)
     return (
@@ -30,6 +34,7 @@ const Avatar = ({
           className="w-full h-full"
           alt="name"
           contentFit="cover"
+          priority={imagePriority}
         />
       </View>
     );

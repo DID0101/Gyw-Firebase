@@ -5,20 +5,78 @@ import {
   addDoc,
   getDoc,
   getDocs,
-  updateDoc,
   deleteDoc,
+  setDoc,
   query,
   where,
   orderBy,
   limit,
+  onSnapshot,
   serverTimestamp,
   Timestamp,
-  arrayUnion,
-  arrayRemove,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/firebase';
-import { addStoryNative, getStoryNative, getUserStoriesNative, hasNativeFirestore, toggleLikeStoryNative, viewStoryNative } from '@/lib/firestoreNative';
+import {
+  addStoryNative,
+  getStoryNative,
+  getStoryViewsPageNative,
+  getUserStoriesNative,
+  hasNativeFirestore,
+  storyViewDocExistsNative,
+  subscribeStoryLikeStateNative,
+  subscribeStoryLikesSheetNative,
+  subscribeStoryViewsSheetNative,
+  toggleLikeStoryNative,
+  viewStoryNative,
+} from '@/lib/firestoreNative';
+import type { StoryLikeRow, StoryViewRow } from '@/lib/firestoreNative';
+
+export type { StoryLikeRow, StoryViewRow } from '@/lib/firestoreNative';
+
+/** True if legacy `story.viewers` marks this user as having watched. */
+export function legacyStorySeenByUser(story: Pick<Story, 'viewers'>, viewerUid: string): boolean {
+  const v = story.viewers;
+  if (!Array.isArray(v) || !viewerUid) return false;
+  return v.some((entry: any) =>
+    typeof entry === 'object' && entry !== null ? entry.userId === viewerUid : entry === viewerUid
+  );
+}
+
+/**
+ * Batch-check `views/{viewerUid}` for many stories (chunked). Returns story ids that exist.
+ * Used to sync ring state with subcollection without storing viewer arrays on parent docs.
+ */
+export async function batchCheckStoryViewsForViewer(
+  storyIds: string[],
+  viewerUid: string
+): Promise<string[]> {
+  if (!viewerUid || storyIds.length === 0) return [];
+  const unique = Array.from(new Set(storyIds.filter(Boolean)));
+  const found: string[] = [];
+  const CHUNK = 14;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const results = await Promise.all(
+      slice.map(async (id) => {
+        try {
+          if (Platform.OS !== 'web' && hasNativeFirestore) {
+            const ok = await storyViewDocExistsNative(id, viewerUid);
+            return ok ? id : null;
+          }
+          const snap = await getDoc(doc(db, 'stories', id, 'views', viewerUid));
+          return snap.exists() ? id : null;
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const r of results) {
+      if (r) found.push(r);
+    }
+  }
+  return found;
+}
 
 export interface Story {
   id: string;
@@ -29,8 +87,10 @@ export interface Story {
   caption?: string;
   createdAt: string;
   expiresAt: string; // createdAt + 24h
-  viewers: Array<{ userId: string; viewedAt: string }>;
-  likes: string[]; // Array of user IDs
+  /** @deprecated Legacy array on story doc; prefer views subcollection. */
+  viewers?: Array<{ userId: string; viewedAt: string }>;
+  /** @deprecated Legacy array of uids; prefer likes subcollection. */
+  likes?: string[];
 }
 
 // Create a new story
@@ -82,8 +142,6 @@ export const createStory = async (
       ...(caption && { caption }),
       createdAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
-      viewers: [],
-      likes: [],
     };
 
     if (Platform.OS !== 'web' && hasNativeFirestore) {
@@ -210,7 +268,7 @@ export const getStory = async (storyId: string): Promise<Story | null> => {
   }
 };
 
-// Mark story as viewed
+/** Idempotent view write to stories/{storyId}/views/{viewerUid}. */
 export const viewStory = async (storyId: string, userId: string): Promise<void> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
@@ -220,21 +278,38 @@ export const viewStory = async (storyId: string, userId: string): Promise<void> 
     const storyRef = doc(db, 'stories', storyId);
     const storyDoc = await getDoc(storyRef);
     if (!storyDoc.exists()) return;
-    const data = storyDoc.data();
-    const viewers = data.viewers || [];
-    const alreadyViewed = viewers.some((v: { userId: string }) => v.userId === userId);
-    if (!alreadyViewed) {
-      await updateDoc(storyRef, {
-        viewers: arrayUnion({ userId, viewedAt: new Date().toISOString() }),
-      });
+    const viewRef = doc(db, 'stories', storyId, 'views', userId);
+    const existing = await getDoc(viewRef);
+    if (existing.exists()) return;
+
+    let username = '';
+    let avatarUrl: string | undefined;
+    try {
+      const udoc = await getDoc(doc(db, 'users', userId));
+      if (udoc.exists()) {
+        const u = udoc.data();
+        const name = `${u?.firstName || ''} ${u?.lastName || ''}`.trim();
+        username = (u?.username || name || 'User').trim();
+        const av = u?.avatar || u?.photoURL;
+        if (av) avatarUrl = String(av);
+      }
+    } catch {
+      /* ignore */
     }
+
+    await setDoc(viewRef, {
+      viewerId: userId,
+      viewedAt: new Date().toISOString(),
+      username: username || 'User',
+      ...(avatarUrl ? { avatarUrl } : {}),
+    });
   } catch (error) {
     if (__DEV__) console.error('Error viewing story:', error);
     throw error;
   }
 };
 
-// Like/unlike a story
+/** Like / unlike via stories/{storyId}/likes/{userId}. */
 export const toggleLikeStory = async (storyId: string, userId: string): Promise<boolean> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
@@ -243,14 +318,34 @@ export const toggleLikeStory = async (storyId: string, userId: string): Promise<
     const storyRef = doc(db, 'stories', storyId);
     const storyDoc = await getDoc(storyRef);
     if (!storyDoc.exists()) throw new Error('Story not found');
-    const data = storyDoc.data();
-    const likes = data.likes || [];
-    const isLiked = likes.includes(userId);
-    if (isLiked) {
-      await updateDoc(storyRef, { likes: arrayRemove(userId) });
+    const likeRef = doc(db, 'stories', storyId, 'likes', userId);
+    const likeSnap = await getDoc(likeRef);
+    if (likeSnap.exists()) {
+      await deleteDoc(likeRef);
       return false;
     }
-    await updateDoc(storyRef, { likes: arrayUnion(userId) });
+
+    let username = '';
+    let avatarUrl: string | undefined;
+    try {
+      const udoc = await getDoc(doc(db, 'users', userId));
+      if (udoc.exists()) {
+        const u = udoc.data() as Record<string, unknown>;
+        const name = `${u?.firstName || ''} ${u?.lastName || ''}`.trim();
+        username = String((u?.username as string) || name || 'User').trim();
+        const av = u?.avatar ?? u?.photoURL;
+        if (av) avatarUrl = String(av);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    await setDoc(likeRef, {
+      userId,
+      createdAt: serverTimestamp(),
+      username: username || 'User',
+      ...(avatarUrl ? { avatarUrl } : {}),
+    });
     return true;
   } catch (error) {
     if (__DEV__) console.error('Error toggling like:', error);
@@ -283,14 +378,143 @@ export const deleteStory = async (storyId: string, userId: string): Promise<void
   }
 };
 
-// Get story viewers
-export const getStoryViewers = async (storyId: string): Promise<Array<{ userId: string; viewedAt: string }>> => {
+/** Paginated viewer rows (newest first). */
+export const getStoryViewersPage = async (
+  storyId: string,
+  pageSize: number = 50
+): Promise<StoryViewRow[]> => {
   try {
-    const story = await getStory(storyId);
-    return story?.viewers || [];
+    if (Platform.OS !== 'web' && hasNativeFirestore) {
+      return getStoryViewsPageNative(storyId, pageSize);
+    }
+    const viewsRef = collection(db, 'stories', storyId, 'views');
+    const q = query(viewsRef, orderBy('viewedAt', 'desc'), limit(pageSize));
+    const snap = await getDocs(q);
+    const rows: StoryViewRow[] = [];
+    snap.forEach((d) => {
+      const v = d.data();
+      const ts = v?.viewedAt;
+      let viewedAt = '';
+      if (typeof ts === 'string') viewedAt = ts;
+      else if (ts && typeof (ts as any).toDate === 'function') viewedAt = (ts as any).toDate().toISOString();
+      rows.push({
+        viewerId: d.id,
+        viewedAt,
+        username: v?.username || '',
+        avatarUrl: v?.avatarUrl,
+      });
+    });
+    return rows;
   } catch (error) {
     if (__DEV__) console.error('Error getting story viewers:', error);
     throw error;
   }
 };
 
+export type { StoryViewRow };
+
+export function subscribeStoryLikeState(
+  storyId: string,
+  viewerUid: string,
+  onChange: (s: { likeCount: number; liked: boolean; capped: boolean }) => void,
+  onError?: (e: Error) => void
+): () => void {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return subscribeStoryLikeStateNative(storyId, viewerUid, onChange, onError);
+  }
+  const CAP = 400;
+  let latest = { likeCount: 0, liked: false, capped: false };
+  const emit = () => onChange({ ...latest });
+  const likesCol = collection(db, 'stories', storyId, 'likes');
+  const q = query(likesCol, limit(CAP));
+  const u1 = onSnapshot(
+    q,
+    (snap) => {
+      latest.likeCount = snap.size;
+      latest.capped = snap.size >= CAP;
+      emit();
+    },
+    (e) => onError?.(e as Error)
+  );
+  const selfRef = doc(db, 'stories', storyId, 'likes', viewerUid);
+  const u2 = onSnapshot(
+    selfRef,
+    (snap) => {
+      latest.liked = snap.exists();
+      emit();
+    },
+    (e) => onError?.(e as Error)
+  );
+  return () => {
+    u1();
+    u2();
+  };
+}
+
+export function subscribeStoryViewsSheet(
+  storyId: string,
+  onRows: (rows: StoryViewRow[]) => void,
+  onError?: (e: Error) => void,
+  pageSize: number = 50
+): () => void {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return subscribeStoryViewsSheetNative(storyId, onRows, onError, pageSize);
+  }
+  const viewsRef = collection(db, 'stories', storyId, 'views');
+  const q = query(viewsRef, orderBy('viewedAt', 'desc'), limit(pageSize));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows: StoryViewRow[] = [];
+      snap.forEach((d) => {
+        const v = d.data();
+        const ts = v?.viewedAt;
+        let viewedAt = '';
+        if (typeof ts === 'string') viewedAt = ts;
+        else if (ts && typeof (ts as any).toDate === 'function') viewedAt = (ts as any).toDate().toISOString();
+        rows.push({
+          viewerId: d.id,
+          viewedAt,
+          username: v?.username || '',
+          avatarUrl: v?.avatarUrl,
+        });
+      });
+      onRows(rows);
+    },
+    (e) => onError?.(e as Error)
+  );
+}
+
+export function subscribeStoryLikesSheet(
+  storyId: string,
+  onRows: (rows: StoryLikeRow[]) => void,
+  onError?: (e: Error) => void,
+  pageSize: number = 50
+): () => void {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    return subscribeStoryLikesSheetNative(storyId, onRows, onError, pageSize);
+  }
+  const likesRef = collection(db, 'stories', storyId, 'likes');
+  const q = query(likesRef, orderBy('createdAt', 'desc'), limit(pageSize));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows: StoryLikeRow[] = [];
+      snap.forEach((d) => {
+        const v = d.data();
+        const ts = v?.createdAt;
+        let createdAt = '';
+        if (typeof ts === 'string') createdAt = ts;
+        else if (ts && typeof (ts as any).toDate === 'function') createdAt = (ts as any).toDate().toISOString();
+        rows.push({
+          userId: d.id,
+          createdAt,
+          username: (v?.username as string) || 'User',
+          avatarUrl: v?.avatarUrl,
+        });
+      });
+      onRows(rows);
+    },
+    (e) => onError?.(e as Error)
+  );
+}

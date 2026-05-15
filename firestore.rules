@@ -53,6 +53,21 @@ service cloud.firestore {
         allow create, update,
               delete:           if false;  // Admin SDK only
       }
+
+      // Per-user chat list preferences (pin, mute, archive, delete-for-me). Small docs keyed by chatId.
+      match /chatMeta/{chatId} {
+        allow read, write: if isSignedIn() && uid() == userId;
+      }
+
+      // Per-user chat notification preferences (e.g. muted) keyed by chatId.
+      match /chatPreferences/{chatId} {
+        allow read, write: if isSignedIn() && uid() == userId;
+      }
+
+      // Users this account has blocked (doc id = blocked user's uid).
+      match /blockedUsers/{blockedUserId} {
+        allow read, write: if isSignedIn() && uid() == userId;
+      }
     }
 
     // ── chats/{chatId} ──────────────────────────────────────────────────────
@@ -66,9 +81,13 @@ service cloud.firestore {
         && request.resource.data.participants != null
         && uid() in request.resource.data.participants;
 
+      // Membership changes (participants / roles) are performed only by the removeGroupMember
+      // callable (Admin SDK). Clients may update typing, lastMessage, unread, etc. but not
+      // replace the participant list from the client.
       allow update: if isSignedIn()
         && resource != null
-        && uid() in resource.data.participants;
+        && uid() in resource.data.participants
+        && request.resource.data.participants == resource.data.participants;
 
       allow delete: if isSignedIn()
         && resource != null
@@ -87,6 +106,7 @@ service cloud.firestore {
           && exists(/databases/$(database)/documents/chats/$(chatId))
           && request.resource.data.senderId != null
           && uid() in chatParticipants()
+          && request.resource.data.type != 'system'
           && (uid() == request.resource.data.senderId
               || request.resource.data.type == 'call');
 
@@ -103,6 +123,44 @@ service cloud.firestore {
         allow delete: if isSignedIn()
           && resource != null
           && uid() == resource.data.senderId;
+      }
+
+      // Live GPS updates for `type: location` + `isLive` — keyed by message id (not written on every chat scroll).
+      match /liveLocationUpdates/{messageId} {
+        function chatParticipants() {
+          return get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        }
+
+        function locationMessage() {
+          return get(/databases/$(database)/documents/chats/$(chatId)/messages/$(messageId)).data;
+        }
+
+        allow read: if isSignedIn()
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && uid() in chatParticipants();
+
+        // Seed session: only the sender of the corresponding location message.
+        allow create: if isSignedIn()
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && uid() in chatParticipants()
+          && exists(/databases/$(database)/documents/chats/$(chatId)/messages/$(messageId))
+          && locationMessage().senderId == uid()
+          && locationMessage().type == 'location'
+          && locationMessage().isLive == true
+          && request.resource.data.senderId == uid()
+          && request.resource.data.senderId == locationMessage().senderId;
+
+        // Throttled coordinate updates: sender only; immutable senderId.
+        allow update: if isSignedIn()
+          && resource != null
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && uid() in chatParticipants()
+          && resource.data.senderId == uid()
+          && request.resource.data.senderId == resource.data.senderId;
+
+        allow delete: if isSignedIn()
+          && resource != null
+          && resource.data.senderId == uid();
       }
     }
 
@@ -241,33 +299,62 @@ service cloud.firestore {
     }
 
     // ── stories/{storyId} ───────────────────────────────────────────────────
+    //
+    // Views + likes live in subcollections (`views`, `likes`) to avoid hot
+    // documents and permission issues with array-of-map viewer entries.
+    // Parent doc is owner-writable metadata + media pointers only.
 
     match /stories/{storyId} {
+
+      function _storyAuthorId() {
+        return get(/databases/$(database)/documents/stories/$(storyId)).data.userId;
+      }
+
       allow read: if isSignedIn();
 
       allow create: if isSignedIn()
         && request.resource.data.userId != null
         && uid() == request.resource.data.userId
-        && request.resource.data.keys().hasAll([
-             'userId', 'mediaUrl', 'mediaType', 'createdAt',
-             'expiresAt', 'viewers', 'likes'
-           ]);
+        // Avoid `keys().hasAll()` for better compatibility with SDK
+        // representations of `serverTimestamp()` and `Timestamp.fromDate()`.
+        && request.resource.data.mediaUrl != null
+        && request.resource.data.mediaType != null
+        && request.resource.data.createdAt != null
+        && request.resource.data.expiresAt != null;
 
-      allow update: if isSignedIn()
-        && resource != null
-        && (uid() == resource.data.userId
-            || (request.resource.data.userId    == resource.data.userId
-                && request.resource.data.mediaUrl  == resource.data.mediaUrl
-                && request.resource.data.mediaType == resource.data.mediaType
-                && request.resource.data.createdAt == resource.data.createdAt
-                && request.resource.data.expiresAt == resource.data.expiresAt
-                && request.resource.data.caption   == resource.data.caption
-                && (uid() in request.resource.data.viewers
-                    || uid() in request.resource.data.likes)));
-
-      allow delete: if isSignedIn()
+      allow update, delete: if isSignedIn()
         && resource != null
         && uid() == resource.data.userId;
+
+      // ── stories/{storyId}/views/{viewerId} ────────────────────────────────
+      match /views/{viewerId} {
+        allow read: if isSignedIn()
+          && (uid() == _storyAuthorId() || uid() == viewerId);
+
+        allow create, update: if isSignedIn()
+          && uid() == viewerId
+          && request.resource.data.viewerId == viewerId
+          && request.resource.data.viewedAt != null
+          && request.resource.data.keys().hasAll(['viewerId', 'viewedAt']);
+
+        allow delete: if isSignedIn()
+          && (uid() == _storyAuthorId() || uid() == viewerId);
+      }
+
+      // ── stories/{storyId}/likes/{likeUserId} ──────────────────────────────
+      match /likes/{likeUserId} {
+        allow read: if isSignedIn();
+
+        allow create: if isSignedIn()
+          && uid() == likeUserId
+          && request.resource.data.userId == likeUserId
+          && request.resource.data.createdAt != null
+          && request.resource.data.keys().hasAll(['userId', 'createdAt']);
+
+        allow delete: if isSignedIn() && uid() == likeUserId;
+
+        allow update: if false;
+      }
     }
 
     // ── reports/{reportId} ──────────────────────────────────────────────────

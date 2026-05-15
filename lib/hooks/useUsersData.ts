@@ -8,6 +8,8 @@ import { hasNativeFirestore, getUserDocNative } from '@/lib/firestoreNative';
 // Hook to fetch user data for multiple user IDs
 export const useUsersData = (userIds: string[]) => {
   const [usersData, setUsersData] = useState<Record<string, User>>({});
+  /** Increments when `usersData` merges new profiles — use as FlatList `extraData` so rows refresh without changing `renderItem` identity. */
+  const [usersRevision, setUsersRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const fetchedIdsRef = useRef<Set<string>>(new Set());
 
@@ -67,6 +69,9 @@ export const useUsersData = (userIds: string[]) => {
           if (entry) users[entry[0]] = entry[1];
         }
         setUsersData((prev) => ({ ...prev, ...users }));
+        if (Object.keys(users).length > 0) {
+          setUsersRevision((r) => r + 1);
+        }
       } catch {
         // Silently fail
       } finally {
@@ -77,6 +82,6 @@ export const useUsersData = (userIds: string[]) => {
     fetchUsers();
   }, [userIdsKey]);
 
-  return { usersData, loading };
+  return { usersData, loading, usersRevision };
 };
 

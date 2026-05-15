@@ -1,4 +1,7 @@
+import { bumpChatPerfRender } from '@/lib/chatOpenPerf';
+import { CHAT_DELETED_FOR_EVERYONE_TEXT } from '@/lib/constants/chatMessages';
 import { memo, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Dimensions, Image as RNImage, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
@@ -6,6 +9,8 @@ import clsx from 'clsx';
 import { ChatMessage } from '@/lib/types/chat';
 import { formatBubbleTime } from '@/lib/utils/chatUtils';
 import AudioMessage from './AudioMessage';
+import { DocumentMessageRow } from './DocumentMessageRow';
+import LocationMessageBubble from './LocationMessageBubble';
 import MessageStatusIndicator from './MessageStatusIndicator';
 import PreviewAvatar from './PreviewAvatar';
 import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
@@ -28,6 +33,8 @@ interface MessageBubbleProps {
   isGroupChat: boolean;
   onReplyPress: (messageId: string) => void;
   onMediaPress: (mediaUrl: string, mediaType: 'image' | 'video') => void;
+  onDocumentPress?: (message: ChatMessage) => void;
+  onLocationPress?: (message: ChatMessage) => void;
   onLongPress: (message: ChatMessage) => void;
   onRetry?: (message: ChatMessage) => void;
   showTail?: boolean;
@@ -80,15 +87,18 @@ const MessageBubble = memo<MessageBubbleProps>(({
   isGroupChat,
   onReplyPress,
   onMediaPress,
+  onDocumentPress,
+  onLocationPress,
   onLongPress,
   onRetry,
   showTail = true,
   showSenderName = true,
   showAvatar = false,
 }) => {
-  if (!message) return null;
+  if (__DEV__) bumpChatPerfRender('MessageBubble');
 
-  const isAiMessage = message.isAI || message.senderId === GYW_AI_SYSTEM_ID;
+  const { t } = useTranslation();
+  const isAiMessage = !!(message && (message.isAI || message.senderId === GYW_AI_SYSTEM_ID));
   const aiAvatarUri = useMemo(() => {
     if (!isAiMessage) return undefined;
     try {
@@ -100,11 +110,33 @@ const MessageBubble = memo<MessageBubbleProps>(({
 
   // Compute display height from stored dimensions; fall back to fixed 4:3 ratio
   const imageDisplayHeight = useMemo(() => {
-    if (message.imageWidth && message.imageHeight && message.imageWidth > 0) {
+    if (message?.imageWidth && message?.imageHeight && message.imageWidth > 0) {
       return Math.round(IMAGE_WIDTH * message.imageHeight / message.imageWidth);
     }
     return IMAGE_HEIGHT;
-  }, [message.imageWidth, message.imageHeight]);
+  }, [message?.imageWidth, message?.imageHeight]);
+
+  const timeLabel = useMemo(
+    () => (message ? formatBubbleTime(message.createdAt || message.sentAt) : ''),
+    [message]
+  );
+
+  if (!message) return null;
+
+  // ── Lightweight system line (member_removed, etc.) ──────────────────────
+  if (message.type === 'system') {
+    const label = (message.text ?? '').trim();
+    return (
+      <View className="items-center my-1.5 px-6" accessibilityRole="text">
+        <Text
+          className={clsx('text-xs text-center', isDark ? 'text-gray-500' : 'text-gray-500')}
+          numberOfLines={4}
+        >
+          {label || ' '}
+        </Text>
+      </View>
+    );
+  }
 
   // ── Call system message ──────────────────────────────────────────────────
   if (message.type === 'call') {
@@ -128,6 +160,29 @@ const MessageBubble = memo<MessageBubbleProps>(({
   }
 
   const isFailed = message.status === 'failed';
+  const isDeletedEveryone = !!message.deleted;
+
+  /** WhatsApp-style: time + ticks live inside the document card when it is the only payload. */
+  const documentOwnsFooter =
+    !isDeletedEveryone &&
+    !!message.fileUrl &&
+    (message.type === 'document' || message.type === 'file') &&
+    !(message.text && message.text.trim()) &&
+    !message.imageUrl &&
+    !message.videoUrl &&
+    !message.audioUrl;
+
+  const locationOwnsFooter =
+    !isDeletedEveryone &&
+    message.type === 'location' &&
+    !!message.previewUrl &&
+    !(message.text && message.text.trim());
+
+  const liveLocationExpired =
+    !!message.isLive &&
+    !!message.expiresAt &&
+    !Number.isNaN(Date.parse(message.expiresAt)) &&
+    Date.parse(message.expiresAt) <= Date.now();
 
   // Bubble colors — my messages: brand teal; theirs: white (light) / dark-gray (dark)
   const myBg    = '#FF5722';
@@ -141,9 +196,6 @@ const MessageBubble = memo<MessageBubbleProps>(({
       ? { borderRadius: 18, borderBottomRightRadius: 4 }
       : { borderRadius: 18, borderBottomLeftRadius: 4 }
     : { borderRadius: 18 };
-
-  // Time + status meta line
-  const timeLabel = formatBubbleTime(message.createdAt || message.sentAt);
 
   return (
     <Pressable
@@ -199,8 +251,8 @@ const MessageBubble = memo<MessageBubbleProps>(({
           </Text>
         )}
 
-        {/* Reply preview */}
-        {message.replyTo && (
+        {/* Reply preview — hidden when deleted for everyone (tombstone only) */}
+        {!isDeletedEveryone && message.replyTo && (
           <Pressable
             onPress={() => onReplyPress(message.replyTo!.messageId)}
             style={{
@@ -234,9 +286,76 @@ const MessageBubble = memo<MessageBubbleProps>(({
               {message.replyTo.text
                 || (message.replyTo.type === 'image' ? '📷 Photo'
                 : message.replyTo.type === 'video' ? '🎥 Video'
+                : message.replyTo.type === 'document' || message.replyTo.type === 'file' ? '📎 Document'
+                : message.replyTo.type === 'location' ? '📍 Location'
                 : '🎤 Voice message')}
             </Text>
           </Pressable>
+        )}
+
+        {/* Story reply context (DM from story viewer) */}
+        {!isDeletedEveryone && message.storyReply && message.type === 'text' && (
+          <View
+            style={{
+              marginTop: message.replyTo ? 4 : 0,
+              marginBottom: 6,
+              flexDirection: 'row',
+              alignItems: 'center',
+              padding: 6,
+              borderRadius: 8,
+              borderLeftWidth: 3,
+              borderLeftColor: isMyMessage ? 'rgba(255,255,255,0.55)' : '#FF5722',
+              backgroundColor: isMyMessage ? 'rgba(255,255,255,0.1)' : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'),
+            }}
+          >
+            {message.storyReply.thumbnailUrl ||
+            (message.storyReply.mediaUrl && message.storyReply.mediaType !== 'video') ? (
+              <ExpoImage
+                source={{ uri: message.storyReply.thumbnailUrl || message.storyReply.mediaUrl }}
+                style={{ width: 40, height: 52, borderRadius: 6 }}
+                contentFit="cover"
+              />
+            ) : (
+              <View
+                style={{
+                  width: 40,
+                  height: 52,
+                  borderRadius: 6,
+                  backgroundColor: isMyMessage ? 'rgba(255,255,255,0.15)' : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'),
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Feather
+                  name={message.storyReply.mediaType === 'video' ? 'film' : 'image'}
+                  size={18}
+                  color={isMyMessage ? 'rgba(255,255,255,0.9)' : '#FF5722'}
+                />
+              </View>
+            )}
+            <View style={{ marginLeft: 8, flexShrink: 1, justifyContent: 'center' }}>
+              <Text
+                style={{
+                  fontSize: 11,
+                  fontWeight: '700',
+                  marginBottom: 2,
+                  color: isMyMessage ? 'rgba(255,255,255,0.9)' : '#FF5722',
+                }}
+                numberOfLines={1}
+              >
+                {t('stories.replyContext')}
+              </Text>
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: isMyMessage ? 'rgba(255,255,255,0.75)' : (isDark ? '#d1d5db' : '#4b5563'),
+                }}
+                numberOfLines={2}
+              >
+                {message.storyReply.previewLabel?.trim() || '—'}
+              </Text>
+            </View>
+          </View>
         )}
 
         {/* Deleted message */}
@@ -254,7 +373,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
                 color: isMyMessage ? 'rgba(255,255,255,0.55)' : (isDark ? '#6b7280' : '#9ca3af'),
               }}
             >
-              This message was deleted
+              {CHAT_DELETED_FOR_EVERYONE_TEXT}
             </Text>
           </View>
         ) : message.text ? (
@@ -270,7 +389,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
         ) : null}
 
         {/* Image */}
-        {message.imageUrl && (
+        {!isDeletedEveryone && message.imageUrl && (
           <Pressable
             onPress={() => onMediaPress(message.imageUrl!, 'image')}
             style={{
@@ -295,7 +414,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
         )}
 
         {/* Video */}
-        {message.videoUrl && (
+        {!isDeletedEveryone && message.videoUrl && (
           <Pressable
             onPress={() => onMediaPress(message.videoUrl!, 'video')}
             style={{
@@ -341,7 +460,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
         )}
 
         {/* Audio */}
-        {message.audioUrl && (
+        {!isDeletedEveryone && message.audioUrl && (
           <View style={{ width: AUDIO_WIDTH, minHeight: 52 }}>
             <AudioMessage
               messageId={message.id}
@@ -352,80 +471,175 @@ const MessageBubble = memo<MessageBubbleProps>(({
           </View>
         )}
 
-        {/* Timestamp + read receipt — bottom-right, always */}
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            marginTop: 3,
-            gap: 3,
-          }}
-        >
-          {message.edited && (
-            <Text
-              style={{
-                fontSize: 10,
-                color: isMyMessage ? 'rgba(255,255,255,0.5)' : (isDark ? '#6b7280' : '#9ca3af'),
-                marginRight: 2,
-              }}
-            >
-              edited
-            </Text>
-          )}
-          <Text
+        {!isDeletedEveryone && message.type === 'location' && message.previewUrl && (
+          <View style={{ marginTop: message.text ? 6 : 0 }}>
+            <LocationMessageBubble
+              message={message}
+              isMyMessage={isMyMessage}
+              isDark={isDark}
+              timeLabel={timeLabel}
+              isFailed={isFailed}
+              liveLocationExpired={liveLocationExpired}
+              locationOwnsFooter={locationOwnsFooter}
+              onOpenMaps={() => onLocationPress?.(message)}
+              onRetry={isMyMessage && isFailed && onRetry ? () => onRetry(message) : undefined}
+            />
+            {locationOwnsFooter && (message.edited || message.isEdited) ? (
+              <Text
+                style={{
+                  fontSize: 10,
+                  color: isMyMessage ? 'rgba(255,255,255,0.5)' : (isDark ? '#6b7280' : '#9ca3af'),
+                  marginTop: 4,
+                  textAlign: 'right',
+                }}
+              >
+                {t('messages.edited')}
+              </Text>
+            ) : null}
+          </View>
+        )}
+
+        {!isDeletedEveryone && message.fileUrl && (message.type === 'document' || message.type === 'file') && (
+          <DocumentMessageRow
+            fileName={message.fileName || t('messages.document')}
+            fileSize={message.fileSize}
+            mimeType={message.mimeType}
+            extension={message.extension}
+            isMyMessage={isMyMessage}
+            isDark={isDark}
+            onOpen={() => onDocumentPress?.(message)}
+            showEmbeddedFooter={documentOwnsFooter}
+            timeLabel={documentOwnsFooter ? timeLabel : undefined}
+            messageStatus={message.status}
+            isFailed={isFailed}
+            onRetryPress={isMyMessage && isFailed && onRetry ? () => onRetry(message) : undefined}
+            edited={!!(message.edited || message.isEdited)}
+            isPending={message.status === 'pending'}
+          />
+        )}
+
+        {/* Timestamp + read receipt — hidden when document / location card embeds its own footer */}
+        {!documentOwnsFooter && !locationOwnsFooter ? (
+          <View
             style={{
-              fontSize: 10.5,
-              color: isMyMessage ? 'rgba(255,255,255,0.6)' : (isDark ? '#6b7280' : '#9ca3af'),
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              marginTop: 3,
+              gap: 3,
             }}
           >
-            {timeLabel}
-          </Text>
-          {isMyMessage && (
-            isFailed && onRetry ? (
-              <Pressable
-                onPress={() => onRetry(message)}
-                hitSlop={8}
-                accessibilityLabel="Retry sending"
+            {(message.edited || message.isEdited) && (
+              <Text
+                style={{
+                  fontSize: 10,
+                  color: isMyMessage ? 'rgba(255,255,255,0.5)' : (isDark ? '#6b7280' : '#9ca3af'),
+                  marginRight: 2,
+                }}
               >
-                <Feather name="alert-circle" size={13} color="#ef4444" />
-              </Pressable>
-            ) : (
-              <MessageStatusIndicator status={message.status || 'sent'} size={13} />
-            )
-          )}
+                {t('messages.edited')}
+              </Text>
+            )}
+            <Text
+              style={{
+                fontSize: 10.5,
+                color: isMyMessage ? 'rgba(255,255,255,0.6)' : (isDark ? '#6b7280' : '#9ca3af'),
+              }}
+            >
+              {timeLabel}
+            </Text>
+            {isMyMessage && (
+              isFailed && onRetry ? (
+                <Pressable
+                  onPress={() => onRetry(message)}
+                  hitSlop={8}
+                  accessibilityLabel={t('a11y.retrySending')}
+                >
+                  <Feather name="alert-circle" size={13} color="#ef4444" />
+                </Pressable>
+              ) : (
+                <MessageStatusIndicator status={message.status || 'sent'} size={13} />
+              )
+            )}
 
-          {!isMyMessage && isAiMessage && isFailed && onRetry ? (
-            <Pressable onPress={() => onRetry(message)} hitSlop={8} accessibilityLabel="Retry Gyw AI">
-              <Feather name="refresh-ccw" size={13} color={isDark ? '#c7d2fe' : '#4f46e5'} />
-            </Pressable>
-          ) : null}
-        </View>
+            {!isMyMessage && isAiMessage && isFailed && onRetry ? (
+              <Pressable onPress={() => onRetry(message)} hitSlop={8} accessibilityLabel={t('a11y.retryGywAi')}>
+                <Feather name="refresh-ccw" size={13} color={isDark ? '#c7d2fe' : '#4f46e5'} />
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
     </Pressable>
   );
 }, (prev, next) => {
   if (!prev.message || !next.message) return prev.message === next.message;
 
+  const readByEqual =
+    prev.message.readBy === next.message.readBy ||
+    (Array.isArray(prev.message.readBy) &&
+      Array.isArray(next.message.readBy) &&
+      prev.message.readBy.length === next.message.readBy.length &&
+      prev.message.readBy.every((id, i) => id === next.message.readBy![i]));
+
+  const deletedForEqual =
+    prev.message.deletedFor === next.message.deletedFor ||
+    (Array.isArray(prev.message.deletedFor) &&
+      Array.isArray(next.message.deletedFor) &&
+      prev.message.deletedFor.length === next.message.deletedFor.length &&
+      prev.message.deletedFor.every((id, i) => id === next.message.deletedFor![i]));
+
   return (
     prev.message.id === next.message.id &&
+    prev.message.type === next.message.type &&
+    prev.message.systemKind === next.message.systemKind &&
     prev.message.text === next.message.text &&
+    prev.message.aiMode === next.message.aiMode &&
+    prev.message.aiMultimodalSourceMessageId === next.message.aiMultimodalSourceMessageId &&
+    prev.message.aiMultimodalRoute === next.message.aiMultimodalRoute &&
     prev.message.status === next.message.status &&
     prev.message.deleted === next.message.deleted &&
     prev.message.edited === next.message.edited &&
+    prev.message.isEdited === next.message.isEdited &&
     prev.message.imageUrl === next.message.imageUrl &&
+    prev.message.imageWidth === next.message.imageWidth &&
+    prev.message.imageHeight === next.message.imageHeight &&
+    prev.message.blurhash === next.message.blurhash &&
     prev.message.videoUrl === next.message.videoUrl &&
+    prev.message.videoThumbnailUrl === next.message.videoThumbnailUrl &&
     prev.message.audioUrl === next.message.audioUrl &&
     prev.message.audioDuration === next.message.audioDuration &&
+    prev.message.fileUrl === next.message.fileUrl &&
+    prev.message.fileName === next.message.fileName &&
+    prev.message.mimeType === next.message.mimeType &&
+    prev.message.fileSize === next.message.fileSize &&
+    prev.message.extension === next.message.extension &&
+    prev.message.latitude === next.message.latitude &&
+    prev.message.longitude === next.message.longitude &&
+    prev.message.previewUrl === next.message.previewUrl &&
+    prev.message.placeName === next.message.placeName &&
+    prev.message.placeAddress === next.message.placeAddress &&
+    prev.message.isLive === next.message.isLive &&
+    prev.message.expiresAt === next.message.expiresAt &&
     areReactionMapsEqual(prev.message.reactions, next.message.reactions) &&
     isReplyRefEqual(prev.message.replyTo, next.message.replyTo) &&
+    readByEqual &&
+    deletedForEqual &&
     prev.isMyMessage === next.isMyMessage &&
     prev.colorScheme === next.colorScheme &&
     prev.isGroupChat === next.isGroupChat &&
     prev.isDark === next.isDark &&
+    prev.textColor === next.textColor &&
+    prev.textSecondaryColor === next.textSecondaryColor &&
     prev.showTail === next.showTail &&
     prev.showSenderName === next.showSenderName &&
-    prev.showAvatar === next.showAvatar
+    prev.showAvatar === next.showAvatar &&
+    prev.onReplyPress === next.onReplyPress &&
+    prev.onMediaPress === next.onMediaPress &&
+    prev.onDocumentPress === next.onDocumentPress &&
+    prev.onLocationPress === next.onLocationPress &&
+    prev.onLongPress === next.onLongPress &&
+    prev.onRetry === next.onRetry
   );
 });
 

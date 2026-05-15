@@ -21,6 +21,7 @@ const TabsLayout = () => {
   return (
     <Tabs
       screenOptions={{
+        lazy: true,
         tabBarActiveTintColor,
         tabBarInactiveTintColor,
         tabBarButton: HapticTab,

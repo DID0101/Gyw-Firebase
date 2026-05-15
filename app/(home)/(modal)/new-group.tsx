@@ -21,6 +21,7 @@ const NewGroupScreen = () => {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [query, setQuery] = useState('');
   const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
   const { users: allUsers, loading: loadingUsers } = useUsers(query);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
 
@@ -43,6 +44,7 @@ const NewGroupScreen = () => {
   const leave = () => {
     setCreatingGroup(false);
     setGroupName('');
+    setGroupDescription('');
     setQuery('');
     setSelectedUsers([]);
     router.dismissTo('/chats');
@@ -62,11 +64,9 @@ const NewGroupScreen = () => {
     setCreatingGroup(true);
 
     try {
-      const chatId = await createGroupChat(
-        currentUser.uid,
-        groupName.trim(),
-        selectedUsers
-      );
+      const chatId = await createGroupChat(currentUser.uid, groupName.trim(), selectedUsers, {
+        description: groupDescription.trim() || undefined,
+      });
 
       // Navigate to the new group chat
       router.dismissTo({
@@ -109,6 +109,14 @@ const NewGroupScreen = () => {
         placeholder={t('groups.groupName')}
         value={groupName}
         onChangeText={(value) => setGroupName(value)}
+      />
+      <TextField
+        id="groupDescription"
+        label={t('groups.groupDescription')}
+        placeholder={t('groups.groupDescriptionPlaceholder')}
+        value={groupDescription}
+        onChangeText={setGroupDescription}
+        multiline
       />
       <TextField
         id="users"

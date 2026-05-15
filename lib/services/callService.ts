@@ -49,6 +49,7 @@ const TERMINAL_STATUSES = new Set([
   'rejected',
   'busy',
   'canceled',
+  'cancelled',
   'timeout',
 ]);
 
@@ -56,8 +57,15 @@ const normalizeCallStatus = (status: string | undefined): Call['status'] => {
   if (!status) return 'ringing';
   if (status === 'answered') return 'accepted' as Call['status'];
   if (status === 'rejected') return 'declined' as Call['status'];
+  if (status === 'cancelled') return 'canceled' as Call['status'];
   return status as Call['status'];
 };
+
+function isCallEligibleForHistory(call: Call): boolean {
+  if (call.isRandom) return false;
+  if (call.endedAt) return true;
+  return TERMINAL_STATUSES.has(call.status);
+}
 
 // Create a new call
 export const createCall = async (
@@ -469,66 +477,121 @@ export const subscribeToSignaling = (
   );
 };
 
+/** Map Firestore call doc → UI `Call` (canonical `calleeId` + legacy `receiverId`). */
+function firestoreCallDocToCall(docId: string, data: Record<string, any>, direction: 'incoming' | 'outgoing'): Call {
+  const receiverId = String(data.receiverId ?? data.calleeId ?? '');
+  const rawType = data.callType ?? data.type ?? 'audio';
+  const type: 'audio' | 'video' = rawType === 'video' ? 'video' : 'audio';
+  const createdRaw = data.createdAt?.toDate?.()?.toISOString() ?? data.createdAt;
+  const createdAt = typeof createdRaw === 'string' && createdRaw ? createdRaw : new Date(0).toISOString();
+  const endedRaw = data.endedAt?.toDate?.()?.toISOString() ?? data.endedAt;
+  const endedAt = typeof endedRaw === 'string' ? endedRaw : undefined;
+  return {
+    ...data,
+    id: docId,
+    receiverId,
+    type,
+    status: normalizeCallStatus(data.status),
+    direction,
+    createdAt,
+    endedAt,
+    duration: typeof data.duration === 'number' ? data.duration : undefined,
+    chatId: data.chatId ?? undefined,
+    isRandom: !!data.isRandom,
+  } as Call;
+}
+
+/** users/{uid}/callHistory/{callId} → UI Call (durable; survives calls/ doc deletion). */
+function callHistoryEntryToCall(userId: string, docId: string, data: Record<string, any>): Call | null {
+  if (!data || data.isRandom === true) return null;
+  const direction: 'incoming' | 'outgoing' = data.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const peerId = String(data.peerId ?? '');
+  const startedRaw =
+    data.startedAt?.toDate?.()?.toISOString() ??
+    data.startedAt ??
+    data.createdAt?.toDate?.()?.toISOString() ??
+    data.createdAt;
+  const createdAt =
+    typeof startedRaw === 'string' && startedRaw ? startedRaw : new Date(0).toISOString();
+  const endedRaw = data.endedAt?.toDate?.()?.toISOString() ?? data.endedAt;
+  const endedAt = typeof endedRaw === 'string' && endedRaw ? endedRaw : undefined;
+  const callerId = direction === 'outgoing' ? userId : peerId;
+  const receiverId = direction === 'outgoing' ? peerId : userId;
+  const rawType = data.callType ?? data.type ?? 'audio';
+  const type: 'audio' | 'video' = rawType === 'video' ? 'video' : 'audio';
+  return {
+    ...data,
+    id: docId,
+    callId: data.callId ?? docId,
+    callerId,
+    receiverId,
+    type,
+    status: normalizeCallStatus(data.status),
+    direction,
+    createdAt,
+    endedAt,
+    duration: typeof data.duration === 'number' ? data.duration : undefined,
+    chatId: data.chatId ?? undefined,
+    isRandom: false,
+  } as Call;
+}
+
 // Get user's call history
 export const getCallHistory = async (userId: string, limitCount: number = 50): Promise<Call[]> => {
   if (Platform.OS !== 'web' && hasNativeFirestore) {
     return getCallHistoryNative(userId, limitCount) as Promise<Call[]>;
   }
 
+  const byId = new Map<string, Call>();
+
+  const histRef = collection(db, 'users', userId, 'callHistory');
+  try {
+    const histSnap = await getDocs(
+      query(histRef, orderBy('startedAt', 'desc'), limit(limitCount))
+    );
+    histSnap.forEach((docSnap) => {
+      const row = callHistoryEntryToCall(userId, docSnap.id, docSnap.data());
+      if (row) byId.set(row.id, row);
+    });
+  } catch (e) {
+    if (__DEV__) console.warn('[getCallHistory] ordered callHistory failed, fallback:', e);
+    try {
+      const histSnap = await getDocs(histRef);
+      const rows: Call[] = [];
+      histSnap.forEach((docSnap) => {
+        const row = callHistoryEntryToCall(userId, docSnap.id, docSnap.data());
+        if (row) rows.push(row);
+      });
+      rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      rows.slice(0, limitCount).forEach((row) => byId.set(row.id, row));
+    } catch (e2) {
+      if (__DEV__) console.warn('[getCallHistory] callHistory unreadable:', e2);
+    }
+  }
+
   const callsRef = collection(db, 'calls');
-  
-  // Get calls where user is caller (without orderBy to avoid index requirement)
-  const callerQ = query(
-    callsRef,
-    where('callerId', '==', userId)
-  );
+  const settled = await Promise.allSettled([
+    getDocs(query(callsRef, where('callerId', '==', userId))),
+    getDocs(query(callsRef, where('calleeId', '==', userId))),
+    getDocs(query(callsRef, where('receiverId', '==', userId))),
+  ]);
 
-  const callerSnapshot = await getDocs(callerQ);
-  const calls: Call[] = [];
-
-  callerSnapshot.forEach((doc) => {
-    const data = doc.data();
-    calls.push({
-      id: doc.id,
-      ...data,
-      direction: 'outgoing' as const,
-      createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
-      endedAt: data.endedAt?.toDate?.()?.toISOString() || data.endedAt,
-    } as Call);
+  settled.forEach((res, idx) => {
+    if (res.status !== 'fulfilled') {
+      if (__DEV__) console.warn('[getCallHistory] calls/ query failed:', idx, res.reason);
+      return;
+    }
+    const direction = idx === 0 ? 'outgoing' : 'incoming';
+    res.value.forEach((docSnap) => {
+      if (byId.has(docSnap.id)) return;
+      const row = firestoreCallDocToCall(docSnap.id, docSnap.data(), direction);
+      if (isCallEligibleForHistory(row)) byId.set(docSnap.id, row);
+    });
   });
 
-  // Also get calls where user is receiver (without orderBy to avoid index requirement)
-  const receiverQ = query(
-    callsRef,
-    where('receiverId', '==', userId)
-  );
-
-  const receiverSnapshot = await getDocs(receiverQ);
-  receiverSnapshot.forEach((doc) => {
-    const data = doc.data();
-    calls.push({
-      id: doc.id,
-      ...data,
-      direction: 'incoming' as const,
-      createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
-      endedAt: data.endedAt?.toDate?.()?.toISOString() || data.endedAt,
-    } as Call);
-  });
-
-  // Sort by createdAt descending (in memory to avoid Firestore index requirement)
-  calls.sort((a, b) => {
-    const timeA = new Date(a.createdAt).getTime();
-    const timeB = new Date(b.createdAt).getTime();
-    return timeB - timeA;
-  });
-
-  // Return only completed terminal calls (exclude active/ringing and random)
-  const completedCalls = calls.filter(
-    (call) =>
-      ['ended', 'missed', 'declined', 'rejected', 'canceled', 'timeout'].includes(call.status) && !call.isRandom
-  );
-
-  return completedCalls.slice(0, limitCount);
+  const calls = Array.from(byId.values());
+  calls.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return calls.slice(0, limitCount);
 };
 
 // Generate a unique call link ID

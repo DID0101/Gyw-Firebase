@@ -8,7 +8,18 @@ cssInterop(Image, {
 });
 
 const AppImage = (props: ImageProps) => {
-  return <Image {...props} />;
+  const uri =
+    typeof props.source === 'object' && props.source && 'uri' in props.source
+      ? (props.source as { uri?: string }).uri
+      : undefined;
+  return (
+    <Image
+      {...props}
+      cachePolicy={props.cachePolicy ?? 'memory-disk'}
+      priority={props.priority ?? 'normal'}
+      recyclingKey={props.recyclingKey ?? uri}
+    />
+  );
 };
 
 export default AppImage;

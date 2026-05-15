@@ -13,6 +13,8 @@ const KEYS = {
   CALLS: 'calls',
   STORIES: 'stories',
   LAST_SYNC: 'lastSync',
+  /** Per-auth-user list of story doc ids the user has watched (ring UX). */
+  STORY_VIEWED_IDS: 'storyViewedIds',
 } as const;
 
 const CHATS_SAVE_DEBOUNCE_MS = 900;
@@ -155,12 +157,45 @@ export const persistence = {
       return 0;
     }
   },
+
+  /** Map firebase uid -> string[] of story ids marked seen locally (capped per user). */
+  loadStoryViewedIdsMap: async (): Promise<Record<string, string[]>> => {
+    try {
+      const data = await storage.getItem(KEYS.STORY_VIEWED_IDS);
+      if (!data) return {};
+      const parsed = JSON.parse(data) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, string[]>;
+      }
+    } catch (error) {
+      if (__DEV__) console.error('Error loading story viewed ids:', error);
+    }
+    return {};
+  },
+
+  saveStoryViewedIdsForUser: async (uid: string, storyIds: string[]) => {
+    try {
+      const map = await persistence.loadStoryViewedIdsMap();
+      const capped = storyIds.slice(-800);
+      map[uid] = capped;
+      await storage.setItem(KEYS.STORY_VIEWED_IDS, JSON.stringify(map));
+    } catch (error) {
+      if (__DEV__) console.error('Error saving story viewed ids:', error);
+    }
+  },
   
   // Clear all persisted data
   clearAll: async () => {
     try {
       cancelDebouncedPersistence();
-      await storage.multiRemove([KEYS.CHATS, KEYS.MESSAGES, KEYS.CALLS, KEYS.STORIES, KEYS.LAST_SYNC]);
+      await storage.multiRemove([
+        KEYS.CHATS,
+        KEYS.MESSAGES,
+        KEYS.CALLS,
+        KEYS.STORIES,
+        KEYS.LAST_SYNC,
+        KEYS.STORY_VIEWED_IDS,
+      ]);
     } catch (error) {
       if (__DEV__) console.error('Error clearing AsyncStorage:', error);
     }

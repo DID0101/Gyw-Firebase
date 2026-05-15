@@ -3,7 +3,7 @@ import { Feather } from '@expo/vector-icons';
 import clsx from 'clsx';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Alert, FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 
@@ -12,10 +12,12 @@ import Screen from '@/components/Screen';
 import StoryPickerModal from '@/components/StoryPickerModal';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useThemeClassName } from '@/lib/themeUtils';
+import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
 import { useStories } from '@/lib/hooks/useStories';
+import { useStorySeenSync } from '@/lib/hooks/useStorySeenSync';
 import { useUsersData } from '@/lib/hooks/useUsersData';
-import { createStory } from '@/lib/services/storyService';
-import { Story } from '@/lib/services/storyService';
+import { scheduleLikelyRouteChunksIdle } from '@/lib/perf/navigationPreload';
+import { createStory, legacyStorySeenByUser, type Story } from '@/lib/services/storyService';
 import { useStoryStore } from '@/store/storyStore';
 
 interface StoryGroup {
@@ -26,6 +28,172 @@ interface StoryGroup {
   hasUnseen: boolean;
 }
 
+function groupHasUnseenStories(
+  group: Pick<StoryGroup, 'userId' | 'stories'>,
+  myUid: string | undefined,
+  viewedIds: Record<string, true>
+): boolean {
+  if (!myUid || group.userId === myUid) return false;
+  return group.stories.some(
+    (s) => !viewedIds[s.id] && !legacyStorySeenByUser(s, myUid)
+  );
+}
+
+const STORY_SIZE = 72;
+const STORY_BORDER_WIDTH = 3;
+
+type StoryRingRowProps = {
+  item: StoryGroup;
+  myUid?: string;
+  colorScheme: 'light' | 'dark';
+  textColor: string;
+  t: (key: string) => string;
+  onOpenViewer: (storyId: string, userId: string) => void;
+  onAddMine: () => void;
+};
+
+const StoryRingRow = memo(function StoryRingRow({
+  item,
+  myUid,
+  colorScheme,
+  textColor,
+  t,
+  onOpenViewer,
+  onAddMine,
+}: StoryRingRowProps) {
+  const isMyStory = item.userId === myUid;
+  const hasUnseen = item.hasUnseen;
+  const latestStory = item.stories[0];
+
+  return (
+    <TouchableOpacity
+      onPress={() => {
+        if (item.stories.length > 0 && latestStory) {
+          onOpenViewer(latestStory.id, item.userId);
+        } else if (isMyStory) {
+          onAddMine();
+        }
+      }}
+      className="items-center mx-2"
+      activeOpacity={0.8}
+    >
+      <View
+        style={{
+          width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+          height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+          borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
+          padding: STORY_BORDER_WIDTH,
+          backgroundColor: '#FFFFFF',
+          borderWidth: hasUnseen ? 0 : STORY_BORDER_WIDTH,
+          borderColor: hasUnseen ? 'transparent' : isMyStory ? '#086da0' : '#9E9E9E',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+      >
+        {hasUnseen && (
+          <View
+            style={{
+              position: 'absolute',
+              width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+              height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
+              borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
+              backgroundColor: '#833AB4',
+              padding: STORY_BORDER_WIDTH,
+            }}
+          >
+            <View
+              style={{
+                width: STORY_SIZE,
+                height: STORY_SIZE,
+                borderRadius: STORY_SIZE / 2,
+                backgroundColor: colorScheme === 'dark' ? '#1F1F1F' : '#FFFFFF',
+              }}
+            />
+          </View>
+        )}
+
+        <View
+          style={{
+            width: STORY_SIZE,
+            height: STORY_SIZE,
+            borderRadius: STORY_SIZE / 2,
+            overflow: 'hidden',
+            backgroundColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0',
+            borderWidth: hasUnseen ? 3 : 0,
+            borderColor: '#FFFFFF',
+          }}
+        >
+          {latestStory ? (
+            latestStory.mediaType === 'image' ? (
+              <Image
+                source={{ uri: latestStory.mediaUrl }}
+                style={{ width: STORY_SIZE, height: STORY_SIZE }}
+                resizeMode="cover"
+              />
+            ) : (
+              <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+                {latestStory.thumbnailUrl ? (
+                  <Image
+                    source={{ uri: latestStory.thumbnailUrl }}
+                    style={{ width: STORY_SIZE, height: STORY_SIZE }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Feather name="video" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
+                )}
+              </View>
+            )
+          ) : (
+            <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+              <Feather name="plus" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
+            </View>
+          )}
+        </View>
+
+        {isMyStory && (
+          <View
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              right: 0,
+              width: 24,
+              height: 24,
+              borderRadius: 12,
+              backgroundColor: '#086da0',
+              borderWidth: 3,
+              borderColor: '#FFFFFF',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            <Feather name="plus" size={14} color="white" />
+          </View>
+        )}
+      </View>
+
+      <Text
+        className={clsx('text-xs mt-2 max-w-[80px]', textColor)}
+        numberOfLines={1}
+        style={{ textAlign: 'center' }}
+      >
+        {isMyStory ? t('stories.myStories') : item.userName || t('stories.unknown')}
+      </Text>
+    </TouchableOpacity>
+  );
+}, (prev, next) =>
+  prev.item.userId === next.item.userId &&
+  prev.item.hasUnseen === next.item.hasUnseen &&
+  prev.item.stories.length === next.item.stories.length &&
+  (prev.item.stories[0]?.id ?? '') === (next.item.stories[0]?.id ?? '') &&
+  prev.myUid === next.myUid &&
+  prev.colorScheme === next.colorScheme &&
+  prev.textColor === next.textColor &&
+  prev.item.userName === next.item.userName &&
+  prev.item.userImage === next.item.userImage &&
+  prev.onOpenViewer === next.onOpenViewer &&
+  prev.onAddMine === next.onAddMine
+);
+
 const StoriesScreen = () => {
   const { user } = useAuth();
   const { t } = useTranslation();
@@ -35,6 +203,8 @@ const StoriesScreen = () => {
   const textSecondaryColor = useThemeClassName('text-gray-500', 'text-gray-400');
   const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
   const { stories, loading: storiesLoading } = useStories();
+  const viewedStoryIds = useStoryStore((s) => s.viewedStoryIds);
+  useStorySeenSync(user?.uid, stories);
   const [showPicker, setShowPicker] = useState(false);
   const [uploading, setUploading] = useState(false);
 
@@ -76,21 +246,13 @@ const StoriesScreen = () => {
         
         if (existing) {
           existing.stories.push(story);
-          // Check if any story is unseen (not in viewers)
-          if (!existing.hasUnseen) {
-            const isViewed = story.viewers.some((v) => v.userId === user?.uid);
-            if (!isViewed) {
-              existing.hasUnseen = true;
-            }
-          }
         } else {
-          const isViewed = story.viewers.some((v) => v.userId === user?.uid);
           groupsMap.set(story.userId, {
             userId: story.userId,
             userName,
             userImage,
             stories: [story],
-            hasUnseen: !isViewed,
+            hasUnseen: false,
           });
         }
       }
@@ -102,14 +264,22 @@ const StoriesScreen = () => {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
     });
-    
-    return Array.from(groupsMap.values());
-  }, [stories, usersData, user?.uid, t]);
+
+    const out: StoryGroup[] = [];
+    for (const g of groupsMap.values()) {
+      out.push({
+        ...g,
+        hasUnseen: groupHasUnseenStories(g, user?.uid, viewedStoryIds),
+      });
+    }
+
+    return out;
+  }, [stories, usersData, user?.uid, t, viewedStoryIds]);
 
   useFocusEffect(
     useCallback(() => {
-      // Reset uploading state when screen comes into focus
       setUploading(false);
+      scheduleLikelyRouteChunksIdle();
     }, [])
   );
 
@@ -128,9 +298,9 @@ const StoriesScreen = () => {
     return true;
   };
 
-  const showStoryOptions = () => {
+  const showStoryOptions = useCallback(() => {
     setShowPicker(true);
-  };
+  }, []);
 
   const openCamera = async () => {
     const hasPermission = await requestPermissions();
@@ -196,135 +366,27 @@ const StoriesScreen = () => {
     }
   };
 
-  const STORY_SIZE = 72;
-  const STORY_BORDER_WIDTH = 3;
+  const openStoryViewer = useCallback(
+    (sid: string, uid: string) => {
+      router.push(`/(home)/(modal)/story-viewer?storyId=${sid}&userId=${uid}`);
+    },
+    [router]
+  );
 
-  const renderStoryItem = useCallback(({ item }: { item: StoryGroup }) => {
-    const isMyStory = item.userId === user?.uid;
-    const hasUnseen = item.hasUnseen;
-    const latestStory = item.stories[0];
-    
-    return (
-      <TouchableOpacity
-        key={item.userId}
-        onPress={() => {
-          if (item.stories.length > 0) {
-            router.push(`/(home)/(modal)/story-viewer?storyId=${latestStory.id}&userId=${item.userId}`);
-          } else if (isMyStory) {
-            showStoryOptions();
-          }
-        }}
-        className="items-center mx-2"
-        activeOpacity={0.8}
-      >
-        <View
-          style={{
-            width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
-            height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
-            borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
-            padding: STORY_BORDER_WIDTH,
-            backgroundColor: '#FFFFFF',
-            borderWidth: hasUnseen ? 0 : STORY_BORDER_WIDTH,
-            borderColor: hasUnseen ? 'transparent' : (isMyStory ? '#086da0' : '#9E9E9E'),
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-        >
-          {/* Gradient border effect for unviewed stories */}
-          {hasUnseen && (
-            <View
-              style={{
-                position: 'absolute',
-                width: STORY_SIZE + STORY_BORDER_WIDTH * 2,
-                height: STORY_SIZE + STORY_BORDER_WIDTH * 2,
-                borderRadius: (STORY_SIZE + STORY_BORDER_WIDTH * 2) / 2,
-                backgroundColor: '#833AB4', // Purple gradient base
-                padding: STORY_BORDER_WIDTH,
-              }}
-            >
-              <View
-                style={{
-                  width: STORY_SIZE,
-                  height: STORY_SIZE,
-                  borderRadius: STORY_SIZE / 2,
-                  backgroundColor: colorScheme === 'dark' ? '#1F1F1F' : '#FFFFFF',
-                }}
-              />
-            </View>
-          )}
-          
-          {/* Story content */}
-          <View
-            style={{
-              width: STORY_SIZE,
-              height: STORY_SIZE,
-              borderRadius: STORY_SIZE / 2,
-              overflow: 'hidden',
-              backgroundColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0',
-              borderWidth: hasUnseen ? 3 : 0,
-              borderColor: '#FFFFFF',
-            }}
-          >
-            {latestStory ? (
-              latestStory.mediaType === 'image' ? (
-                <Image
-                  source={{ uri: latestStory.mediaUrl }}
-                  style={{ width: STORY_SIZE, height: STORY_SIZE }}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
-                  {latestStory.thumbnailUrl ? (
-                    <Image
-                      source={{ uri: latestStory.thumbnailUrl }}
-                      style={{ width: STORY_SIZE, height: STORY_SIZE }}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <Feather name="video" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
-                  )}
-                </View>
-              )
-            ) : (
-              <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
-                <Feather name="plus" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
-              </View>
-            )}
-          </View>
-          
-          {/* Plus icon for my story */}
-          {isMyStory && (
-            <View
-              style={{
-                position: 'absolute',
-                bottom: 0,
-                right: 0,
-                width: 24,
-                height: 24,
-                borderRadius: 12,
-                backgroundColor: '#086da0',
-                borderWidth: 3,
-                borderColor: '#FFFFFF',
-                justifyContent: 'center',
-                alignItems: 'center',
-              }}
-            >
-              <Feather name="plus" size={14} color="white" />
-            </View>
-          )}
-        </View>
-        
-        {/* Username below story */}
-        <Text
-          className={clsx('text-xs mt-2 max-w-[80px]', textColor)}
-          numberOfLines={1}
-          style={{ textAlign: 'center' }}
-        >
-          {isMyStory ? t('stories.myStories') : (item.userName || t('stories.unknown'))}
-        </Text>
-      </TouchableOpacity>
-    );
-  }, [user?.uid, router, colorScheme, textColor, t]);
+  const renderStoryItem = useCallback(
+    ({ item }: { item: StoryGroup }) => (
+      <StoryRingRow
+        item={item}
+        myUid={user?.uid}
+        colorScheme={colorScheme}
+        textColor={textColor}
+        t={t}
+        onOpenViewer={openStoryViewer}
+        onAddMine={showStoryOptions}
+      />
+    ),
+    [user?.uid, colorScheme, textColor, t, openStoryViewer, showStoryOptions]
+  );
 
   if (storiesLoading) {
     return (
@@ -344,7 +406,7 @@ const StoriesScreen = () => {
           {uploading ? (
             <ActivityIndicator size="small" color={iconColor} />
           ) : (
-            <Feather name="camera" size={20} color={iconColor} />
+            <Feather name="camera" size={TAB_HEADER_ICON_SIZE} color={iconColor} />
           )}
         </TouchableOpacity>
       </View>

@@ -5,6 +5,7 @@ import Feather from '@expo/vector-icons/Feather';
 import clsx from 'clsx';
 import { ChatMessage } from '@/lib/types/chat';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
 
 interface EditMessageModalProps {
   visible: boolean;
@@ -20,6 +21,7 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
   onSave,
 }) => {
   const { isDark, colorScheme } = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [editText, setEditText] = useState('');
   const textInputRef = useRef<TextInput>(null);
@@ -81,8 +83,8 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
         >
           <View className="px-4 py-4">
             <View className="flex-row items-center justify-between mb-4">
-              <Text className={clsx('text-lg font-semibold', textColor)}>Edit Message</Text>
-              <Pressable onPress={handleCancel}>
+              <Text className={clsx('text-lg font-semibold', textColor)}>{t('messages.editMessageTitle')}</Text>
+              <Pressable onPress={handleCancel} accessibilityLabel={t('common.close')}>
                 <Feather name="x" size={24} color={iconColor} />
               </Pressable>
             </View>
@@ -91,7 +93,7 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
               ref={textInputRef}
               value={editText}
               onChangeText={setEditText}
-              placeholder="Type a message..."
+              placeholder={t('messages.typeMessage')}
               placeholderTextColor={colorScheme === 'dark' ? '#9ca3af' : '#6b7280'}
               multiline
               maxLength={1000}
@@ -116,7 +118,7 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
                   borderColor
                 )}
               >
-                <Text className={clsx('text-base font-medium', textColor)}>Cancel</Text>
+                <Text className={clsx('text-base font-medium', textColor)}>{t('common.cancel')}</Text>
               </Pressable>
               <Pressable
                 onPress={handleSave}
@@ -128,7 +130,7 @@ export const EditMessageModal: React.FC<EditMessageModalProps> = ({
                     : 'bg-[#FF5722]'
                 )}
               >
-                <Text className="text-base font-medium text-white">Save</Text>
+                <Text className="text-base font-medium text-white">{t('common.save')}</Text>
               </Pressable>
             </View>
           </View>

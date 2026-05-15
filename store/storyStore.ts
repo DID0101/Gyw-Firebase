@@ -11,6 +11,9 @@ interface StoryStore {
   
   // Last update timestamp
   lastUpdated: number;
+
+  /** Story doc ids the current user has finished watching (local + persisted). */
+  viewedStoryIds: Record<string, true>;
   
   // Actions
   setStories: (stories: Story[]) => void;
@@ -19,14 +22,35 @@ interface StoryStore {
   updateStory: (storyId: string, updates: Partial<Story>) => void;
   removeStory: (storyId: string) => void;
   clearAll: () => void;
+  markStoryViewed: (storyId: string, viewerUid: string) => void;
+  markStoriesViewed: (storyIds: string[], viewerUid: string) => void;
+  unmarkStoryViewed: (storyId: string, viewerUid: string) => void;
+  hydrateViewedStoryIds: (viewerUid: string) => Promise<void>;
   // Persistence
   loadFromStorage: () => void;
+}
+
+let viewedSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let viewedSavePendingUid: string | null = null;
+
+function schedulePersistViewed(viewerUid: string) {
+  viewedSavePendingUid = viewerUid;
+  if (viewedSaveTimer) return;
+  viewedSaveTimer = setTimeout(() => {
+    viewedSaveTimer = null;
+    const uid = viewedSavePendingUid;
+    viewedSavePendingUid = null;
+    if (!uid) return;
+    const keys = Object.keys(useStoryStore.getState().viewedStoryIds);
+    void persistence.saveStoryViewedIdsForUser(uid, keys);
+  }, 450);
 }
 
 export const useStoryStore = create<StoryStore>((set) => ({
   storiesByUser: {},
   allStories: [],
   lastUpdated: 0,
+  viewedStoryIds: {},
   
   setStories: (stories) => {
     set((state) => {
@@ -173,7 +197,62 @@ export const useStoryStore = create<StoryStore>((set) => ({
       storiesByUser: {},
       allStories: [],
       lastUpdated: 0,
+      viewedStoryIds: {},
     });
+  },
+
+  markStoryViewed: (storyId, viewerUid) => {
+    if (!storyId || !viewerUid) return;
+    set((state) => {
+      if (state.viewedStoryIds[storyId]) return state;
+      const viewedStoryIds = { ...state.viewedStoryIds, [storyId]: true };
+      schedulePersistViewed(viewerUid);
+      return { viewedStoryIds, lastUpdated: Date.now() };
+    });
+  },
+
+  unmarkStoryViewed: (storyId, viewerUid) => {
+    if (!storyId || !viewerUid) return;
+    set((state) => {
+      if (!state.viewedStoryIds[storyId]) return state;
+      const { [storyId]: _, ...rest } = state.viewedStoryIds;
+      schedulePersistViewed(viewerUid);
+      return { viewedStoryIds: rest, lastUpdated: Date.now() };
+    });
+  },
+
+  markStoriesViewed: (storyIds, viewerUid) => {
+    if (!viewerUid || storyIds.length === 0) return;
+    set((state) => {
+      let changed = false;
+      const viewedStoryIds = { ...state.viewedStoryIds };
+      for (const id of storyIds) {
+        if (id && !viewedStoryIds[id]) {
+          viewedStoryIds[id] = true;
+          changed = true;
+        }
+      }
+      if (!changed) return state;
+      schedulePersistViewed(viewerUid);
+      return { viewedStoryIds, lastUpdated: Date.now() };
+    });
+  },
+
+  hydrateViewedStoryIds: async (viewerUid) => {
+    if (!viewerUid) return;
+    try {
+      const map = await persistence.loadStoryViewedIdsMap();
+      const list = map[viewerUid] || [];
+      if (list.length === 0) return;
+      const viewedStoryIds: Record<string, true> = {};
+      for (const id of list) viewedStoryIds[id] = true;
+      set((state) => ({
+        viewedStoryIds: { ...viewedStoryIds, ...state.viewedStoryIds },
+        lastUpdated: Date.now(),
+      }));
+    } catch {
+      /* ignore */
+    }
   },
   
   // Load data from MMKV storage

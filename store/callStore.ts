@@ -24,18 +24,16 @@ export const useCallStore = create<CallStore>((set) => ({
   
   setCalls: (calls) => {
     set((state) => {
-      // Only update if calls actually changed
-      const callsChanged = 
-        state.calls.length !== calls.length ||
-        state.calls.some((call, idx) => call.id !== calls[idx]?.id);
-      
-      if (!callsChanged) {
+      // Compare id + status + duration + endedAt so server refreshes always win over stale cache
+      // (old logic only checked ids — missed updates and could leave the Calls tab empty/wrong.)
+      const sig = (c: Call[]) =>
+        c.map((x) => `${x.id}:${x.status}:${x.duration ?? ''}:${x.endedAt ?? ''}`).join('|');
+      if (state.calls.length === calls.length && sig(state.calls) === sig(calls)) {
         return state;
       }
-      
-      // Persist to AsyncStorage (async, don't block)
+
       persistence.saveCalls(calls).catch(() => {});
-      
+
       return {
         calls,
         lastUpdated: Date.now(),

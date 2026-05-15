@@ -3,6 +3,7 @@ import * as Linking from 'expo-linking';
 import { Stack, usePathname, useRouter } from 'expo-router';
 import { collection, doc, getDoc, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Alert, AppState, AppStateStatus, InteractionManager, Platform } from 'react-native';
 
 import { CallManagerHost } from '@/components/CallManagerHost';
@@ -26,6 +27,7 @@ const useNativeFirestore = hasRnFirebase && !!rnFirestoreMod;
 const CALL_RELIABILITY_PROMPT_KEY = 'callReliabilityPrompt:v1';
 
 const HomeLayout = () => {
+  const { t } = useTranslation();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -33,6 +35,7 @@ const HomeLayout = () => {
   const [setupComplete, setSetupComplete] = useState(false);
 
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const foregroundPresenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasNavigatedToSignIn = useRef(false);
   const isNavigatingRef = useRef(false);
   const setupDoneForUidRef = useRef<string | null>(null);
@@ -216,12 +219,12 @@ const HomeLayout = () => {
           const alreadyPrompted = await AsyncStorage.getItem(CALL_RELIABILITY_PROMPT_KEY);
           if (!alreadyPrompted) {
             Alert.alert(
-              'Improve call reliability',
-              'Allow battery optimization exemption and full-screen call permission for best incoming-call reliability on this device.',
+              t('calls.reliabilityTitle'),
+              t('calls.reliabilityBody'),
               [
-                { text: 'Not now', style: 'cancel' },
+                { text: t('calls.reliabilityNotNow'), style: 'cancel' },
                 {
-                  text: 'Open settings',
+                  text: t('calls.reliabilityOpenSettings'),
                   onPress: () => {
                     void (async () => {
                       try {
@@ -242,7 +245,7 @@ const HomeLayout = () => {
         /* non-fatal */
       }
     })();
-  }, [user?.uid, setupComplete]);
+  }, [user?.uid, setupComplete, t]);
 
   // Shared handler — Firestore (1.2) + legacy paths. Android ringing is native (FCM → FSI);
   // iOS uses PushKit CallKit + in-app navigation here.
@@ -376,34 +379,59 @@ const HomeLayout = () => {
   useEffect(() => {
     if (!user?.uid) return;
 
+    const writePresence = (isActive: boolean) => {
+      if (useNativeFirestore && rnFirestoreMod) {
+        const rnDb = getRnFirestore();
+        const userRef = rnFirestoreMod.doc(rnDb, 'users', user.uid);
+        rnFirestoreMod
+          .setDoc(
+            userRef,
+            { lastActive: rnFirestoreMod.serverTimestamp(), isOnline: isActive },
+            { merge: true }
+          )
+          .catch(() => {});
+      } else {
+        setDoc(
+          doc(db, 'users', user.uid),
+          { lastActive: serverTimestamp(), isOnline: isActive },
+          { merge: true }
+        ).catch(() => {});
+      }
+    };
+
     const handleAppStateChange = (nextState: AppStateStatus) => {
       const wasActive = appStateRef.current === 'active';
       const isActive = nextState === 'active';
       appStateRef.current = nextState;
 
-      if (wasActive !== isActive) {
-        if (useNativeFirestore && rnFirestoreMod) {
-          const rnDb = getRnFirestore();
-          const userRef = rnFirestoreMod.doc(rnDb, 'users', user.uid);
-          rnFirestoreMod
-            .setDoc(
-              userRef,
-              { lastActive: rnFirestoreMod.serverTimestamp(), isOnline: isActive },
-              { merge: true }
-            )
-            .catch(() => {});
-        } else {
-          setDoc(
-            doc(db, 'users', user.uid),
-            { lastActive: serverTimestamp(), isOnline: isActive },
-            { merge: true }
-          ).catch(() => {});
+      if (wasActive === isActive) return;
+
+      if (!isActive) {
+        if (foregroundPresenceTimerRef.current) {
+          clearTimeout(foregroundPresenceTimerRef.current);
+          foregroundPresenceTimerRef.current = null;
         }
+        writePresence(false);
+        return;
       }
+
+      if (foregroundPresenceTimerRef.current) {
+        clearTimeout(foregroundPresenceTimerRef.current);
+      }
+      foregroundPresenceTimerRef.current = setTimeout(() => {
+        foregroundPresenceTimerRef.current = null;
+        writePresence(true);
+      }, 220);
     };
 
     const subscription = AppState.addEventListener('change', handleAppStateChange);
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      if (foregroundPresenceTimerRef.current) {
+        clearTimeout(foregroundPresenceTimerRef.current);
+        foregroundPresenceTimerRef.current = null;
+      }
+    };
   }, [user?.uid]);
 
   // Don't block the call screen behind auth loading or the Firestore setup round-trip.
@@ -431,6 +459,22 @@ const HomeLayout = () => {
             // Faster than default slide (~200ms): cuts perceived tap→room lag.
             animation: 'fade',
             animationDuration: 120,
+          }}
+        />
+        <Stack.Screen
+          name="user-profile"
+          options={{
+            headerShown: true,
+            animation: 'slide_from_right',
+            animationDuration: 220,
+          }}
+        />
+        <Stack.Screen
+          name="group-info/[chatId]"
+          options={{
+            headerShown: true,
+            animation: 'slide_from_right',
+            animationDuration: 220,
           }}
         />
         <Stack.Screen
