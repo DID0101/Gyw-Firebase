@@ -1,45 +1,29 @@
 /**
  * callManagerStore.ts
  *
- * Zustand store that holds live call state consumed by CallService,
- * NotificationService, and the useCallManager hook.
- *
- * Kept in /store (not co-located with the hook) so that non-React code
- * (CallService event callbacks, NotificationService push handlers) can
- * call store.getState() without violating the rules of hooks.
+ * UI/session state for the active call. Firestore `calls/{callId}` is authoritative;
+ * this store holds the mirrored doc and lightweight UI flags (outgoing vs incoming).
  */
 import { create } from 'zustand';
 
-// ── Shared types ──────────────────────────────────────────────────────────────
+import type { Call } from '@/lib/types/call';
 
-/** Information received with an incoming-call push / Firestore event. */
 export interface IncomingCallInfo {
-  callId:        string;
-  callerId:      string;
-  callerName:    string;
+  callId: string;
+  callerId: string;
+  callerName: string;
   callerAvatar?: string;
-  callType:      'audio' | 'video';
+  callType: 'audio' | 'video';
 }
 
-/** Information about an outgoing call the local user initiated. */
 export interface OutgoingCallInfo {
-  callId:         string;
-  calleeId:       string;
-  calleeName:     string;
-  calleeAvatar?:  string;
-  callType:       'audio' | 'video';
+  callId: string;
+  calleeId: string;
+  calleeName: string;
+  calleeAvatar?: string;
+  callType: 'audio' | 'video';
 }
 
-/**
- * Lifecycle status of the managed call.
- *
- * idle             — no call in progress
- * ringing_incoming — incoming call is displayed / ringing
- * ringing_outgoing — outgoing call placed, waiting for answer
- * connecting       — transitioning from ringing to media setup
- * active           — both parties connected
- * ended            — call finished; cleared to idle on next call
- */
 export type CallManagerStatus =
   | 'idle'
   | 'ringing_incoming'
@@ -48,76 +32,170 @@ export type CallManagerStatus =
   | 'active'
   | 'ended';
 
-// ── Store interface ───────────────────────────────────────────────────────────
-
 interface CallManagerState {
-  incomingCall:    IncomingCallInfo | null;
-  outgoingCall:    OutgoingCallInfo | null;
-  callStatus:      CallManagerStatus;
-  /** Set when CallKit / Telecom fires the "answer" event. Used by useCallManager. */
-  answeredCallId:  string | null;
+  /** Single active call id — Firestore listener target in useCallManager. */
+  activeCallId: string | null;
+  incomingCall: IncomingCallInfo | null;
+  outgoingCall: OutgoingCallInfo | null;
+  callStatus: CallManagerStatus;
+  answeredCallId: string | null;
 
-  // ── Setters ─────────────────────────────────────────────────────────────────
+  setActiveCallId: (callId: string | null) => void;
+  syncFromCallDoc: (call: Call, selfUid: string) => void;
   setIncomingCall: (call: IncomingCallInfo | null) => void;
   setOutgoingCall: (call: OutgoingCallInfo | null) => void;
-  setCallStatus:   (status: CallManagerStatus) => void;
-  clearCall:       () => void;
-
-  // ── Internal callbacks invoked by CallService ────────────────────────────────
-  /** Called when the OS (CallKit / Telecom) reports the call was answered. */
-  onCallAnswered:  (callId: string) => void;
-  /** Called when the OS reports the call ended / was dismissed. */
-  onCallEnded:     (callId: string) => void;
+  setCallStatus: (status: CallManagerStatus) => void;
+  markCalleeAnswered: (callId: string) => void;
+  clearCall: () => void;
+  reset: () => void;
+  onCallAnswered: (callId: string) => void;
+  onCallEnded: (callId: string) => void;
 }
 
-// ── Store implementation ──────────────────────────────────────────────────────
+function mapCallToIncoming(call: Call): IncomingCallInfo {
+  return {
+    callId: call.id,
+    callerId: call.callerId,
+    callerName: call.callerName ?? 'Incoming call',
+    callerAvatar: call.callerAvatar,
+    callType: call.type === 'video' ? 'video' : 'audio',
+  };
+}
+
+function mapCallToOutgoing(call: Call, selfUid: string): OutgoingCallInfo {
+  const peerId = call.callerId === selfUid ? call.receiverId : call.callerId;
+  return {
+    callId: call.id,
+    calleeId: peerId,
+    calleeName: call.callerName ?? 'Contact',
+    calleeAvatar: call.callerAvatar,
+    callType: call.type === 'video' ? 'video' : 'audio',
+  };
+}
 
 export const useCallManagerStore = create<CallManagerState>((set, get) => ({
-  incomingCall:   null,
-  outgoingCall:   null,
-  callStatus:     'idle',
+  activeCallId: null,
+  incomingCall: null,
+  outgoingCall: null,
+  callStatus: 'idle',
   answeredCallId: null,
+
+  setActiveCallId: (callId) => set({ activeCallId: callId }),
+
+  syncFromCallDoc: (call, selfUid) => {
+    const isCallee = call.receiverId === selfUid || (call as Call & { calleeId?: string }).calleeId === selfUid;
+    const isCaller = call.callerId === selfUid;
+
+    if (call.status === 'ringing') {
+      const cur = get().callStatus;
+      if (
+        ['connecting', 'active'].includes(cur) ||
+        get().answeredCallId === call.id
+      ) {
+        if (__DEV__) {
+          console.warn('[CALL] syncFromCallDoc: skip ringing — already past ringing', {
+            callId: call.id,
+            cur,
+          });
+        }
+        return;
+      }
+      if (isCallee) {
+        set({
+          activeCallId: call.id,
+          incomingCall: mapCallToIncoming(call),
+          outgoingCall: null,
+          callStatus: 'ringing_incoming',
+        });
+      } else if (isCaller) {
+        set({
+          activeCallId: call.id,
+          outgoingCall: mapCallToOutgoing(call, selfUid),
+          incomingCall: null,
+          callStatus: 'ringing_outgoing',
+        });
+      }
+      return;
+    }
+
+    if (['accepted', 'answered', 'connecting', 'active'].includes(call.status)) {
+      const mgrStatus =
+        call.status === 'active' ? 'active' : call.status === 'answered' ? 'connecting' : call.status === 'accepted' ? 'connecting' : 'connecting';
+      set({
+        activeCallId: call.id,
+        callStatus: mgrStatus,
+        answeredCallId: call.id,
+      });
+      return;
+    }
+
+    const terminal = ['ended', 'missed', 'declined', 'rejected', 'busy', 'canceled', 'timeout'];
+    if (terminal.includes(call.status)) {
+      set({
+        activeCallId: null,
+        incomingCall: null,
+        outgoingCall: null,
+        callStatus: 'ended',
+        answeredCallId: null,
+      });
+    }
+  },
 
   setIncomingCall: (call) =>
     set({
       incomingCall: call,
-      callStatus:   call ? 'ringing_incoming' : 'idle',
+      activeCallId: call?.callId ?? get().activeCallId,
+      callStatus: call ? 'ringing_incoming' : 'idle',
     }),
 
   setOutgoingCall: (call) =>
     set({
       outgoingCall: call,
-      callStatus:   call ? 'ringing_outgoing' : 'idle',
+      activeCallId: call?.callId ?? get().activeCallId,
+      callStatus: call ? 'ringing_outgoing' : 'idle',
     }),
 
   setCallStatus: (status) => set({ callStatus: status }),
 
+  /** Callee pressed accept — block ringing UI until terminal. */
+  markCalleeAnswered: (callId) =>
+    set({
+      answeredCallId: callId,
+      callStatus: 'connecting',
+      incomingCall: null,
+    }),
+
   clearCall: () =>
     set({
-      incomingCall:   null,
-      outgoingCall:   null,
-      callStatus:     'idle',
+      incomingCall: null,
+      outgoingCall: null,
+      callStatus: 'idle',
+      answeredCallId: null,
+    }),
+
+  reset: () =>
+    set({
+      activeCallId: null,
+      incomingCall: null,
+      outgoingCall: null,
+      callStatus: 'idle',
       answeredCallId: null,
     }),
 
   onCallAnswered: (callId) => {
     const { incomingCall, outgoingCall } = get();
-    const relevant =
-      incomingCall?.callId === callId || outgoingCall?.callId === callId;
-    if (relevant) {
+    if (incomingCall?.callId === callId || outgoingCall?.callId === callId) {
       set({ callStatus: 'active', answeredCallId: callId });
     }
   },
 
   onCallEnded: (callId) => {
     const { incomingCall, outgoingCall } = get();
-    const relevant =
-      incomingCall?.callId === callId || outgoingCall?.callId === callId;
-    if (relevant) {
+    if (incomingCall?.callId === callId || outgoingCall?.callId === callId) {
       set({
-        incomingCall:   null,
-        outgoingCall:   null,
-        callStatus:     'ended',
+        incomingCall: null,
+        outgoingCall: null,
+        callStatus: 'ended',
         answeredCallId: null,
       });
     }

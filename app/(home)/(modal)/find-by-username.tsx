@@ -21,15 +21,31 @@ import Screen from '@/components/Screen';
 import UserCard from '@/components/UserCard';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
-import { useContactRecommendedUsers } from '@/lib/hooks/useContactRecommendedUsers';
+import {
+  prefetchRecommendedUsers,
+  useContactRecommendedUsers,
+} from '@/lib/hooks/useContactRecommendedUsers';
+import { searchLoadLog, searchLogDeviceContext } from '@/lib/debug/searchLoadingTrace';
+import {
+  endHangWatch,
+  logScreenLifecycle,
+  startHangWatch,
+  updateHangWatch,
+} from '@/lib/debug/runtimeDiagnostics';
+import { useContactsStore } from '@/store/contactsStore';
 import { getDeviceRegionCode } from '@/lib/phoneNormalize';
 import { getOrCreateDirectChat } from '@/lib/services/chatService';
 import { searchUsersByUsernameOrPhone } from '@/lib/services/userSearchService';
+import { getCachedSearch, setCachedSearch } from '@/lib/services/searchCache';
 import type { User } from '@/lib/types/chat';
+import { buildDisplayName } from '@/lib/unicodeText';
 
-const DEBOUNCE_MS = 400;
+const DEBOUNCE_MS = 300;
+const SEARCH_BUSY_TIMEOUT_MS = 10_000;
 
 function UserSearchScreen() {
+  const mountedAtRef = useRef(Date.now());
+  const firstRenderLoggedRef = useRef(false);
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { colorScheme } = useTheme();
@@ -58,7 +74,38 @@ function UserSearchScreen() {
 
   const searchSeq = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    logScreenLifecycle('Search', 'MOUNT', {
+      mountTimeMs: mountedAtRef.current,
+      authUid: user?.uid ?? null,
+      region,
+    });
+    searchLoadLog('SEARCH_SCREEN_MOUNT');
+    searchLoadLog('SEARCH_INITIALIZATION_START', { hasUid: !!user?.uid });
+    searchLogDeviceContext();
+    prefetchRecommendedUsers(user?.uid, user?.phoneNumber ?? undefined);
+    void useContactsStore.getState().hydrateFromStorage().then(() => {
+      searchLoadLog('SEARCH_INITIALIZATION_SUCCESS', { phase: 'contacts_hydrate' });
+    }).catch((e) => {
+      searchLoadLog('SEARCH_INITIALIZATION_FAILED', {
+        phase: 'contacts_hydrate',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    });
+  }, [user?.phoneNumber, user?.uid]);
+
+  useEffect(() => {
+    if (firstRenderLoggedRef.current) return;
+    firstRenderLoggedRef.current = true;
+    logScreenLifecycle('Search', 'FIRST_RENDER', {
+      elapsedSinceMountMs: Date.now() - mountedAtRef.current,
+      authUid: user?.uid ?? null,
+      region,
+    });
+  }, [region, user?.uid]);
 
   useFocusEffect(
     useCallback(() => {
@@ -84,7 +131,20 @@ function UserSearchScreen() {
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (searchBusyTimeoutRef.current) clearTimeout(searchBusyTimeoutRef.current);
     };
+  }, []);
+
+  const clearSearchBusy = useCallback((reason: string) => {
+    if (searchBusyTimeoutRef.current) {
+      clearTimeout(searchBusyTimeoutRef.current);
+      searchBusyTimeoutRef.current = null;
+    }
+    setSearchBusy((prev) => {
+      if (!prev) return prev;
+      searchLoadLog('LOADING_END', { source: 'query', reason });
+      return false;
+    });
   }, []);
 
   useEffect(() => {
@@ -108,16 +168,61 @@ function UserSearchScreen() {
 
   const runQuery = useCallback(
     async (text: string) => {
+      const prevSeq = searchSeq.current;
       const seq = ++searchSeq.current;
+      if (prevSeq > 0) {
+        searchLoadLog('SEARCH_CANCEL_PREVIOUS', { cancelledSeq: prevSeq, nextSeq: seq });
+      }
       const trimmed = text.trim();
       if (!trimmed) {
         setSearchHits([]);
-        setSearchBusy(false);
+        clearSearchBusy('empty_query');
         setSearchTouched(false);
         return;
       }
+      if (!user?.uid) {
+        searchLoadLog('SEARCH_QUERY_ERROR', { reason: 'auth_not_ready', q: trimmed.slice(0, 32) });
+        logScreenLifecycle('Search', 'QUERY_BLOCKED', {
+          reason: 'auth_not_ready',
+          q: trimmed.slice(0, 32),
+        });
+        setSearchHits([]);
+        clearSearchBusy('auth_not_ready');
+        setSearchTouched(true);
+        return;
+      }
+      const queryStartedAt = Date.now();
       setSearchBusy(true);
+      startHangWatch('search.query', 'Search', {
+        lastSuccessfulEvent: 'query_started',
+        timeoutMs: 8_000,
+      });
+      logScreenLifecycle('Search', 'QUERY_START', {
+        seq,
+        q: trimmed.slice(0, 32),
+        authUid: user.uid,
+        region,
+      });
+      searchLoadLog('LOADING_START', { source: 'query' });
+      searchLoadLog('SEARCH_START', { q: trimmed.slice(0, 32) });
+      searchLoadLog('SEARCH_QUERY', { q: trimmed.slice(0, 32) });
       setSearchTouched(true);
+      if (searchBusyTimeoutRef.current) clearTimeout(searchBusyTimeoutRef.current);
+      searchBusyTimeoutRef.current = setTimeout(() => {
+        if (seq === searchSeq.current) {
+          searchLoadLog('SEARCH_TIMEOUT_10S', { ms: SEARCH_BUSY_TIMEOUT_MS });
+          updateHangWatch('search.query', { lastFailedEvent: 'search_timeout_10s' });
+          clearSearchBusy('timeout_10s');
+        }
+      }, SEARCH_BUSY_TIMEOUT_MS);
+
+      const cached = await getCachedSearch(trimmed, region);
+      if (cached && seq === searchSeq.current) {
+        setSearchHits(cached.filter((u) => u.uid !== user?.uid));
+        searchLoadLog('SEARCH_CACHE_SWR', { count: cached.length });
+      }
+
+      let resultCount = cached?.length ?? 0;
       try {
         const rows = await searchUsersByUsernameOrPhone(trimmed, user?.uid, region);
         if (seq !== searchSeq.current) return;
@@ -125,15 +230,50 @@ function UserSearchScreen() {
         for (const u of rows) {
           if (u.uid !== user?.uid) map.set(u.uid, u);
         }
-        setSearchHits([...map.values()]);
-      } catch {
-        if (seq === searchSeq.current) setSearchHits([]);
+        const hits = [...map.values()];
+        resultCount = hits.length;
+        setSearchHits(hits);
+        void setCachedSearch(trimmed, region, hits);
+        updateHangWatch('search.query', {
+          lastSuccessfulEvent: `query_result:${resultCount}`,
+        });
+        logScreenLifecycle('Search', 'QUERY_RESULT', {
+          seq,
+          count: resultCount,
+          elapsedMs: Date.now() - queryStartedAt,
+        });
+        searchLoadLog('SEARCH_RESULT_COUNT', { count: resultCount });
+      } catch (e) {
+        if (seq === searchSeq.current) {
+          setSearchHits([]);
+          updateHangWatch('search.query', {
+            lastFailedEvent: e instanceof Error ? e.message : String(e),
+          });
+          logScreenLifecycle('Search', 'QUERY_ERROR', {
+            seq,
+            elapsedMs: Date.now() - queryStartedAt,
+            message: e instanceof Error ? e.message : String(e),
+          });
+          searchLoadLog('SEARCH_ERROR', {
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
       } finally {
-        if (seq === searchSeq.current) setSearchBusy(false);
+        if (seq === searchSeq.current) {
+          searchLoadLog('SEARCH_COMPLETE', { hits: resultCount });
+          clearSearchBusy('query_done');
+          endHangWatch('search.query', 'query_done');
+        }
       }
     },
-    [region, user?.uid]
+    [clearSearchBusy, region, user?.uid]
   );
+
+  useEffect(() => {
+    const seed = typeof initialQuery === 'string' ? initialQuery.trim() : '';
+    if (!seed) return;
+    void runQuery(seed);
+  }, [initialQuery, runQuery]);
 
   const onChangeQuery = useCallback(
     (text: string) => {
@@ -141,7 +281,7 @@ function UserSearchScreen() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (!text.trim()) {
         setSearchHits([]);
-        setSearchBusy(false);
+        clearSearchBusy('cleared');
         setSearchTouched(false);
         return;
       }
@@ -150,7 +290,7 @@ function UserSearchScreen() {
         runQuery(text);
       }, DEBOUNCE_MS);
     },
-    [runQuery]
+    [clearSearchBusy, runQuery]
   );
 
   const goBack = useCallback(() => {
@@ -212,9 +352,12 @@ function UserSearchScreen() {
       <UserCard
         user={{
           id: item.uid,
-          name: `${item.firstName} ${item.lastName}`.trim() || item.username,
+          name: buildDisplayName(item.firstName, item.lastName, item.username),
           username: item.username,
           image: item.avatar,
+          phoneNumber: item.phoneNumber,
+          firstName: item.firstName,
+          lastName: item.lastName,
         }}
         onPress={() => onSelectUser(item.uid)}
       />

@@ -5,18 +5,11 @@ import { Auth, getAuth, initializeAuth } from 'firebase/auth';
 import { FirebaseStorage, getStorage } from 'firebase/storage';
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from 'firebase/functions';
 import { Firestore, initializeFirestore, persistentLocalCache, getFirestore } from 'firebase/firestore';
+import { prodDebug, prodDebugError } from '@/lib/debug/prodDebug';
+import { markFirebaseInit } from '@/lib/debug/runtimeDiagnostics';
+import { firebasePublicConfig } from '@/lib/firebasePublicConfig';
 
-// Firebase configuration
-// TODO: Replace these values with your new Firebase project configuration
-// Get these from: Firebase Console > Project Settings > General > Your apps > Web app
-const firebaseConfig = {
-  apiKey: "AIzaSyCn7SzfpJ2BOTmmKmoxWR0fNBnHG6Xw0Pw",
-  authDomain: "gyw1-146d7.firebaseapp.com",
-  projectId: "gyw1-146d7",
-  storageBucket: "gyw1-146d7.firebasestorage.app",
-  messagingSenderId: "1039699232254",
-  appId: "1:1039699232254:web:65f4b901c63fc347786caf"
-};
+const firebaseConfig = firebasePublicConfig;
 
 // Validate Firebase config
 if (!firebaseConfig.apiKey || !firebaseConfig.projectId || firebaseConfig.apiKey === "YOUR_API_KEY_HERE") {
@@ -26,10 +19,38 @@ if (!firebaseConfig.apiKey || !firebaseConfig.projectId || firebaseConfig.apiKey
 
 // Initialize Firebase
 let app: FirebaseApp;
+markFirebaseInit('APP_INIT_START', {
+  appName: '[DEFAULT]',
+  projectId: firebaseConfig.projectId,
+  platform: Platform.OS,
+});
 if (getApps().length === 0) {
   app = initializeApp(firebaseConfig);
+  markFirebaseInit('APP_INIT_COMPLETE', {
+    appName: app.name,
+    projectId: app.options.projectId ?? null,
+    appId: app.options.appId ?? null,
+  });
+  prodDebug('FIREBASE_WEB_INIT', {
+    projectId: firebaseConfig.projectId,
+    authDomain: firebaseConfig.authDomain,
+    storageBucket: firebaseConfig.storageBucket,
+    messagingSenderId: firebaseConfig.messagingSenderId,
+    appId: firebaseConfig.appId,
+  });
 } else {
   app = getApps()[0];
+  markFirebaseInit('APP_REUSE', {
+    appName: app.name,
+    appCount: getApps().length,
+    projectId: app.options.projectId ?? null,
+    appId: app.options.appId ?? null,
+  });
+  prodDebug('FIREBASE_WEB_REUSE', {
+    appCount: getApps().length,
+    projectId: app.options.projectId ?? null,
+    appId: app.options.appId ?? null,
+  });
 }
 
 // Initialize Auth with AsyncStorage persistence
@@ -43,14 +64,18 @@ try {
   auth = initializeAuth(app, {
     persistence: authModule.getReactNativePersistence(AsyncStorage),
   });
+  markFirebaseInit('AUTH_INIT_COMPLETE', { provider: 'web', appName: app.name });
 } catch (error: any) {
   // If auth is already initialized, get the existing instance
   if (error.code === 'auth/already-initialized') {
     auth = getAuth(app);
+    markFirebaseInit('AUTH_INIT_COMPLETE', { provider: 'web_reuse', appName: app.name });
   } else {
+    prodDebugError('FIREBASE_AUTH_INIT_FAILED', error);
     // Fallback: use getAuth (will show warning but still works)
     console.warn('Could not initialize Auth with persistence:', error.message);
     auth = getAuth(app);
+    markFirebaseInit('AUTH_INIT_COMPLETE', { provider: 'web_fallback', appName: app.name });
   }
 }
 
@@ -63,13 +88,18 @@ try {
   db = initializeFirestore(app, {
     localCache: persistentLocalCache(),
   });
+  prodDebug('FIRESTORE_WEB_INIT', { localCache: 'persistentLocalCache' });
+  markFirebaseInit('FIRESTORE_INIT_COMPLETE', { provider: 'web', appName: app.name });
 } catch {
   // initializeFirestore throws if already initialized (e.g. hot reload); fall back gracefully.
   db = getFirestore(app);
+  prodDebug('FIRESTORE_WEB_REUSE');
+  markFirebaseInit('FIRESTORE_INIT_COMPLETE', { provider: 'web_reuse', appName: app.name });
 }
 
 // Initialize Storage
 const storage: FirebaseStorage = getStorage(app);
+markFirebaseInit('STORAGE_INIT_COMPLETE', { provider: 'web', appName: app.name });
 
 // Initialize Functions (for callable, e.g. random matchmaking)
 // On native: use RN Firebase (same app as Auth) via rnFirebase
@@ -78,11 +108,17 @@ if (Platform.OS !== 'web') {
   try {
     const { getRnFunctions } = require('@/lib/rnFirebase');
     functions = getRnFunctions();
+    prodDebug('FUNCTIONS_INIT', { provider: 'native', region: 'us-central1', available: !!functions });
+    markFirebaseInit('FUNCTIONS_INIT_COMPLETE', { provider: 'native', region: 'us-central1', available: !!functions });
   } catch {
     functions = getFunctions(app);
+    prodDebug('FUNCTIONS_INIT', { provider: 'web_fallback', region: 'default' });
+    markFirebaseInit('FUNCTIONS_INIT_COMPLETE', { provider: 'web_fallback', region: 'default' });
   }
 } else {
   functions = getFunctions(app);
+  prodDebug('FUNCTIONS_INIT', { provider: 'web', region: 'default' });
+  markFirebaseInit('FUNCTIONS_INIT_COMPLETE', { provider: 'web', region: 'default' });
 }
 
 // Web SDK httpsCallable expects web Functions instance; RN Firebase Functions has different structure.
@@ -97,6 +133,16 @@ const httpsCallableImpl =
         }
       })()
     : httpsCallable;
+
+markFirebaseInit('FIREBASE_READY', {
+  provider: Platform.OS === 'web' ? 'web' : 'web_fallback',
+  appName: app.name,
+  platform: Platform.OS,
+  hasAuth: !!auth,
+  hasFirestore: !!db,
+  hasFunctions: !!functions,
+  hasStorage: !!storage,
+});
 
 export { app, auth, db, storage, functions, connectFunctionsEmulator };
 export { httpsCallableImpl as httpsCallable };

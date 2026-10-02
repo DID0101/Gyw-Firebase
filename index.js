@@ -1,10 +1,38 @@
+try {
+  const { markAppStart, installAppStartGlobalHandlers } = require('./lib/debug/appStartupMarkers');
+  markAppStart(1, { source: 'index.js:top' });
+  installAppStartGlobalHandlers();
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.error('APP_START_1_FAILED', e);
+}
+
+try {
+  const { logStartupStep, installReleaseGlobalHandlers } = require('./lib/debug/releaseStartupTrace');
+  logStartupStep('STEP_1_APP_LAUNCHED', { source: 'index.js:top' });
+  installReleaseGlobalHandlers();
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.error('[GYW_STARTUP][STEP_1_APP_LAUNCHED_FAIL]', e);
+}
+
+try {
+  const { initSentry } = require('./lib/reliability/SentryManager');
+  initSentry();
+} catch (e) {
+  try {
+    const { logStartupFail } = require('./lib/debug/releaseStartupTrace');
+    logStartupFail('STEP_1_APP_LAUNCHED', e, { source: 'initSentry' });
+  } catch (_) {}
+}
+
 require('./lib/appInit');
 
 // ── Background FCM handler ────────────────────────────────────────────────────
 // Must be registered at module level — before any React component renders —
 // so React Native Firebase fires it when the app is in the background or killed.
-// This handles INCOMING_CALL / CALL_CANCELLED FCM data messages on both platforms.
-require('./lib/services/NotificationService').setupBackgroundHandler();
+const { registerBackgroundMessaging } = require('./lib/registerBackgroundMessaging');
+registerBackgroundMessaging();
 
 // ── Android: HeadlessCallTask JS handler ─────────────────────────────────────
 // Registered BEFORE expo-router/entry so it is available the moment the
@@ -20,6 +48,10 @@ require('./lib/services/NotificationService').setupBackgroundHandler();
 //   • Firestore writes, AsyncStorage updates, and local cache are all safe.
 import { AppRegistry } from 'react-native';
 
+/** Debounce duplicate notification Accept/Decline headless dispatches (same callId + status). */
+const recentTerminalHeadless = new Map();
+const TERMINAL_HEADLESS_DEBOUNCE_MS = 3000;
+
 AppRegistry.registerHeadlessTask(
   'GywCallHeadlessTask',
   () => async (taskData) => {
@@ -30,12 +62,47 @@ AppRegistry.registerHeadlessTask(
     // Must not depend on the RN CallScreen being mounted.
     if (type === 'CALL_ACCEPTED' || type === 'CALL_DECLINED') {
       if (!callId) return;
-      const { updateCallStatus } = require('./lib/services/callService');
+      const { updateCallStatus, getCall } = require('./lib/services/callService');
+      const { auth } = require('./lib/firebase');
+      const { getLastKnownAuthUidAsync } = require('./lib/authLastKnownUid');
       const nextStatus = type === 'CALL_ACCEPTED' ? 'accepted' : 'declined';
+      let uid = auth?.currentUser?.uid;
+      if (!uid) uid = await getLastKnownAuthUidAsync();
+
+      const terminalKey = `${callId}:${nextStatus}`;
+      const now = Date.now();
+      const lastTerminal = recentTerminalHeadless.get(terminalKey);
+      if (lastTerminal && now - lastTerminal < TERMINAL_HEADLESS_DEBOUNCE_MS) {
+        console.log(
+          `SMALL_UI_HEADLESS skip duplicate type=${type} callId=${callId} nextStatus=${nextStatus}`,
+        );
+        return;
+      }
+      recentTerminalHeadless.set(terminalKey, now);
+
+      const callDoc = await getCall(callId);
+      const calleeId = callDoc?.receiverId ?? callDoc?.calleeId;
+      if (!callDoc || !calleeId || !uid || uid !== calleeId) {
+        console.log(
+          `SMALL_UI_HEADLESS skip not-callee type=${type} callId=${callId} uid=${uid ?? 'null'} calleeId=${calleeId ?? 'null'}`,
+        );
+        return;
+      }
 
       console.log(
         `SMALL_UI_HEADLESS terminalAction type=${type} callId=${callId} nextStatus=${nextStatus}`,
       );
+      // #region agent log
+      try {
+        const { debugSessionLog } = require('./lib/debugSessionLog');
+        debugSessionLog(
+          'index.js:headless',
+          'terminal_headless_action',
+          { type, callId, nextStatus, uid: uid ?? null, taskCallerId: taskData?.callerId ?? null },
+          type === 'CALL_DECLINED' ? 'A' : 'C',
+        );
+      } catch (_) {}
+      // #endregion
 
       await updateCallStatus(callId, nextStatus);
 
@@ -56,7 +123,7 @@ AppRegistry.registerHeadlessTask(
 
       const { auth } = require('./lib/firebase');
       const { getLastKnownAuthUidAsync } = require('./lib/authLastKnownUid');
-      const { getUser, sendMessage, markMessagesAsRead } = require('./lib/services/chatService');
+      const { getUser, sendMessage } = require('./lib/services/chatService');
 
       let uid = auth?.currentUser?.uid;
       if (!uid) uid = await getLastKnownAuthUidAsync();
@@ -75,7 +142,13 @@ AppRegistry.registerHeadlessTask(
       const messageId = await sendMessage(chatId, uid, senderName, senderAvatar, replyText);
       console.log(`MSG_SEND_SUCCESS messageId=${messageId}`);
 
-      await markMessagesAsRead(chatId, uid);
+      const { syncChatReadState } = require('./lib/services/readStateService');
+      await syncChatReadState({
+        chatId,
+        userId: uid,
+        clearNotification: false,
+        source: 'notification_action',
+      });
       console.log(`MSG_NOTIFY_UPDATED chatId=${chatId}`);
       return;
     }
@@ -86,7 +159,7 @@ AppRegistry.registerHeadlessTask(
 
       const { auth } = require('./lib/firebase');
       const { getLastKnownAuthUidAsync } = require('./lib/authLastKnownUid');
-      const { markMessagesAsRead } = require('./lib/services/chatService');
+      const { syncChatReadState } = require('./lib/services/readStateService');
 
       let uid = auth?.currentUser?.uid;
       if (!uid) uid = await getLastKnownAuthUidAsync();
@@ -95,7 +168,12 @@ AppRegistry.registerHeadlessTask(
         return;
       }
 
-      await markMessagesAsRead(chatId, uid);
+      await syncChatReadState({
+        chatId,
+        userId: uid,
+        clearNotification: false,
+        source: 'notification_action',
+      });
       console.log(`MSG_READ_SUCCESS chatId=${chatId}`);
       console.log(`MSG_NOTIFY_UPDATED chatId=${chatId}`);
       return;
@@ -103,9 +181,41 @@ AppRegistry.registerHeadlessTask(
 
     if (type === 'INCOMING_CALL' || type === 'call' || type === 'incoming_call') {
       if (!callId) return;
+      const { auth: headlessAuth } = require('./lib/firebase');
+      const { getLastKnownAuthUidAsync: getHeadlessUid } = require('./lib/authLastKnownUid');
+      const taskCallerId = taskData?.callerId ?? taskData?.caller_id ?? '';
+      let selfUid = headlessAuth?.currentUser?.uid;
+      if (!selfUid) selfUid = await getHeadlessUid();
+      if (selfUid && taskCallerId && selfUid === taskCallerId) {
+        console.log(
+          `INCOMING_TRIGGER skip self-caller source=js_headless_task callId=${callId}`,
+        );
+        return;
+      }
       if (__DEV__) {
         console.log(`INCOMING_TRIGGER source=js_headless_task callId=${callId} ts=${Date.now()}`);
       }
+      // #region agent log
+      try {
+        const { auth } = require('./lib/firebase');
+        const { getLastKnownAuthUidAsync } = require('./lib/authLastKnownUid');
+        const { debugSessionLog } = require('./lib/debugSessionLog');
+        let uid = auth?.currentUser?.uid;
+        if (!uid) uid = await getLastKnownAuthUidAsync();
+        debugSessionLog(
+          'index.js:headless',
+          'incoming_headless',
+          {
+            callId,
+            callType: taskData?.callType ?? null,
+            callerId: taskData?.callerId ?? null,
+            selfUid: uid ?? null,
+            isSelfCaller: uid && taskData?.callerId ? uid === taskData.callerId : null,
+          },
+          'A',
+        );
+      } catch (_) {}
+      // #endregion
       // Cache the incoming call data so the JS call screen can hydrate
       // without waiting for a Firestore round-trip.
       try {

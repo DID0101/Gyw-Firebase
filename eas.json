@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 16.6.2",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -9,22 +9,51 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "local"
+      },
+      "env": {
+        "EAS_SKIP_AUTO_FINGERPRINT": "1",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "NODE_OPTIONS": "--max-old-space-size=4096"
+      },
+      "node": "20.19.0"
     },
     "production": {
-      "autoIncrement": true,
+      "autoIncrement": false,
       "android": {
         "buildType": "app-bundle",
+        "credentialsSource": "remote",
         "buildArtifactPaths": ["android/app/build/outputs/mapping/release/mapping.txt"]
       },
       "env": {
         "EAS_SKIP_AUTO_FINGERPRINT": "1",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "NODE_OPTIONS": "--max-old-space-size=4096"
       },
       "node": "20.19.0"
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "track": "production",
+        "releaseStatus": "completed"
+      }
+    },
+    "internal": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
+      }
+    },
+    "closed": {
+      "android": {
+        "track": "alpha",
+        "releaseStatus": "completed"
+      }
+    }
   }
 }

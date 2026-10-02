@@ -1,134 +1,119 @@
 /**
  * lib/hooks/useCallManager.ts
  *
- * React hook that owns the full call lifecycle:
- *   • Initialises callkeep (RNCallKeep) and NotificationService when the
- *     authenticated user is present.
- *   • Navigates to the correct call screen when an incoming call arrives.
- *   • Exposes imperative actions (answerCall, rejectCall, endCall) that
- *     update Firestore and dismiss the native call UI atomically.
- *
- * Place this hook in a single top-level component — HomeLayout or AppContent —
- * so it is mounted for the lifetime of the authenticated session.
- *
- * @example
- * ```tsx
- * // app/(home)/_layout.tsx
- * const { incomingCall } = useCallManager();
- * ```
- *
- * @module useCallManager
+ * Single Firestore listener for the active call doc. FCM only wakes native UI.
+ * Firestore status is authoritative; Zustand mirrors it.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { hasNativeFirestore } from '@/lib/firestoreNative';
+import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
 import {
   setupCallKeep,
   teardownCallKeep,
-  displayIncomingCall,
+  ensureCallKeepNativeReady,
   answerIncomingCall,
-  rejectCall as callKeepReject,
-  endCall as callKeepEnd,
   endAllCalls as callKeepEndAll,
 } from '@/lib/callkeep';
 import { setupForegroundHandler } from '@/lib/services/NotificationService';
 import {
-  useCallManagerStore,
-  type CallManagerStatus,
-  type IncomingCallInfo,
-  type OutgoingCallInfo,
-} from '@/store/callManagerStore';
+  endCallSession,
+  getCall,
+  subscribeToCall,
+  updateCallStatus,
+} from '@/lib/services/callService';
+import {
+  acceptFlowLogCalleeSnapshot,
+  acceptFlowLogCallerSnapshot,
+} from '@/lib/call/acceptFlowTrace';
+import { logCallDismissingIncoming, logCallStatusChanged } from '@/lib/call/callDevLog';
+import { handleAnswerCallNavigation } from '@/lib/call/handleAnswerCallNavigation';
+import {
+  clearIncomingNavigationLock,
+  openIncomingCallScreen,
+} from '@/lib/call/openIncomingCall';
+import {
+  isCallAcceptedLocally,
+  markCallAccepted,
+  markCallDismissed,
+  releaseIncomingCall,
+  tryAcquireIncomingCall,
+} from '@/lib/call/incomingCallGuard';
+import { logIncomingUiBlocked } from '@/lib/call/incomingUiTrace';
+import { db } from '@/lib/firebase';
+import { useCallManagerStore } from '@/store/callManagerStore';
+import { callDocToIncomingStore, useCallStore } from '@/store/callStore';
 import { useCallSessionStore } from '@/store/callSessionStore';
-import { updateCallStatus } from '@/lib/services/callService';
-import { releaseIncomingCall } from '@/lib/call/incomingCallGuard';
+import type { Call } from '@/lib/types/call';
 
-/** Imperative API for screens that must not mount a second `useCallManager` (e.g. incoming). */
 export const callManagerActionsRef = {
   answerCall: async (_callId?: string) => {},
   rejectCall: async (_callId?: string) => {},
   endCall: async (_callId?: string) => {},
 };
 
-// ── Public return type ────────────────────────────────────────────────────────
-
 export interface UseCallManagerReturn {
-  /** Non-null while an incoming call is ringing. */
-  incomingCall:  IncomingCallInfo | null;
-  /** Non-null while an outgoing call is dialling. */
-  outgoingCall:  OutgoingCallInfo | null;
-  /** Current call lifecycle phase. */
-  callStatus:    CallManagerStatus;
-  /**
-   * Accept the current incoming call.
-   * Navigates to the call screen, tells CallKit the call was answered, and
-   * clears the incoming-call state.
-   *
-   * @param callId - Override the call id (defaults to incomingCall.callId).
-   */
-  answerCall:    (callId?: string) => Promise<void>;
-  /**
-   * Reject the current incoming call without answering.
-   * Updates Firestore status to 'rejected' and dismisses the native UI.
-   *
-   * @param callId - Override the call id.
-   */
-  rejectCall:    (callId?: string) => Promise<void>;
-  /**
-   * End an active or pending call.
-   * Updates Firestore status to 'ended' and dismisses the native UI.
-   *
-   * @param callId - Override the call id.
-   */
-  endCall:       (callId?: string) => Promise<void>;
+  incomingCall: ReturnType<typeof useCallManagerStore.getState>['incomingCall'];
+  outgoingCall: ReturnType<typeof useCallManagerStore.getState>['outgoingCall'];
+  callStatus: ReturnType<typeof useCallManagerStore.getState>['callStatus'];
+  answerCall: (callId?: string) => Promise<void>;
+  rejectCall: (callId?: string) => Promise<void>;
+  endCall: (callId?: string) => Promise<void>;
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────────────
+const TERMINAL = new Set([
+  'ended',
+  'missed',
+  'declined',
+  'rejected',
+  'busy',
+  'canceled',
+  'cancelled',
+  'timeout',
+]);
 
-/**
- * Mount once in the authenticated layout. Manages the full call lifecycle.
- */
 export function useCallManager(): UseCallManagerReturn {
-  const { user }  = useAuth();
-  const router    = useRouter();
+  const { user } = useAuth();
+  const router = useRouter();
 
-  // ── Zustand selectors ──────────────────────────────────────────────────────
-  const incomingCall   = useCallManagerStore((s) => s.incomingCall);
-  const outgoingCall   = useCallManagerStore((s) => s.outgoingCall);
-  const callStatus     = useCallManagerStore((s) => s.callStatus);
-  const answeredCallId = useCallManagerStore((s) => s.answeredCallId);
-  const clearCall      = useCallManagerStore((s) => s.clearCall);
+  const incomingCall = useCallManagerStore((s) => s.incomingCall);
+  const outgoingCall = useCallManagerStore((s) => s.outgoingCall);
+  const callStatus = useCallManagerStore((s) => s.callStatus);
+  const activeCallId = useCallManagerStore((s) => s.activeCallId);
 
-  // Refs so callbacks closed over them always see the latest values.
-  const incomingRef = useRef(incomingCall);
-  const outgoingRef = useRef(outgoingCall);
+  const lastHandledStatus = useRef<string | null>(null);
+  const previousStatus = useRef<string | null>(null);
+  const selfUidRef = useRef<string | null>(null);
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  useEffect(() => {
+    selfUidRef.current = user?.uid ?? null;
+  }, [user?.uid]);
 
-  useEffect(() => { incomingRef.current = incomingCall; }, [incomingCall]);
-  useEffect(() => { outgoingRef.current = outgoingCall; }, [outgoingCall]);
-
-  // ── callkeep + FCM foreground setup ───────────────────────────────────────
-  //
-  // Only on native; idempotent.  Tears down when user signs out.
-
+  // ── CallKeep + foreground FCM (wake-only) ─────────────────────────────────
   useEffect(() => {
     if (!user?.uid || Platform.OS === 'web') return;
 
     void setupCallKeep(
       router,
-      // onAnswerCall — CallKit / Telecom answered → navigate to call screen
       (callId) => {
+        useCallManagerStore.getState().setActiveCallId(callId);
         if (useCallSessionStore.getState().shouldNavigateToIncomingCall(callId)) {
-          router.push(`/(home)/call/${callId}?accept=1` as any);
+          router.replace(`/(home)/call/${callId}?accept=1` as any);
         }
       },
-      // onEndCall — CallKit / Telecom ended → clear store
-      () => { clearCall(); },
+      () => {
+        const id = useCallManagerStore.getState().activeCallId;
+        if (id) void endCallSession(id, 'ended');
+      },
     );
 
     const unsubForeground = setupForegroundHandler();
-
     return () => {
       unsubForeground();
       teardownCallKeep();
@@ -136,10 +121,8 @@ export function useCallManager(): UseCallManagerReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid]);
 
-  // Android 13+: POST_NOTIFICATIONS is required for incoming-call heads-up + full-screen UI.
   useEffect(() => {
     if (!user?.uid || Platform.OS !== 'android') return;
-
     void (async () => {
       try {
         if (typeof Platform.Version === 'number' && Platform.Version >= 33) {
@@ -154,102 +137,236 @@ export function useCallManager(): UseCallManagerReturn {
     })();
   }, [user?.uid]);
 
-  // ── Navigate when a new incoming call arrives ─────────────────────────────
-
   useEffect(() => {
-    if (!incomingCall) return;
+    lastHandledStatus.current = null;
+    previousStatus.current = null;
+  }, [activeCallId]);
 
-    const { callId, callerName, callType } = incomingCall;
+  // ── Discover ringing calls for callee (sets activeCallId only — no navigation) ─
+  useEffect(() => {
+    if (!user?.uid) return;
 
-    if (!useCallSessionStore.getState().shouldNavigateToIncomingCall(callId)) return;
+    const uid = user.uid;
+    const onDiscovered = (callId: string) => {
+      void (async () => {
+        const call = await getCall(callId);
+        if (!call || call.callerId === uid) {
+          if (__DEV__ && call?.callerId === uid) {
+            console.log('[CALL] discovery skip — own outgoing call', { callId });
+          }
+          return;
+        }
+        if (isCallAcceptedLocally(callId)) {
+          logIncomingUiBlocked('firestore_discovery', callId, 'accepted_locally');
+          return;
+        }
+        if (!tryAcquireIncomingCall(callId, 'firestore_discovery')) return;
+        useCallManagerStore.getState().setActiveCallId(callId);
+      })();
+    };
 
-    if (Platform.OS === 'android') {
-      // Android: ringing UI is native (FCM → GywIncomingCallService → IncomingCallActivity).
-      // Do not router.push to /call/[id] here — that mounts WebRTC CallScreen while Telecom
-      // + native incoming UI are active, which can crash or confuse lifecycle; accept uses gyw://.
-      return;
-    }
-    if (Platform.OS === 'ios') {
-      // iOS: CallKit shows system UI when app is in background/killed.
-      // When app is foregrounded by the user, show our in-app screen.
-      displayIncomingCall(callId, callerName, callType);
+    if (Platform.OS !== 'web' && hasNativeFirestore && hasRnFirebase) {
+      let rnFirestoreMod: typeof import('@react-native-firebase/firestore') | null = null;
       try {
-        router.push({
-          pathname: '/(home)/call/incoming' as any,
-          params: {
-            callId,
-            callerName,
-            callerAvatar: incomingCall.callerAvatar ?? '',
-            callType,
-          },
-        });
-      } catch (_) {}
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingCall?.callId]);
+        rnFirestoreMod = require('@react-native-firebase/firestore');
+      } catch {
+        return;
+      }
+      if (!rnFirestoreMod) return;
 
-  // ── answerCall ────────────────────────────────────────────────────────────
+      const rnDb = getRnFirestore();
+      const callsRef = rnFirestoreMod.collection(rnDb, 'calls');
+      const q = rnFirestoreMod.query(
+        callsRef,
+        rnFirestoreMod.where('calleeId', '==', uid),
+        rnFirestoreMod.where('status', '==', 'ringing'),
+      );
+      return rnFirestoreMod.onSnapshot(
+        q,
+        { includeMetadataChanges: false },
+        (snap: { docChanges: () => { type: string; doc: { id: string } }[] }) => {
+          snap.docChanges().forEach((change) => {
+            if (change.type === 'added') onDiscovered(change.doc.id);
+          });
+        }
+      );
+    }
+
+    const q = query(
+      collection(db, 'calls'),
+      where('calleeId', '==', uid),
+      where('status', '==', 'ringing'),
+    );
+
+    return onSnapshot(
+      q,
+      { includeMetadataChanges: false },
+      (snap) => {
+        snap.docChanges().forEach((change) => {
+          if (change.type === 'added') onDiscovered(change.doc.id);
+        });
+      }
+    );
+  }, [user?.uid]);
+
+  // ── Authoritative listener: calls/{activeCallId} ─────────────────────────
+  // Do NOT depend on `router` — navigation changes would reset lastHandledStatus and re-open ringing UI.
+  useEffect(() => {
+    if (!user?.uid || !activeCallId) return;
+
+    const pendingTimers: ReturnType<typeof setTimeout>[] = [];
+    const unsub = subscribeToCall(activeCallId, (call) => {
+      if (!call) {
+        pendingTimers.push(
+          setTimeout(() => {
+            useCallStore.getState().clearActiveCall();
+            useCallManagerStore.getState().reset();
+            useCallStore.getState().clearIncomingCall();
+            clearIncomingNavigationLock(activeCallId);
+          }, 300)
+        );
+        return;
+      }
+
+      useCallStore.getState().setCallData(call);
+      useCallManagerStore.getState().syncFromCallDoc(call, user.uid);
+
+      const status = call.status;
+      const priorStatus = previousStatus.current;
+      if (previousStatus.current !== status) {
+        logCallStatusChanged(call.id, previousStatus.current ?? undefined, status);
+        previousStatus.current = status;
+      }
+      if (status === lastHandledStatus.current) return;
+      lastHandledStatus.current = status;
+
+      const selfUid = selfUidRef.current;
+      if (!selfUid) return;
+
+      const isCallee =
+        call.receiverId === selfUid ||
+        (call as Call & { calleeId?: string }).calleeId === selfUid;
+      const isCaller = call.callerId === selfUid;
+
+      if (isCaller) {
+        acceptFlowLogCallerSnapshot(call.id, status, { source: 'useCallManager' });
+      } else if (isCallee) {
+        acceptFlowLogCalleeSnapshot(call.id, status, { source: 'useCallManager' });
+      }
+
+      if (status === 'ringing' && isCallee) {
+        if (isCallAcceptedLocally(call.id)) {
+          logIncomingUiBlocked('firestore_active_listener', call.id, 'accepted_locally', {
+            status,
+          });
+          return;
+        }
+        const mgrStatus = useCallManagerStore.getState().callStatus;
+        if (
+          ['connecting', 'active'].includes(mgrStatus) ||
+          useCallManagerStore.getState().answeredCallId === call.id
+        ) {
+          if (__DEV__) {
+            console.warn('[CALL] skip incoming UI — already past ringing', {
+              callId: call.id,
+              mgrStatus,
+            });
+          }
+          return;
+        }
+        const payload = callDocToIncomingStore(call);
+        useCallStore.getState().setIncomingCall(payload);
+        void openIncomingCallScreen(routerRef.current, payload, 'firestore_active_listener');
+        return;
+      }
+
+      if (
+        (status === 'accepted' || status === 'answered') &&
+        isCallee &&
+        priorStatus === 'ringing'
+      ) {
+        markCallAccepted(call.id, 'firestore_accepted_status');
+        useCallManagerStore.getState().markCalleeAnswered(call.id);
+        answerIncomingCall(call.id);
+        releaseIncomingCall(call.id, 'accepted_firestore');
+        const mediaType =
+          call.type === 'video' ||
+          (call as Call & { callType?: string }).callType === 'video'
+            ? 'video'
+            : 'audio';
+        void handleAnswerCallNavigation(routerRef.current, {
+          callId: call.id,
+          callType: mediaType,
+        });
+        return;
+      }
+
+      if (TERMINAL.has(status)) {
+        markCallDismissed(call.id);
+        releaseIncomingCall(call.id, `terminal_${status}`);
+        callKeepEndAll();
+        useCallManagerStore.getState().setActiveCallId(null);
+        if (useCallStore.getState().incomingCall?.callId === call.id) {
+          logCallDismissingIncoming(`terminal_${status}`, { callId: call.id, status });
+          useCallStore.getState().setIncomingCall(callDocToIncomingStore(call));
+        }
+        pendingTimers.push(
+          setTimeout(() => {
+            useCallStore.getState().clearActiveCall();
+            useCallManagerStore.getState().reset();
+            useCallStore.getState().clearIncomingCall();
+            clearIncomingNavigationLock(call.id);
+          }, 300)
+        );
+      }
+    });
+
+    return () => {
+      unsub();
+      pendingTimers.forEach(clearTimeout);
+    };
+  }, [user?.uid, activeCallId]);
 
   const answerCall = useCallback(
     async (callId?: string): Promise<void> => {
-      const id = callId ?? incomingRef.current?.callId;
-      if (!id) return;
+      const id = callId ?? useCallManagerStore.getState().activeCallId;
+      if (!id || !user?.uid) return;
 
+      console.log('CALL_STATUS_ACCEPT_REQUEST', { callId: id });
+      markCallAccepted(id, 'answerCall');
+      useCallManagerStore.getState().markCalleeAnswered(id);
       answerIncomingCall(id);
       releaseIncomingCall(id, 'answered_useCallManager');
-      clearCall();
-
-      try {
-        router.replace(`/(home)/call/${id}?accept=1` as any);
-      } catch (_) {}
+      void updateCallStatus(id, 'accepted')
+        .then(() => {
+          console.log('CALL_STATUS_FIRESTORE_SUCCESS', { callId: id, status: 'accepted' });
+        })
+        .catch((err) => {
+          if (__DEV__) console.warn('[useCallManager] answer status update failed', err);
+          console.log('CALL_STATUS_FIRESTORE_WRITE', { callId: id, error: String(err) });
+        });
+      // WebRTC + transition to active happen on the call screen (accept=1), once per call.
     },
-    [router, clearCall],
+    [router, user?.uid],
   );
 
-  // ── rejectCall ────────────────────────────────────────────────────────────
-
-  const rejectCall = useCallback(
-    async (callId?: string): Promise<void> => {
-      const id = callId ?? incomingRef.current?.callId;
-      if (!id) return;
-
-      clearCall();
-      callKeepReject(id);
-      callKeepEndAll();
-      releaseIncomingCall(id, 'declined_useCallManager');
-
-      try {
-        await updateCallStatus(id, 'rejected');
-      } catch (err) {
-        if (__DEV__) console.warn('[useCallManager] rejectCall update failed', err);
-      }
-    },
-    [clearCall],
-  );
-
-  // ── endCall ───────────────────────────────────────────────────────────────
+  const rejectCall = useCallback(async (callId?: string): Promise<void> => {
+    const id = callId ?? useCallManagerStore.getState().activeCallId;
+    if (!id) return;
+    endCallSession(id, 'declined');
+  }, []);
 
   const endCall = useCallback(
     async (callId?: string): Promise<void> => {
-      const id =
-        callId ??
-        outgoingRef.current?.callId ??
-        incomingRef.current?.callId ??
-        answeredCallId;
+      const id = callId ?? useCallManagerStore.getState().activeCallId;
       if (!id) return;
 
-      clearCall();
-      callKeepEnd(id);
-      callKeepEndAll();
-      releaseIncomingCall(id, 'ended_useCallManager');
-
-      try {
-        await updateCallStatus(id, 'ended');
-      } catch (err) {
-        if (__DEV__) console.warn('[useCallManager] endCall update failed', err);
-      }
+      const call = useCallStore.getState().activeCall;
+      const reason =
+        call?.status === 'ringing' && call.callerId === user?.uid ? 'cancelled' : 'ended';
+      endCallSession(id, reason);
     },
-    [clearCall, answeredCallId],
+    [user?.uid],
   );
 
   useEffect(() => {

@@ -1,5 +1,8 @@
 import clsx from 'clsx';
-import { memo } from 'react';
+
+import { resolveDisplayName } from '@/lib/contacts/contactResolver';
+import { useContactsStore } from '@/store/contactsStore';
+import { memo, useMemo } from 'react';
 import { Text, View } from 'react-native';
 
 import { useThemeClassName } from '@/lib/themeUtils';
@@ -13,6 +16,7 @@ interface User {
   image?: string;
   firstName?: string;
   lastName?: string;
+  phoneNumber?: string;
 }
 
 interface UserCardProps {
@@ -22,7 +26,22 @@ interface UserCardProps {
 }
 
 const UserCard = memo(({ children, onPress, user }: UserCardProps) => {
-  const name = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.username || 'Unknown';
+  const contactsRevision = useContactsStore((s) => s.revision);
+  const name = useMemo(
+    () =>
+      resolveDisplayName(
+        {
+          phoneNumber: user.phoneNumber,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+          name: user.name,
+          displayName: user.name,
+        },
+        { fallback: user.name || 'Unknown', logContext: 'user_card' }
+      ),
+    [contactsRevision, user.firstName, user.lastName, user.username, user.name, user.phoneNumber]
+  );
   const textColor = useThemeClassName('text-black', 'text-white');
   const bgColor = useThemeClassName('bg-white', 'bg-gray-800');
 

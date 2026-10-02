@@ -1,3 +1,5 @@
+import { safeSenderName } from '@/lib/chatDisplayText';
+import { resolveDisplayName } from '@/lib/contacts/contactResolver';
 import { create } from 'zustand';
 
 interface PresenceStore {
@@ -7,7 +9,13 @@ interface PresenceStore {
   setOnline: (userId: string, isOnline: boolean) => void;
   setLastActive: (userId: string, timestamp: number) => void;
   setTyping: (chatId: string, userId: string, name: string, isTyping: boolean) => void;
-  setTypingFromChat: (chatId: string, typingMap: Record<string, any>, participantData: Record<string, any>, currentUserId?: string) => void;
+  setTypingFromChat: (
+    chatId: string,
+    typingMap: Record<string, any>,
+    participantData: Record<string, any>,
+    currentUserId?: string,
+    participantPhones?: Record<string, string | null | undefined>
+  ) => void;
   getTypingNames: (chatId: string, excludeUserId?: string) => string[];
   setMultipleOnline: (users: Record<string, boolean>) => void;
   clearAll: () => void;
@@ -55,14 +63,14 @@ export const usePresenceStore = create<PresenceStore>((set, get) => ({
     set((state) => {
       const typingUsers = { ...state.typingUsers };
       if (isTyping) {
-        typingUsers[key] = { name, until: Date.now() + 4000 };
+        typingUsers[key] = { name: safeSenderName(name, 'Someone'), until: Date.now() + 4000 };
       } else {
         delete typingUsers[key];
       }
       return { typingUsers };
     });
   },
-  setTypingFromChat: (chatId, typingMap, participantData, currentUserId) => {
+  setTypingFromChat: (chatId, typingMap, participantData, currentUserId, participantPhones) => {
     const now = Date.now();
     set((state) => {
       const typingUsers = { ...state.typingUsers };
@@ -72,7 +80,13 @@ export const usePresenceStore = create<PresenceStore>((set, get) => ({
         if (uid === currentUserId) return;
         const at = val?.at?.toDate?.()?.getTime?.() ?? new Date(val?.at || 0).getTime();
         if (now - at < 5000) {
-          const name = participantData?.[uid]?.name || 'Someone';
+          const name = resolveDisplayName(
+            {
+              phoneNumber: participantPhones?.[uid],
+              participantName: participantData?.[uid]?.name,
+            },
+            { fallback: 'Someone', logContext: 'typing', preferLiveProfile: true }
+          );
           typingUsers[`${chatId}:${uid}`] = { name, until: now + 4000 };
         }
       });

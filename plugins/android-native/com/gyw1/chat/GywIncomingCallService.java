@@ -3,11 +3,9 @@ package com.gyw1.chat;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,8 +14,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
+import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
-import androidx.core.app.NotificationCompat;
 
 /**
  * Phone-call foreground service to reliably wake + show incoming call UI.
@@ -33,7 +31,10 @@ public class GywIncomingCallService extends Service {
   public static final String EXTRA_CALL_ID = "callId";
   public static final String EXTRA_CALLER_NAME = "callerName";
   public static final String EXTRA_CALL_TYPE = "callType";
+  public static final String EXTRA_CALLER_AVATAR = "callerAvatar";
   public static final String EXTRA_FULL_SCREEN_MODE = "fullScreenMode";
+  /** When true, Telecom {@code onShowIncomingCallUi} owns activity launch — FGS must not duplicate. */
+  public static final String EXTRA_TELECOM_DISPATCHED = "telecomDispatched";
 
   private static final String WAKELOCK_TAG = "gyw:call_service_wake";
   private static final long RING_WINDOW_MS = 30_000L;
@@ -41,12 +42,14 @@ public class GywIncomingCallService extends Service {
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private Runnable autoStopRunnable;
   private PowerManager.WakeLock wakeLock;
+  @Nullable private String activeCallId;
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
     if (intent != null && ACTION_STOP.equals(intent.getAction())) {
       Log.d(TAG, "STOP action received");
       Log.d(TAG, "CALL_CLEANUP start component=GywIncomingCallService action=STOP");
+      IncomingCallUiLauncher.cancelScheduled(mainHandler, activeCallId);
       cancelAutoStop();
       try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -66,7 +69,14 @@ public class GywIncomingCallService extends Service {
     String callId = intent != null ? intent.getStringExtra(EXTRA_CALL_ID) : null;
     String callerName = intent != null ? intent.getStringExtra(EXTRA_CALLER_NAME) : null;
     String callType = intent != null ? intent.getStringExtra(EXTRA_CALL_TYPE) : "audio";
-    boolean fullScreenMode = intent != null && intent.getBooleanExtra(EXTRA_FULL_SCREEN_MODE, false);
+    String callerAvatar = intent != null ? intent.getStringExtra(EXTRA_CALLER_AVATAR) : null;
+    boolean fullScreenMode =
+        intent != null && intent.getBooleanExtra(EXTRA_FULL_SCREEN_MODE, false);
+    if (!fullScreenMode) {
+      fullScreenMode = IncomingCallProcessState.isRestrictiveEnvironment(this);
+    }
+    boolean restrictiveEnv = IncomingCallProcessState.isRestrictiveEnvironment(this);
+    IncomingCallProcessState.logIncomingUxContext(this, TAG);
     Log.d(
         TAG,
         "onStartCommand callId="
@@ -87,18 +97,25 @@ public class GywIncomingCallService extends Service {
     }
 
     cancelAutoStop();
+    activeCallId = callId;
+    IncomingCallUiLauncher.cancelScheduled(mainHandler, callId);
 
     if (callerName == null || callerName.isEmpty()) callerName = "Incoming call";
-    if (callType == null || callType.isEmpty()) callType = "audio";
-    boolean video = "video".equalsIgnoreCase(callType);
+    callType = GywIncomingCallNotifier.normalizeCallType(callType);
+    Log.d(
+        TAG,
+        "CALL_TYPE="
+            + callType
+            + " isVideo="
+            + GywIncomingCallNotifier.isVideoCallType(callType)
+            + " FULLSCREEN_PATH_SELECTED="
+            + fullScreenMode);
 
-    acquireWakeLock();
-
-    // Start ring/vibrate BEFORE startForeground so the phone always rings
-    // even if startForeground throws (e.g. ForegroundServiceTypeNotAllowedException
-    // on some devices).  GywIncomingCallAlerts.start() is idempotent.
-    GywIncomingCallAlerts.start(this, callId);
-    Log.d(TAG, "ring/vibrate started");
+    if (fullScreenMode) {
+      acquireWakeLock();
+      Log.d(TAG, "SCREEN_WAKE_TRIGGERED source=foreground_service callId=" + callId);
+      Log.d(TAG, "SCREEN_WAKE_SUCCESS source=foreground_service callId=" + callId);
+    }
 
     NotificationManager nm =
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -112,7 +129,10 @@ public class GywIncomingCallService extends Service {
         "service channelId=" + GywIncomingCallNotifier.CHANNEL_ID
             + " importance=" + (callChannel != null ? callChannel.getImportance() : -1));
 
-    Notification notification = buildNotification(callId, callerName, callType, video, fullScreenMode);
+    Log.d(TAG, "FGS_NOTIFICATION_MODE=premium_backup callId=" + callId);
+    Notification notification =
+        GywIncomingCallNotifier.buildIncomingCallNotification(
+            this, callId, callerName, callerAvatar, callType, true, false);
     int notifId = GywIncomingCallNotifier.ACTIVE_INCOMING_CALL_NOTIFICATION_ID;
 
     try {
@@ -121,44 +141,49 @@ public class GywIncomingCallService extends Service {
       } else {
         startForeground(notifId, notification);
       }
+      Log.d(TAG, "FOREGROUND_STARTED callId=" + callId);
+      Log.d(TAG, "FOREGROUND_STABLE callId=" + callId);
       Log.d(TAG, "startForeground ok");
+      Log.d(
+          TAG,
+          "CALL_NOTIFICATION_SHOWN source=foreground_service backup=true callId="
+              + callId
+              + " CALL_NOTIFICATION_ID="
+              + notifId
+              + " tag="
+              + GywIncomingCallNotifier.NOTIFICATION_TAG);
     } catch (Exception e) {
       Log.e(TAG, "startForeground failed: " + e.getMessage());
-      // Alerts already ringing — keep them going for the ring window,
-      // but the FGS couldn't post its notification (no full-screen intent).
-      // Schedule an auto-stop so we release the WakeLock eventually.
-      final String stopCallId = callId;
-      autoStopRunnable = () -> {
-        synchronized (GywIncomingCallAlerts.class) {
-          GywIncomingCallAlerts.stop(getApplicationContext());
-        }
-        stopSelf();
-      };
+      Bundle fallback = new Bundle();
+      fallback.putString(EXTRA_CALL_ID, callId);
+      fallback.putString(EXTRA_CALLER_NAME, callerName);
+      fallback.putString(EXTRA_CALLER_AVATAR, callerAvatar);
+      fallback.putString(EXTRA_CALL_TYPE, callType);
+      GywIncomingCallNotifier.show(this, fallback, fullScreenMode);
+      autoStopRunnable =
+          () -> {
+            synchronized (GywIncomingCallAlerts.class) {
+              GywIncomingCallAlerts.stop(getApplicationContext());
+            }
+            stopSelf();
+          };
       mainHandler.postDelayed(autoStopRunnable, RING_WINDOW_MS);
       return START_NOT_STICKY;
     }
 
-    if (fullScreenMode) {
-      try {
-        Intent launch =
-            IncomingCallActivity.buildShowIntent(
-                this, callId, callerName, null, callType);
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        Bundle launchOpts = GywIncomingCallNotifier.backgroundDirectStartBundle();
-        if (launchOpts != null) {
-          startActivity(launch, launchOpts);
-        } else {
-          startActivity(launch);
-        }
-        Log.d(TAG, "CALL_UI_MODE = FULLSCREEN_LOCKED");
-        Log.d(TAG, "IncomingCallActivity launched from foreground service");
-      } catch (Throwable t) {
-        Log.e(TAG, "Failed to launch IncomingCallActivity from service", t);
-      }
-    } else {
-      Log.d(TAG, "CALL_UI_MODE = HEADSUP_UNLOCKED");
-      Log.d(TAG, "Heads-up only mode; skip IncomingCallActivity launch");
-    }
+    GywIncomingCallAlerts.start(this, callId, callType);
+    Log.d(TAG, "ring/vibrate started");
+
+    boolean telecomDispatched =
+        intent != null && intent.getBooleanExtra(EXTRA_TELECOM_DISPATCHED, false);
+
+    Log.d(
+        TAG,
+        "FGS_ACTIVITY_LAUNCH_POLICY=telecom_onShowIncomingCallUi_only retries=false "
+            + "restrictive="
+            + restrictiveEnv
+            + " telecomDispatched="
+            + telecomDispatched);
 
     autoStopRunnable = this::stopSelf;
     mainHandler.postDelayed(autoStopRunnable, RING_WINDOW_MS);
@@ -176,6 +201,8 @@ public class GywIncomingCallService extends Service {
   @Override
   public void onDestroy() {
     Log.d(TAG, "CALL_CLEANUP start component=GywIncomingCallService action=onDestroy");
+    IncomingCallUiLauncher.cancelScheduled(mainHandler, activeCallId);
+    activeCallId = null;
     cancelAutoStop();
     GywIncomingCallAlerts.stop(this);
     try {
@@ -223,79 +250,4 @@ public class GywIncomingCallService extends Service {
       wakeLock = null;
     }
   }
-
-  private Notification buildNotification(
-      String callId, String callerName, String callTypeRaw, boolean video, boolean fullScreenMode) {
-    String title = video ? "Incoming video call" : "Incoming call";
-    int reqBase = GywIncomingCallNotifier.requestCodesBase(callId);
-    int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-
-    Intent contentIntent =
-        IncomingCallActivity.buildShowIntent(this, callId, callerName, null, callTypeRaw);
-    PendingIntent contentPi = GywIncomingCallNotifier.activityPendingIntent(this, reqBase, contentIntent);
-
-    Intent fullScreenIntent =
-        IncomingCallActivity.buildShowIntent(this, callId, callerName, null, callTypeRaw);
-    PendingIntent fullScreenPi =
-        GywIncomingCallNotifier.activityPendingIntent(this, reqBase + 1, fullScreenIntent);
-
-    Intent acceptBroadcast = new Intent(this, GywCallNotificationActionReceiver.class);
-    acceptBroadcast.setAction(GywCallNotificationActionReceiver.ACTION_ACCEPT);
-    acceptBroadcast.putExtra(GywCallNotificationActionReceiver.EXTRA_CALL_ID, callId);
-    acceptBroadcast.putExtra(GywCallNotificationActionReceiver.EXTRA_CALL_TYPE, callTypeRaw);
-    PendingIntent acceptPi =
-        PendingIntent.getBroadcast(this, reqBase + 2, acceptBroadcast, piFlags);
-
-    Intent declineBroadcast = new Intent(this, GywCallNotificationActionReceiver.class);
-    declineBroadcast.setAction(GywCallNotificationActionReceiver.ACTION_DECLINE);
-    declineBroadcast.putExtra(GywCallNotificationActionReceiver.EXTRA_CALL_ID, callId);
-    declineBroadcast.putExtra(GywCallNotificationActionReceiver.EXTRA_CALL_TYPE, callTypeRaw);
-    PendingIntent declinePi =
-        PendingIntent.getBroadcast(this, reqBase + 3, declineBroadcast, piFlags);
-
-    NotificationCompat.Builder b =
-        new NotificationCompat.Builder(this, GywIncomingCallNotifier.CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.sym_action_call)
-            .setContentTitle(title)
-            .setContentText(callerName)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setOnlyAlertOnce(false)
-            .setContentIntent(contentPi)
-            .addAction(android.R.drawable.sym_action_call, "Accept", acceptPi)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePi);
-    if (fullScreenMode) {
-      b.setFullScreenIntent(fullScreenPi, true);
-    }
-
-    boolean postNotificationsGranted =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-            || ContextCompat.checkSelfPermission(
-                    this, android.Manifest.permission.POST_NOTIFICATIONS)
-                == PackageManager.PERMISSION_GRANTED;
-    boolean canUseFullScreenIntent =
-        Build.VERSION.SDK_INT < 34
-            || ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE))
-                .canUseFullScreenIntent();
-    Log.d(
-        TAG,
-        "buildNotification callId=" + callId
-            + " category=" + NotificationCompat.CATEGORY_CALL
-            + " priority=" + NotificationCompat.PRIORITY_HIGH
-            + " fullScreenIntentAttached=" + fullScreenMode
-            + " postNotificationsGranted=" + postNotificationsGranted
-            + " canUseFullScreenIntent=" + canUseFullScreenIntent);
-
-    if (Build.VERSION.SDK_INT >= 34) {
-      b.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
-    }
-
-    b.setColorized(true);
-
-    return b.build();
-  }
-
 }

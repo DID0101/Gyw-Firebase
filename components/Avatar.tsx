@@ -1,6 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import type { ImageProps } from 'expo-image';
+import { memo } from 'react';
 import { Text, TextStyle, View } from 'react-native';
+
+import { coerceDisplayString, getAvatarInitial } from '@/lib/unicodeText';
 import AppImage from './AppImage';
 
 interface AvatarProps {
@@ -14,7 +17,7 @@ interface AvatarProps {
   imagePriority?: ImageProps['priority'];
 }
 
-const Avatar = ({
+const Avatar = memo(function Avatar({
   imageUrl,
   size = 40,
   name,
@@ -22,7 +25,10 @@ const Avatar = ({
   fontWeight = '500',
   placeholderType = 'text',
   imagePriority = 'normal',
-}: AvatarProps) => {
+}: AvatarProps) {
+  const safeName = coerceDisplayString(name);
+  const initial = getAvatarInitial(safeName);
+
   if (imageUrl)
     return (
       <View
@@ -56,7 +62,7 @@ const Avatar = ({
           }}
           className="leading-[2] text-[#086da0] uppercase"
         >
-          {name ? name[0] : ''}
+          {initial}
         </Text>
       )}
       {placeholderType === 'icon' && (
@@ -64,6 +70,6 @@ const Avatar = ({
       )}
     </View>
   );
-};
+});
 
 export default Avatar;

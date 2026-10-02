@@ -7,13 +7,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.graphics.Rect
 import android.util.Log
+import android.view.WindowManager
+import androidx.core.view.ViewCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
+import org.json.JSONObject
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.lang.ref.WeakReference
 
@@ -29,6 +34,65 @@ class IncomingCallBridgeModule(private val reactContext: ReactApplicationContext
   @ReactMethod
   fun acknowledgeIncomingCallEvent() {
     // JS can call to ensure module init; no-op by design.
+  }
+
+  /** Local-only contact name index for killed-state notifications / call UI. */
+  @ReactMethod
+  fun setContactNameMap(map: ReadableMap, promise: Promise) {
+    try {
+      val out = mutableMapOf<String, String>()
+      val it = map.keySetIterator()
+      while (it.hasNextKey()) {
+        val key = it.nextKey()
+        val name = map.getString(key)?.trim().orEmpty()
+        if (key.isNotBlank() && name.isNotEmpty()) out[key] = name
+      }
+      ContactNameCache.setMap(out)
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("ERROR", e.message)
+    }
+  }
+
+  /** UID → { name, avatar, phone } for killed-state incoming call UI. */
+  @ReactMethod
+  fun setCallerProfileMapJson(json: String, promise: Promise) {
+    try {
+      val root = JSONObject(json)
+      val out = mutableMapOf<String, CallerProfileCache.Profile>()
+      val keys = root.keys()
+      while (keys.hasNext()) {
+        val uid = keys.next()
+        val obj = root.optJSONObject(uid) ?: continue
+        val name = obj.optString("name", "").trim()
+        if (uid.isBlank() || name.isEmpty()) continue
+        val avatar = obj.optString("avatar", "").trim()
+        val phone = obj.optString("phone", "").trim()
+        out[uid] = CallerProfileCache.Profile(name, avatar, phone)
+      }
+      CallerProfileCache.setProfiles(out)
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("ERROR", e.message)
+    }
+  }
+
+  @ReactMethod
+  fun setContactNameMapJson(json: String, promise: Promise) {
+    try {
+      val obj = JSONObject(json)
+      val out = mutableMapOf<String, String>()
+      val keys = obj.keys()
+      while (keys.hasNext()) {
+        val key = keys.next()
+        val name = obj.optString(key, "").trim()
+        if (key.isNotBlank() && name.isNotEmpty()) out[key] = name
+      }
+      ContactNameCache.setMap(out)
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("ERROR", e.message)
+    }
   }
 
   // ── Battery optimization exemption ────────────────────────────────────────
@@ -140,9 +204,53 @@ class IncomingCallBridgeModule(private val reactContext: ReactApplicationContext
     }
   }
 
+  /** Native keyboard/resize diagnostics for chat UX debugging. */
+  @ReactMethod
+  fun getWindowKeyboardDiagnostics(promise: Promise) {
+    try {
+      val activity = reactContext.currentActivity
+      if (activity == null) {
+        promise.reject("NO_ACTIVITY", "No current activity")
+        return
+      }
+      val attrs = activity.window.attributes
+      val softInputMode = attrs.softInputMode
+      val adjust = softInputMode and WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST
+      val modeName =
+          when (adjust) {
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE -> "adjustResize"
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN -> "adjustPan"
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING -> "adjustNothing"
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_UNSPECIFIED -> "adjustUnspecified"
+            else -> "unknown"
+          }
+      val rect = Rect()
+      activity.window.decorView.getWindowVisibleDisplayFrame(rect)
+      val decorFits = ViewCompat.getFitsSystemWindows(activity.window.decorView)
+      Log.i(
+          "GYW_KEYBOARD",
+          "softInputMode=$modeName visibleFrameH=${rect.height()} decorFits=$decorFits",
+      )
+      val map =
+          Arguments.createMap().apply {
+            putString("softInputMode", modeName)
+            putInt("windowVisibleFrameHeight", rect.height())
+            putInt("windowVisibleFrameTop", rect.top)
+            putInt("windowVisibleFrameBottom", rect.bottom)
+            putBoolean("decorFitsSystemWindows", decorFits)
+          }
+      promise.resolve(map)
+    } catch (e: Exception) {
+      promise.reject("ERROR", e.message)
+    }
+  }
+
   companion object {
     private const val NAME = "IncomingCallBridge"
     private var appContextRef: WeakReference<ReactApplicationContext>? = null
+
+    @JvmStatic
+    fun getAppContext(): ReactApplicationContext? = appContextRef?.get()
 
     private fun emit(event: String, payload: WritableMap) {
       val context = appContextRef?.get() ?: return

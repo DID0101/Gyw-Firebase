@@ -8,12 +8,16 @@ import { getStories } from './storyService';
 import { getCallHistory } from './callService';
 import { hasNativeFirestore, getChatsNative, getCallHistoryNative, getStoriesNative } from '@/lib/firestoreNative';
 import { runOnIdle } from '@/lib/perf/defer';
+import { useContactsStore } from '@/store/contactsStore';
 
 function isFirestorePermissionDenied(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
   const msg = String((err as { message?: string })?.message || '');
   return code === 'firestore/permission-denied' || msg.includes('permission-denied');
 }
+
+let lastForegroundPreloadAt = 0;
+const FOREGROUND_PRELOAD_MIN_MS = 5 * 60 * 1000;
 
 /**
  * Loads data from AsyncStorage first (instant load)
@@ -34,6 +38,10 @@ export const loadFromStorage = async () => {
  * Runs in background after initial MMKV load
  */
 export const preloadAppData = async (userId: string) => {
+  // Contacts: hydrate persisted index immediately, refresh from device in parallel.
+  void useContactsStore.getState().hydrateFromStorage();
+  void useContactsStore.getState().preloadContacts().catch(() => {});
+
   try {
     // 1. Preload recent chats (last 20) - use native Firestore on native (shares auth)
     let chatsData: Chat[];
@@ -81,6 +89,63 @@ export const preloadAppData = async (userId: string) => {
     if (__DEV__) console.error('Error preloading app data:', error);
   }
 };
+
+/**
+ * Light foreground refresh: chat list only, rate-limited.
+ * Persistent listeners handle live updates; this fills gaps after long background.
+ */
+export async function preloadAppDataOnForeground(userId: string): Promise<void> {
+  const now = Date.now();
+  if (now - lastForegroundPreloadAt < FOREGROUND_PRELOAD_MIN_MS) return;
+  lastForegroundPreloadAt = now;
+
+  try {
+    if (hasNativeFirestore) {
+      try {
+        const chatsData = await getChatsNative(userId, 20);
+        useChatStore.getState().setChats(chatsData);
+      } catch (err: unknown) {
+        if (__DEV__) {
+          console.warn(
+            '[preload] Foreground chats query failed:',
+            (err as { message?: string })?.message
+          );
+        }
+      }
+      return;
+    }
+
+    const chatsRef = collection(db, 'chats');
+    const chatsQuery = query(
+      chatsRef,
+      where('participants', 'array-contains', userId),
+      orderBy('lastMessageAt', 'desc'),
+      limit(20)
+    );
+    const chatsSnapshot = await getDocs(chatsQuery);
+    const chatsData: Chat[] = [];
+    chatsSnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      chatsData.push({
+        id: docSnap.id,
+        ...data,
+        lastMessageAt:
+          data.lastMessageAt?.toDate?.()?.toISOString() ||
+          data.lastMessageAt ||
+          data.updatedAt?.toDate?.()?.toISOString() ||
+          data.updatedAt ||
+          data.createdAt?.toDate?.()?.toISOString() ||
+          data.createdAt,
+        lastSenderId: data.lastSenderId ?? data.lastMessage?.senderId,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
+      } as Chat);
+    });
+    useChatStore.getState().setChats(chatsData);
+  } catch (error) {
+    if (__DEV__) console.error('Error foreground preloading chats:', error);
+  }
+}
 
 /** Deferred so chat list / tab UI can commit before extra Firestore + JSON work. */
 async function preloadStoriesAndCalls(userId: string, chatCount: number) {

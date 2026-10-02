@@ -2,6 +2,7 @@ import ImageViewer from '@/components/ImageViewer';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { getCachedUserProfile, setCachedUserProfile } from '@/lib/cache/userProfileCache';
+import { useProductionScreenTrace } from '@/lib/hooks/useProductionScreenTrace';
 import { useUserBlocks } from '@/lib/hooks/useUserBlocks';
 import { GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
 import { getUser } from '@/lib/services/chatService';
@@ -14,6 +15,7 @@ import {
   verifyViewerInChat,
 } from '@/lib/services/userProfileGallery';
 import type { User } from '@/lib/types/chat';
+import { getAvatarInitial } from '@/lib/unicodeText';
 import { useChatMetaStore } from '@/store/chatMetaStore';
 import { useUserBlocksStore } from '@/store/userBlocksStore';
 import Feather from '@expo/vector-icons/Feather';
@@ -292,7 +294,7 @@ const ProfileScrollHeader = memo(function ProfileScrollHeader({
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                 <Text style={{ fontSize: avatarSize * 0.38, fontWeight: '600', color: isDark ? '#e5e7eb' : '#374151' }}>
-                  {(displayName || '?').charAt(0).toUpperCase()}
+                  {getAvatarInitial(displayName)}
                 </Text>
               </View>
             )}
@@ -396,7 +398,8 @@ export default function UserProfileScreen() {
   useUserBlocks(user?.uid);
   const router = useRouter();
   const navigation = useNavigation();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  useProductionScreenTrace('UserProfile', { lang: i18n.language, userId: userId?.slice(0, 8) });
   const { isDark } = useTheme();
   const { horizontalPad, numColumns, gap, cell, avatarSize } = useProfileGridLayout();
   const safeInsets = useSafeAreaInsets();

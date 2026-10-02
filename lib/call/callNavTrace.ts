@@ -1,0 +1,45 @@
+/** Accept / navigation exit tracing — filter logs: CALL_ACCEPT_ / CALL_EXIT_ / CALL_SAFE_BACK_ */
+
+export type CallNavTraceStage =
+  | 'CALL_ACCEPT_PRESSED'
+  | 'CALL_ACCEPT_NATIVE_START'
+  | 'CALL_ACCEPT_NATIVE_COMPLETE'
+  | 'CALL_ACCEPT_FIRESTORE_UPDATE'
+  | 'CALL_ACCEPT_NAVIGATE_TO_CALL'
+  | 'CALL_ACCEPT_NAVIGATE_RETRY'
+  | 'CALL_ACCEPT_NAVIGATE_SKIPPED'
+  | 'CALL_SCREEN_MOUNT'
+  | 'CALL_SCREEN_UNMOUNT'
+  | 'CALL_SCREEN_FOCUS'
+  | 'CALL_SCREEN_BLUR'
+  | 'CALL_EXIT_REASON'
+  | 'CALL_CLEANUP_TRIGGER'
+  | 'CALL_RELEASE_TRIGGER'
+  | 'CALL_SAFE_BACK_TRIGGER'
+  | 'CALL_SAFE_BACK_BLOCKED'
+  | 'CALL_ROUTER_BACK_TRIGGER'
+  | 'CALL_TERMINAL_IGNORED_GRACE'
+  | 'CALL_TERMINAL_EVENT'
+  | 'CALL_END_BLOCKED_GRACE'
+  | 'CALL_STATE_LOCAL'
+  | 'CALL_STATE_REMOTE'
+  | 'CALL_STATUS_SNAPSHOT'
+  | 'CALL_SESSION_ACTIVE'
+  | 'CALL_STATUS_BEFORE_ACCEPT'
+  | 'CALL_STATUS_ACCEPT_REQUEST'
+  | 'CALL_STATUS_FIRESTORE_WRITE'
+  | 'CALL_STATUS_FIRESTORE_SUCCESS'
+  | 'CALL_STATUS_SNAPSHOT'
+  | 'CALL_STATUS_CHANGED'
+  | 'CALL_STATUS_AFTER_ACCEPT';
+
+export function callNavTrace(
+  stage: CallNavTraceStage,
+  callId: string,
+  detail?: Record<string, unknown>,
+): void {
+  console.log(stage, { callId, ...detail });
+}
+
+/** Callee accept: ignore spurious terminal/null snapshots while session is starting. */
+export const CALLEE_ACCEPT_GRACE_MS = 12_000;

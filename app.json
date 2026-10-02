@@ -1,10 +1,11 @@
 {
   "expo": {
     "name": "Gyw",
+    "owner": "ddr10",
     "slug": "gyw",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/gyw_fox_logo.png",
     "scheme": "gyw",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
@@ -13,11 +14,20 @@
       "bundleIdentifier": "com.tropicolx.signal-clone",
       "bitcode": false,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "fetch", "voip", "remote-notification"],
+        "UIBackgroundModes": [
+          "audio",
+          "fetch",
+          "voip",
+          "remote-notification"
+        ],
         "NSMicrophoneUsageDescription": "$(PRODUCT_NAME) needs microphone access for voice and video calls.",
         "NSCameraUsageDescription": "$(PRODUCT_NAME) needs camera access for video calls.",
         "NSContactsUsageDescription": "$(PRODUCT_NAME) uses your contacts to suggest people you know who are already on the app. Phone numbers are matched securely.",
-        "LSApplicationQueriesSchemes": ["maps", "comgooglemaps", "googlemaps"]
+        "LSApplicationQueriesSchemes": [
+          "maps",
+          "comgooglemaps",
+          "googlemaps"
+        ]
       },
       "entitlements": {
         "com.apple.developer.pushkit.voip": true,
@@ -28,10 +38,10 @@
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/images/gyw_fox_logo.png",
+        "backgroundColor": "#000000"
       },
-      "edgeToEdgeEnabled": true,
+      "edgeToEdgeEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
@@ -56,23 +66,27 @@
         "android.permission.READ_PHONE_NUMBERS",
         "android.permission.READ_PHONE_STATE",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "com.google.android.gms.permission.AD_ID"
       ],
       "package": "com.gyw1.chat",
-      "versionCode": 2,
+      "versionCode": 61,
       "googleServicesFile": "./google-services.json"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/gyw_fox_logo.png"
     },
     "plugins": [
       [
         "expo-notifications",
         {
           "icon": "./assets/images/gyw_fox_logo.png",
-          "color": "#4f46e5"
+          "color": "#e85d04",
+          "sounds": [
+            "./assets/sounds/message_sound.wav"
+          ]
         }
       ],
       "expo-router",
@@ -82,7 +96,7 @@
           "image": "./assets/images/gyw_fox_logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#000000"
         }
       ],
       [
@@ -122,14 +136,21 @@
       [
         "expo-build-properties",
         {
-          "ios": { "useFrameworks": "static" },
+          "ios": {
+            "useFrameworks": "static"
+          },
           "android": {
             "minSdkVersion": 24,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0",
             "enableProguardInReleaseBuilds": true
           }
         }
       ],
       "@react-native-firebase/app",
+      "@react-native-firebase/crashlytics",
+      "@react-native-firebase/perf",
       "@react-native-firebase/auth",
       [
         "@config-plugins/react-native-webrtc",
@@ -141,8 +162,25 @@
       "expo-web-browser",
       "@react-native-firebase/messaging",
       "./plugins/withAndroidIncomingCall",
-      "./plugins/withAndroidFirebasePhoneAuthDebug",
-      "./plugins/withIosVoIP"
+      "./plugins/withAndroidChatKeyboardResize",
+      "./plugins/withAndroidAdIdPermission",
+      "./plugins/withIosVoIP",
+      "./plugins/withAndroidFirebasePhoneAuthStable",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "gyw"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-9450348713978628~3244677218",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

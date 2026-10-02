@@ -6,8 +6,7 @@
  * Strategy
  * ────────
  *   • lib/callkeep is fully mocked so we can assert it was called.
- *   • store/callManagerStore is mocked with jest spies so we can
- *     assert setIncomingCall / clearCall were called with correct args.
+ *   • FCM is wake-only: no Zustand updates from NotificationService.
  *   • @react-native-firebase/messaging is mocked in jest.setup.ts.
  *   • Platform.OS is controlled per-describe block.
  *   • handleRemoteMessage is the primary entry point under test.
@@ -18,26 +17,38 @@ import { Platform } from 'react-native';
 // ── callkeep mock ─────────────────────────────────────────────────────────
 const mockDisplayIncomingCall = jest.fn();
 const mockEndCall              = jest.fn();
+const mockEndAllCalls          = jest.fn();
+const mockShowIncomingCallScreen = jest.fn();
 
 jest.mock('@/lib/callkeep', () => ({
   displayIncomingCall: mockDisplayIncomingCall,
   endCall:             mockEndCall,
+  endAllCalls:         mockEndAllCalls,
 }));
 
-// ── callManagerStore mock ────────────────────────────────────────────────
-const mockSetIncomingCall = jest.fn();
-const mockClearCall       = jest.fn();
-let   mockIncomingCall: any = null;
-
-jest.mock('@/store/callManagerStore', () => ({
-  useCallManagerStore: {
-    getState: jest.fn(() => ({
-      setIncomingCall: mockSetIncomingCall,
-      clearCall:       mockClearCall,
-      incomingCall:    mockIncomingCall,
-    })),
-  },
+jest.mock('@/lib/call/incomingCallGuard', () => ({
+  shouldShowIncomingCall: jest.fn().mockReturnValue(true),
+  shouldShowIncomingCallAsync: jest.fn().mockResolvedValue(true),
+  toGuardDataFromFcm: jest.fn((callId: string, createdAt: number) => ({
+    callId,
+    status: 'ringing',
+    createdAt,
+  })),
 }));
+
+jest.mock('react-native', () => {
+  const RN = jest.requireActual('react-native');
+  return {
+    ...RN,
+    NativeModules: {
+      ...RN.NativeModules,
+      IncomingCallModule: {
+        showIncomingCallScreen: mockShowIncomingCallScreen,
+        dismissIncomingCallScreen: jest.fn(),
+      },
+    },
+  };
+});
 
 // ── Subject under test ────────────────────────────────────────────────────
 import {
@@ -79,38 +90,23 @@ function cancelPayload(callId = 'call-uuid-001'): Record<string, string> {
 describe('handleRemoteMessage — INCOMING_CALL', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockIncomingCall = null;
     (Platform as any).OS = 'ios';
   });
 
-  it('sets incomingCall in the store', () => {
-    handleRemoteMessage(msg(incomingPayload()));
-
-    expect(mockSetIncomingCall).toHaveBeenCalledTimes(1);
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callId).toBe('call-uuid-001');
-    expect(arg.callerName).toBe('Alice');
-    expect(arg.callType).toBe('audio');
-    expect(arg.callerId).toBe('caller-uid');
-    expect(arg.callerAvatar).toBe('https://example.com/alice.jpg');
-  });
-
-  it('calls displayIncomingCall with correct params', () => {
-    handleRemoteMessage(msg(incomingPayload()));
+  it('calls displayIncomingCall on iOS (wake only)', async () => {
+    await handleRemoteMessage(msg(incomingPayload()));
     expect(mockDisplayIncomingCall).toHaveBeenCalledWith('call-uuid-001', 'Alice', 'audio');
   });
 
-  it('does not call displayIncomingCall on Android (native Telecom + activity)', () => {
+  it('does not duplicate native incoming UI on Android (FCM service owns ring)', async () => {
     (Platform as any).OS = 'android';
-    handleRemoteMessage(msg(incomingPayload()));
-    expect(mockSetIncomingCall).toHaveBeenCalledTimes(1);
+    await handleRemoteMessage(msg(incomingPayload()));
+    expect(mockShowIncomingCallScreen).not.toHaveBeenCalled();
     expect(mockDisplayIncomingCall).not.toHaveBeenCalled();
   });
 
-  it('handles video callType correctly', () => {
-    handleRemoteMessage(msg(incomingPayload({ callType: 'video' })));
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callType).toBe('video');
+  it('handles video callType correctly', async () => {
+    await handleRemoteMessage(msg(incomingPayload({ callType: 'video' })));
     expect(mockDisplayIncomingCall).toHaveBeenCalledWith(
       'call-uuid-001',
       'Alice',
@@ -118,40 +114,19 @@ describe('handleRemoteMessage — INCOMING_CALL', () => {
     );
   });
 
-  it('accepts type=call (lowercase alias)', () => {
-    handleRemoteMessage(msg(incomingPayload({ type: 'call' })));
-    expect(mockSetIncomingCall).toHaveBeenCalled();
+  it('accepts type=call (lowercase alias)', async () => {
+    await handleRemoteMessage(msg(incomingPayload({ type: 'call' })));
     expect(mockDisplayIncomingCall).toHaveBeenCalled();
   });
 
-  it('accepts type=incoming_call (snake_case alias)', () => {
-    handleRemoteMessage(msg(incomingPayload({ type: 'incoming_call' })));
-    expect(mockSetIncomingCall).toHaveBeenCalled();
+  it('accepts type=incoming_call (snake_case alias)', async () => {
+    await handleRemoteMessage(msg(incomingPayload({ type: 'incoming_call' })));
+    expect(mockDisplayIncomingCall).toHaveBeenCalled();
   });
 
-  it('uses snake_case key variants for callerId / callerName', () => {
-    handleRemoteMessage(msg({
-      type:         'INCOMING_CALL',
-      callId:       'call-uuid-002',
-      caller_id:    'uid-snake',
-      caller_name:  'Bob Snake',
-      callType:     'audio',
-    }));
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callerId).toBe('uid-snake');
-    expect(arg.callerName).toBe('Bob Snake');
-  });
-
-  it('does NOT set callerAvatar if empty string', () => {
-    handleRemoteMessage(msg(incomingPayload({ callerAvatar: '' })));
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callerAvatar).toBeUndefined();
-  });
-
-  it('does not call endCall or clearCall for INCOMING_CALL', () => {
-    handleRemoteMessage(msg(incomingPayload()));
+  it('does not call endCall for INCOMING_CALL', async () => {
+    await handleRemoteMessage(msg(incomingPayload()));
     expect(mockEndCall).not.toHaveBeenCalled();
-    expect(mockClearCall).not.toHaveBeenCalled();
   });
 });
 
@@ -165,51 +140,25 @@ describe('handleRemoteMessage — CALL_CANCELLED', () => {
     (Platform as any).OS = 'ios';
   });
 
-  it('clears the store and ends the call', () => {
-    mockIncomingCall = { callId: 'call-uuid-001' };
-    handleRemoteMessage(msg(cancelPayload()));
-    expect(mockClearCall).toHaveBeenCalledTimes(1);
+  it('dismisses native call UI', async () => {
+    await handleRemoteMessage(msg(cancelPayload()));
+    expect(mockEndCall).toHaveBeenCalledWith('call-uuid-001');
+    expect(mockEndAllCalls).toHaveBeenCalled();
+  });
+
+  it('accepts call_cancelled (lowercase alias)', async () => {
+    await handleRemoteMessage(msg({ type: 'call_cancelled', callId: 'call-uuid-001' }));
     expect(mockEndCall).toHaveBeenCalledWith('call-uuid-001');
   });
 
-  it('accepts call_cancelled (lowercase alias)', () => {
-    mockIncomingCall = { callId: 'call-uuid-001' };
-    handleRemoteMessage(msg({ type: 'call_cancelled', callId: 'call-uuid-001' }));
-    expect(mockClearCall).toHaveBeenCalled();
-    expect(mockEndCall).toHaveBeenCalledWith('call-uuid-001');
-  });
-
-  it('accepts call_ended alias', () => {
-    mockIncomingCall = { callId: 'c-x' };
-    handleRemoteMessage(msg({ type: 'call_ended', callId: 'c-x' }));
+  it('accepts call_ended alias', async () => {
+    await handleRemoteMessage(msg({ type: 'call_ended', callId: 'c-x' }));
     expect(mockEndCall).toHaveBeenCalledWith('c-x');
   });
 
-  it('accepts incoming_call_cancelled alias', () => {
-    mockIncomingCall = { callId: 'c-y' };
-    handleRemoteMessage(msg({ type: 'incoming_call_cancelled', callId: 'c-y' }));
+  it('accepts incoming_call_cancelled alias', async () => {
+    await handleRemoteMessage(msg({ type: 'incoming_call_cancelled', callId: 'c-y' }));
     expect(mockEndCall).toHaveBeenCalledWith('c-y');
-  });
-
-  it('does NOT clear store if cancel is for a different callId', () => {
-    // A CALL_CANCELLED for a different call should not affect our current state
-    mockIncomingCall = { callId: 'our-call' };
-    handleRemoteMessage(msg({ type: 'CALL_CANCELLED', callId: 'other-call' }));
-    expect(mockClearCall).not.toHaveBeenCalled();
-    expect(mockEndCall).not.toHaveBeenCalled();
-  });
-
-  it('clears store if no call is currently tracked (null)', () => {
-    mockIncomingCall = null;
-    handleRemoteMessage(msg(cancelPayload('any-id')));
-    expect(mockClearCall).toHaveBeenCalled();
-    expect(mockEndCall).toHaveBeenCalledWith('any-id');
-  });
-
-  it('does NOT call setIncomingCall for a cancel payload', () => {
-    mockIncomingCall = { callId: 'call-uuid-001' };
-    handleRemoteMessage(msg(cancelPayload()));
-    expect(mockSetIncomingCall).not.toHaveBeenCalled();
   });
 });
 
@@ -222,28 +171,26 @@ describe('handleRemoteMessage — malformed payloads', () => {
 
   it('does nothing if data is undefined', () => {
     expect(() => handleRemoteMessage({ messageId: 'x' })).not.toThrow();
-    expect(mockSetIncomingCall).not.toHaveBeenCalled();
-    expect(mockClearCall).not.toHaveBeenCalled();
     expect(mockEndCall).not.toHaveBeenCalled();
+    expect(mockDisplayIncomingCall).not.toHaveBeenCalled();
   });
 
   it('does nothing if data is null', () => {
     expect(() => handleRemoteMessage({ messageId: 'x', data: undefined })).not.toThrow();
   });
 
-  it('does nothing if callId is missing from INCOMING_CALL', () => {
-    handleRemoteMessage(msg({ type: 'INCOMING_CALL', callerName: 'No ID' }));
-    expect(mockSetIncomingCall).not.toHaveBeenCalled();
+  it('does nothing if callId is missing from INCOMING_CALL', async () => {
+    await handleRemoteMessage(msg({ type: 'INCOMING_CALL', callerName: 'No ID' }));
+    expect(mockDisplayIncomingCall).not.toHaveBeenCalled();
   });
 
-  it('does nothing if callId is missing from CALL_CANCELLED', () => {
-    handleRemoteMessage(msg({ type: 'CALL_CANCELLED' }));
-    expect(mockClearCall).not.toHaveBeenCalled();
+  it('does nothing if callId is missing from CALL_CANCELLED', async () => {
+    await handleRemoteMessage(msg({ type: 'CALL_CANCELLED' }));
     expect(mockEndCall).not.toHaveBeenCalled();
   });
 
-  it('ignores chat_message (native notifier owns Android UI)', () => {
-    handleRemoteMessage(
+  it('ignores chat_message (native notifier owns Android UI)', async () => {
+    await handleRemoteMessage(
       msg({
         type: 'chat_message',
         chatId: 'chat-1',
@@ -253,14 +200,12 @@ describe('handleRemoteMessage — malformed payloads', () => {
         messageId: 'm1',
       }),
     );
-    expect(mockSetIncomingCall).not.toHaveBeenCalled();
-    expect(mockClearCall).not.toHaveBeenCalled();
+    expect(mockDisplayIncomingCall).not.toHaveBeenCalled();
   });
 
-  it('does nothing for an unknown type', () => {
-    handleRemoteMessage(msg({ type: 'WEIRD_TYPE', callId: 'x', body: 'hi' }));
-    expect(mockSetIncomingCall).not.toHaveBeenCalled();
-    expect(mockClearCall).not.toHaveBeenCalled();
+  it('does nothing for an unknown type', async () => {
+    await handleRemoteMessage(msg({ type: 'WEIRD_TYPE', callId: 'x', body: 'hi' }));
+    expect(mockDisplayIncomingCall).not.toHaveBeenCalled();
   });
 
   it('does nothing if the message has no data key', () => {
@@ -269,16 +214,16 @@ describe('handleRemoteMessage — malformed payloads', () => {
     ).not.toThrow();
   });
 
-  it('defaults callType to audio when missing', () => {
-    handleRemoteMessage(msg({ type: 'INCOMING_CALL', callId: 'c-no-type', callerName: 'X' }));
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callType).toBe('audio');
+  it('defaults callType to audio when missing', async () => {
+    (Platform as any).OS = 'ios';
+    await handleRemoteMessage(msg({ type: 'INCOMING_CALL', callId: 'c-no-type', callerName: 'X' }));
+    expect(mockDisplayIncomingCall).toHaveBeenCalledWith('c-no-type', 'X', 'audio');
   });
 
-  it('defaults callerName when missing', () => {
-    handleRemoteMessage(msg({ type: 'INCOMING_CALL', callId: 'c-no-name' }));
-    const arg = mockSetIncomingCall.mock.calls[0][0];
-    expect(arg.callerName).toBe('Incoming call');
+  it('defaults callerName when missing', async () => {
+    (Platform as any).OS = 'ios';
+    await handleRemoteMessage(msg({ type: 'INCOMING_CALL', callId: 'c-no-name' }));
+    expect(mockDisplayIncomingCall).toHaveBeenCalledWith('c-no-name', 'Incoming call', 'audio');
   });
 });
 
@@ -336,9 +281,7 @@ describe('setupForegroundHandler', () => {
       },
     });
 
-    expect(mockSetIncomingCall).toHaveBeenCalledWith(
-      expect.objectContaining({ callId: 'fg-call', callerName: 'Bob' })
-    );
+    expect(mockDisplayIncomingCall).toHaveBeenCalledWith('fg-call', 'Bob', 'audio');
   });
 });
 

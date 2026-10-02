@@ -11,12 +11,31 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  clearPendingSignup,
+  loadPendingSignupIfFresh,
+  savePendingSignup,
+  type PendingProfile,
+} from '@/lib/auth/pendingSignupState';
+import {
+  checkUsernameAvailableStrict,
+  writeUserDocReliable,
+} from '@/lib/auth/userProfileWrite';
 import { useThemeClassName } from '@/lib/themeUtils';
-import { db } from '@/lib/firebase';
-import { getRnAuth, getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
-import { sanitizeForFirestore } from '@/lib/firestoreNative';
-import { sendPhoneOTP, confirmPhoneOTP, friendlyAuthError } from '@/lib/phoneAuth';
+import { navigateOnce } from '@/lib/safeAction';
+import { getNetworkQuality } from '@/lib/reliability/NetworkManager';
+import { getRnAuth, hasRnFirebase } from '@/lib/rnFirebase';
+import { sendPhoneOTP, confirmPhoneOTP, friendlyAuthError, compatSignOut, getPhoneOtpSessionForPersistence, restorePhoneLoginSession } from '@/lib/auth/authCompat';
+import { assertPhoneAllowedForAuth } from '@/lib/auth/phoneRegistrationCheck';
+import { isCompleteUserProfile, readUserProfileByUid } from '@/lib/auth/userProfileRead';
+import {
+  buildDisplayName,
+  prepareUserDocFields,
+  validateSignupProfileFields,
+} from '@/lib/unicodeText';
 import useUserForm from '@/hooks/useUserForm';
+import { waitForAuthToken } from '@/lib/auth/waitForAuthToken';
+import { crashlyticsLog } from '@/lib/services/crashlyticsService';
 
 type Step = 'form' | 'otp';
 
@@ -26,51 +45,19 @@ function formatPhone(text: string): string {
 }
 
 function buildUserDoc(uid: string, phone: string, firstName: string, lastName: string, username: string) {
-  const now = new Date().toISOString();
-  return {
+  return prepareUserDocFields({
     uid,
     phoneNumber: phone,
-    firstName: firstName.trim(),
-    lastName: lastName.trim(),
+    firstName,
+    lastName,
     username,
     photoURL: '',
     bio: '',
-    createdAt: now,
-    lastSeen: now,
-    isOnline: false,
-  };
+  });
 }
 
 async function writeUserDoc(uid: string, data: Record<string, any>) {
-  if (Platform.OS !== 'web' && hasRnFirebase) {
-    const rnFs = require('@react-native-firebase/firestore');
-    await rnFs.setDoc(rnFs.doc(getRnFirestore(), 'users', uid), sanitizeForFirestore(data));
-  } else {
-    const { doc, setDoc } = await import('firebase/firestore');
-    await setDoc(doc(db, 'users', uid), data);
-  }
-}
-
-async function checkUsernameAvailable(username: string): Promise<boolean> {
-  try {
-    if (Platform.OS !== 'web' && hasRnFirebase) {
-      const rnFs = require('@react-native-firebase/firestore');
-      const q = rnFs.query(
-        rnFs.collection(getRnFirestore(), 'users'),
-        rnFs.where('username', '==', username),
-        rnFs.limit(1),
-      );
-      const snap = await rnFs.getDocs(q);
-      return snap.empty;
-    } else {
-      const { collection, getDocs, query, where, limit } = await import('firebase/firestore');
-      const snap = await getDocs(query(collection(db, 'users'), where('username', '==', username), limit(1)));
-      return snap.empty;
-    }
-  } catch {
-    // Permission denied (not yet signed in) — allow and let the server rule catch it
-    return true;
-  }
+  await writeUserDocReliable(uid, data);
 }
 
 const SignUpScreen = () => {
@@ -92,12 +79,50 @@ const SignUpScreen = () => {
   const [loading, setLoading] = useState(false);
 
   // Saved between form → OTP step
-  const [pendingProfile, setPendingProfile] = useState<{
-    firstName: string; lastName: string; username: string; phone: string;
-  } | null>(null);
+  const [pendingProfile, setPendingProfile] = useState<PendingProfile | null>(null);
 
   const { firstName, lastName, username, usernameNumber, numberError,
           onChangeFirstName, onChangeLastName, onChangeUsername, onChangeNumber } = useUserForm();
+
+  useEffect(() => {
+    if (isCompleteProfile) return;
+    void (async () => {
+      const saved = await loadPendingSignupIfFresh();
+      if (saved) {
+        setStep(saved.step);
+        setPhone(saved.phone);
+        setVerificationId(saved.verificationId);
+        setPendingProfile(saved.pendingProfile);
+        if (saved.verificationId && saved.mode === 'server' && saved.sessionInfo) {
+          restorePhoneLoginSession({
+            phone: saved.phone,
+            verificationId: saved.verificationId,
+            mode: saved.mode,
+            sessionInfo: saved.sessionInfo,
+          });
+        }
+        return;
+      }
+      const stale = await loadPendingSignup();
+      if (stale?.step === 'otp' && stale.verificationId) {
+        Alert.alert(t('auth.error'), t('auth.sessionExpired'));
+      }
+    })();
+  }, [isCompleteProfile, t]);
+
+  useEffect(() => {
+    if (isCompleteProfile || step !== 'otp') return;
+    const otpMeta = getPhoneOtpSessionForPersistence();
+    void savePendingSignup({
+      step,
+      phone,
+      verificationId,
+      pendingProfile,
+      mode: otpMeta?.mode,
+      sessionInfo: otpMeta?.sessionInfo,
+      savedAt: new Date().toISOString(),
+    });
+  }, [isCompleteProfile, step, phone, verificationId, pendingProfile]);
 
   useEffect(() => {
     if (isCompleteProfile && authUser?.phoneNumber) setPhone(authUser.phoneNumber);
@@ -116,20 +141,26 @@ const SignUpScreen = () => {
   const handleCompleteProfile = async () => {
     if (!authUser) return;
     if (numberError) { Alert.alert(t('auth.error'), t('profile.usernameHint')); return; }
-    if (!firstName.trim() || !username.trim() || !usernameNumber) {
+    const validated = validateSignupProfileFields(firstName, lastName, username, usernameNumber);
+    if (!validated.ok) {
       Alert.alert(t('auth.error'), t('auth.pleaseFillAllFields')); return;
     }
-    const finalUsername = `${username}_${usernameNumber}`;
     setLoading(true);
     try {
+      const available = await checkUsernameAvailableStrict(validated.finalUsername);
+      if (!available) {
+        Alert.alert(t('auth.error'), t('auth.usernameTaken')); return;
+      }
       const userDoc = buildUserDoc(
         authUser.uid,
         authUser.phoneNumber ?? phone,
-        firstName, lastName, finalUsername,
+        validated.firstName,
+        validated.lastName,
+        validated.finalUsername,
       );
       await writeUserDoc(authUser.uid, userDoc);
 
-      const displayName = lastName.trim() ? `${firstName.trim()} ${lastName.trim()}` : firstName.trim();
+      const displayName = validated.displayName;
       if (Platform.OS === 'web') {
         const { updateProfile } = await import('firebase/auth');
         await updateProfile(authUser as any, { displayName });
@@ -138,9 +169,12 @@ const SignUpScreen = () => {
         if (nativeUser?.updateProfile) await nativeUser.updateProfile({ displayName });
       }
 
-      await AsyncStorage.setItem('pendingUsername', finalUsername);
+      await AsyncStorage.setItem('pendingUsername', validated.finalUsername);
+      await clearPendingSignup();
+      crashlyticsLog(`user_sign_up uid=${authUser.uid.slice(0, 8)}`);
+      void trackSignUp('phone');
       Alert.alert(t('auth.success'), t('auth.accountCreated'), [
-        { text: 'OK', onPress: () => router.replace('/(home)/(tabs)/chats') },
+        { text: 'OK', onPress: () => navigateOnce(router, 'replace', '/(home)/(tabs)/chats') },
       ]);
     } catch (e: any) {
       Alert.alert(t('auth.error'), e?.message ?? t('auth.signUpFailed'));
@@ -155,7 +189,8 @@ const SignUpScreen = () => {
     if (isCompleteProfile) { handleCompleteProfile(); return; }
 
     if (numberError) { Alert.alert(t('auth.error'), t('profile.usernameHint')); return; }
-    if (!firstName.trim() || !username.trim() || !usernameNumber) {
+    const validated = validateSignupProfileFields(firstName, lastName, username, usernameNumber);
+    if (!validated.ok) {
       Alert.alert(t('auth.error'), t('auth.pleaseFillAllFields')); return;
     }
     const formatted = formatPhone(phone);
@@ -163,19 +198,41 @@ const SignUpScreen = () => {
       Alert.alert(t('auth.error'), t('auth.pleaseEnterPhone')); return;
     }
 
-    const finalUsername = `${username}_${usernameNumber}`;
+    if (!getNetworkQuality().isOnline) {
+      Alert.alert(t('auth.error'), friendlyAuthError({ code: 'network/offline' }));
+      return;
+    }
+
+    if (loading) return;
     setLoading(true);
     try {
-      const available = await checkUsernameAvailable(finalUsername);
-      if (!available) {
-        Alert.alert(t('auth.error'), t('auth.usernameTaken')); return;
-      }
+      await assertPhoneAllowedForAuth(formatted, 'signUp');
 
       const vid = await sendPhoneOTP(formatted);
       setPhone(formatted);
       setVerificationId(vid);
-      setPendingProfile({ firstName: firstName.trim(), lastName: lastName.trim(), username: finalUsername, phone: formatted });
+      setPendingProfile({
+        firstName: validated.firstName,
+        lastName: validated.lastName,
+        username: validated.finalUsername,
+        phone: formatted,
+      });
       setStep('otp');
+      const otpMeta = getPhoneOtpSessionForPersistence();
+      await savePendingSignup({
+        step: 'otp',
+        phone: formatted,
+        verificationId: vid,
+        mode: otpMeta?.mode,
+        sessionInfo: otpMeta?.sessionInfo,
+        pendingProfile: {
+          firstName: validated.firstName,
+          lastName: validated.lastName,
+          username: validated.finalUsername,
+          phone: formatted,
+        },
+        savedAt: new Date().toISOString(),
+      });
       Alert.alert(t('auth.success'), t('auth.otpSent'));
     } catch (error: any) {
       if (__DEV__) console.error('Error sending OTP:', error);
@@ -199,6 +256,20 @@ const SignUpScreen = () => {
     setLoading(true);
     try {
       const { uid } = await confirmPhoneOTP(verificationId, otpCode);
+      await waitForAuthToken();
+
+      const existingProfile = await readUserProfileByUid(uid);
+      if (isCompleteUserProfile(existingProfile)) {
+        await compatSignOut();
+        await clearPendingSignup();
+        setVerificationId(null);
+        setOtpCode('');
+        setStep('form');
+        Alert.alert(t('auth.error'), t('auth.accountAlreadyExists'), [
+          { text: 'OK', onPress: () => navigateOnce(router, 'replace', '/sign-in') },
+        ]);
+        return;
+      }
 
       const userDoc = buildUserDoc(
         uid,
@@ -207,11 +278,18 @@ const SignUpScreen = () => {
         pendingProfile.lastName,
         pendingProfile.username,
       );
+      const available = await checkUsernameAvailableStrict(pendingProfile.username);
+      if (!available) {
+        Alert.alert(t('auth.error'), t('auth.usernameTaken'));
+        return;
+      }
+
       await writeUserDoc(uid, userDoc);
 
-      const displayName = pendingProfile.lastName
-        ? `${pendingProfile.firstName} ${pendingProfile.lastName}`
-        : pendingProfile.firstName;
+      const displayName = buildDisplayName(
+        pendingProfile.firstName,
+        pendingProfile.lastName
+      );
 
       if (Platform.OS === 'web') {
         const { updateProfile, getAuth } = await import('firebase/auth');
@@ -224,8 +302,11 @@ const SignUpScreen = () => {
       }
 
       await AsyncStorage.setItem('pendingUsername', pendingProfile.username);
+      await clearPendingSignup();
+      crashlyticsLog(`user_sign_up uid=${uid.slice(0, 8)}`);
+      void trackSignUp('phone');
       Alert.alert(t('auth.success'), t('auth.accountCreated'), [
-        { text: 'OK', onPress: () => router.replace('/(home)/(tabs)/chats') },
+        { text: 'OK', onPress: () => navigateOnce(router, 'replace', '/(home)/(tabs)/chats') },
       ]);
     } catch (error: any) {
       if (__DEV__) console.error('Error verifying OTP:', error);
@@ -326,7 +407,7 @@ const SignUpScreen = () => {
             autoFocus
           />
           <Button onPress={handleVerifyOTP}>{t('auth.verify')}</Button>
-          <Pressable onPress={() => { setStep('form'); setVerificationId(null); setOtpCode(''); }}>
+          <Pressable onPress={() => { setStep('form'); setVerificationId(null); setOtpCode(''); void clearPendingSignup(); }}>
             <Text className="text-center text-[#FF5722]">{t('auth.wrongPhoneNumber')}</Text>
           </Pressable>
         </>
@@ -342,11 +423,11 @@ const SignUpScreen = () => {
         </View>
       )}
 
-      {/* reCAPTCHA anchor (web only) */}
-      {Platform.OS === 'web' && (
+      {/* Hidden reCAPTCHA anchor (web invisible OTP) */}
+      {Platform.OS === 'web' && step === 'form' && (
         <View
           nativeID="recaptcha-container"
-          style={{ display: 'none', position: 'absolute', width: 0, height: 0 }}
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, overflow: 'hidden' }}
         />
       )}
     </Screen>

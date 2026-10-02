@@ -1,7 +1,9 @@
 import { Platform } from 'react-native';
 import { db } from '@/lib/firebase';
+import { markAppStart, markAppStartFail } from '@/lib/debug/appStartupMarkers';
 import { Chat } from '@/lib/types/chat';
-import { hasNativeFirestore, subscribeToChatsNative } from '@/lib/firestoreNative';
+import { FIRESTORE_SNAPSHOT_OPTS, hasNativeFirestore, subscribeToChatsNative } from '@/lib/firestoreNative';
+import { syncAndroidUnreadTotalFromChats } from '@/lib/unread/unreadTotals';
 import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { useEffect } from 'react';
 import { useChatStore } from '@/store/chatStore';
@@ -9,18 +11,26 @@ import { useChatStore } from '@/store/chatStore';
 export const useChats = (userId: string) => {
   // Read chats from store instead of local state
   const chats = useChatStore((state) => state.chats);
-  const setChats = useChatStore((state) => state.setChats);
 
   useEffect(() => {
     if (!userId) {
       return;
     }
 
+    const applyChats = (chatsData: Chat[]) => {
+      useChatStore.getState().setChats(chatsData);
+    };
+
     // On native: use RN Firebase (shares auth with phone sign-in). Web SDK would get "permission denied".
     if (Platform.OS !== 'web' && hasNativeFirestore) {
+      try {
+        markAppStart(10, { provider: 'native', userId: userId.slice(0, 8) });
+      } catch (e) {
+        markAppStartFail(10, e);
+      }
       const unsubscribe = subscribeToChatsNative(
         userId,
-        (chatsData) => setChats(chatsData as Chat[]),
+        (chatsData) => applyChats(chatsData as Chat[]),
         (err) => {
           if (__DEV__) console.error('[useChats] Native snapshot error:', err);
         }
@@ -29,6 +39,11 @@ export const useChats = (userId: string) => {
     }
 
     // Web: use web SDK Firestore
+    try {
+      markAppStart(10, { provider: 'web', userId: userId.slice(0, 8) });
+    } catch (e) {
+      markAppStartFail(10, e);
+    }
     const chatsRef = collection(db, 'chats');
     const q = query(
       chatsRef,
@@ -39,6 +54,7 @@ export const useChats = (userId: string) => {
 
     const unsubscribe = onSnapshot(
       q,
+      FIRESTORE_SNAPSHOT_OPTS,
       (snapshot) => {
         const chatsData: Chat[] = [];
         snapshot.forEach((doc) => {
@@ -53,7 +69,7 @@ export const useChats = (userId: string) => {
             updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
           } as Chat);
         });
-        setChats(chatsData);
+        applyChats(chatsData);
       },
       (error) => {
         if (__DEV__) console.error('[useChats] Snapshot error:', error);
@@ -61,7 +77,12 @@ export const useChats = (userId: string) => {
     );
 
     return () => unsubscribe();
-  }, [userId, setChats]);
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId || Platform.OS !== 'android') return;
+    void syncAndroidUnreadTotalFromChats(chats, userId);
+  }, [chats, userId]);
 
   // No loading state - always render from cache immediately
   return { chats, loading: false };

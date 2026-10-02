@@ -69,6 +69,7 @@
     "wrongPhone": "Nädogry telefon belgisi?",
     "pleaseEnterEmail": "Haýyş edýäris, e-poçta adresiňizi giriziň",
     "pleaseEnterPhone": "Haýyş edýäris, telefon belgiňizi giriziň",
+    "enterPhoneNumber": "Ýurt kody bilen telefon belgiňizi giriziň",
     "phoneNumberExample": " (meselem, +1234567890)",
     "verificationRequired": "Barlama gerekli. Haýyş edýäris, e-poçta ýa-da telefonyňyzy barlaň.",
     "additionalVerificationRequired": "Goşmaça barlama gerekli. Haýyş edýäris, e-poçta ýa-da telefonyňyzy barlaň.",
@@ -90,7 +91,9 @@
     "sessionExpired": "Sessiýa gutardy. Haýyş edýäris, täzeden başlaň.",
     "missingProfileData": "Profil maglumatlary ýok. Haýyş edýäris, täzeden hasaba almagy synaň.",
     "invalidPhoneFormat": "Nädogry telefon belgisi formaty.",
-    "codeExpired": "Kod süresi gutardy. Haýyş edýäris, täze kod soraň."
+    "codeExpired": "Kod süresi gutardy. Haýyş edýäris, täze kod soraň.",
+    "accountNotRegistered": "Bu telefon belgisi bilen hasap tapylmady. Ilki hasaba alyň.",
+    "accountAlreadyExists": "Bu telefon belgisi bilen hasap eýýäm bar. Giriş ediň."
   },
   "welcome": {
     "title1": "Gizlinligi özüňiz bilen alyň.",
@@ -108,7 +111,10 @@
     "deleteAccountWarning": "Bu, hasabyňyzy we ähli baglanyşykly maglumatlary ymykly suratda pozar.",
     "errorDeletingAccount": "Hasab pozulýarky ýalňyşlyk ýüze çykdy. Haýyş edýäris, gaýtadan synaň ýa-da goldaw bilen habarlaşyň.",
     "errorUpdatingProfile": "Surat ýüklenmedi",
-    "uploading": "Ýüklenýär..."
+    "uploading": "Ýüklenýär...",
+    "blockedAccounts": "Bloklanan hasaplar",
+    "blockedAccountsHint": "Bloklanan adamlar size habar iberip bilmeýär. Söhbetleriňiz sanawda gizlenýär.",
+    "blockedAccountsEmpty": "Hiç kimi bloklamadyňyz."
   },
   "chats": {
     "title": "Söhbetler",
@@ -141,6 +147,16 @@
     "archivedRow": "Arhiw ({{count}})",
     "archivedTitle": "Arhiwlenen söhbetler",
     "online": "onlaýn",
+    "headerCamera": "Kamera",
+    "headerSearch": "Gözleg",
+    "headerMore": "Goşmaça",
+    "menuNewGroup": "Täze topar",
+    "menuMarkAllRead": "Hemmesini okalan diýen et",
+    "menuArchived": "Arhiw",
+    "menuSettings": "Sazlamalar",
+    "menuInviteFriends": "Dostlary çagy",
+    "markAllReadFailed": "Ähli söhbetler okalan diýlip bellenmedi. Täzeden synanyşyň.",
+    "inviteShareMessage": "Gyw-de maňa goşul — gizlin habarlaşyk.",
     "listActions": {
       "pin": "Söhbeti ýapyşdyr",
       "unpin": "Ýapyşdyrmagy aýyr",
@@ -182,6 +198,7 @@
     "connected": "Bağlandy",
     "callEnded": "Çagyryş gutardy",
     "failedToInitiate": "Çagyryş başladylmady",
+    "devServerUnreachable": "Ösüş serwerine (Metro) birigen bolmaýar. Kompýuterde \"npx expo start\" işlediň, telefony şol Wi‑Fi ýa-da USB (adb reverse) bilen baglaň we programmany täzeden ýükläň.",
     "incomingVideoCall": "Gelen wideo çagyryş",
     "incomingAudioCall": "Gelen sesli çagyryş",
     "missedCall": "Görmezden gelinen çagyryş",

@@ -3,10 +3,11 @@ import { Feather } from '@expo/vector-icons';
 import clsx from 'clsx';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState, memo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, Alert, FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Platform, Text, TouchableOpacity, View } from 'react-native';
 
+import AppImage from '@/components/AppImage';
 import AppMenu from '@/components/AppMenu';
 import Screen from '@/components/Screen';
 import StoryPickerModal from '@/components/StoryPickerModal';
@@ -16,17 +17,19 @@ import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
 import { useStories } from '@/lib/hooks/useStories';
 import { useStorySeenSync } from '@/lib/hooks/useStorySeenSync';
 import { useUsersData } from '@/lib/hooks/useUsersData';
+import { getStoriesRingListTuning } from '@/lib/perf/listTuning';
 import { scheduleLikelyRouteChunksIdle } from '@/lib/perf/navigationPreload';
+import { storiesLoadLog } from '@/lib/debug/storiesLoadingTrace';
+import { logScreenLifecycle } from '@/lib/debug/runtimeDiagnostics';
+import { useProductionScreenTrace } from '@/lib/hooks/useProductionScreenTrace';
 import { createStory, legacyStorySeenByUser, type Story } from '@/lib/services/storyService';
+import { type StoryGroup } from '@/lib/stories/storyAdPlacement';
+import {
+  STORY_BORDER_WIDTH,
+  STORY_RING_ITEM_WIDTH,
+  STORY_SIZE,
+} from '@/lib/stories/storyRingLayout';
 import { useStoryStore } from '@/store/storyStore';
-
-interface StoryGroup {
-  userId: string;
-  userName?: string;
-  userImage?: string;
-  stories: Story[];
-  hasUnseen: boolean;
-}
 
 function groupHasUnseenStories(
   group: Pick<StoryGroup, 'userId' | 'stories'>,
@@ -39,8 +42,10 @@ function groupHasUnseenStories(
   );
 }
 
-const STORY_SIZE = 72;
-const STORY_BORDER_WIDTH = 3;
+function storyRingThumbUri(story: Story): string | undefined {
+  if (story.mediaType === 'video') return story.thumbnailUrl;
+  return story.thumbnailUrl || story.mediaUrl;
+}
 
 type StoryRingRowProps = {
   item: StoryGroup;
@@ -64,6 +69,7 @@ const StoryRingRow = memo(function StoryRingRow({
   const isMyStory = item.userId === myUid;
   const hasUnseen = item.hasUnseen;
   const latestStory = item.stories[0];
+  const thumbUri = latestStory ? storyRingThumbUri(latestStory) : undefined;
 
   return (
     <TouchableOpacity
@@ -123,26 +129,27 @@ const StoryRingRow = memo(function StoryRingRow({
             borderColor: '#FFFFFF',
           }}
         >
-          {latestStory ? (
-            latestStory.mediaType === 'image' ? (
-              <Image
-                source={{ uri: latestStory.mediaUrl }}
-                style={{ width: STORY_SIZE, height: STORY_SIZE }}
-                resizeMode="cover"
-              />
-            ) : (
-              <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
-                {latestStory.thumbnailUrl ? (
-                  <Image
-                    source={{ uri: latestStory.thumbnailUrl }}
-                    style={{ width: STORY_SIZE, height: STORY_SIZE }}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <Feather name="video" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
-                )}
-              </View>
-            )
+          {latestStory && thumbUri ? (
+            <AppImage
+              source={{ uri: thumbUri }}
+              style={{ width: STORY_SIZE, height: STORY_SIZE }}
+              contentFit="cover"
+              recyclingKey={thumbUri}
+              onLoadStart={() => {
+                storiesLoadLog('STORIES_IMAGES_LOAD_START', { storyId: latestStory.id });
+              }}
+              onLoad={() => {
+                storiesLoadLog('STORIES_IMAGES_LOAD_COMPLETE', { storyId: latestStory.id });
+              }}
+            />
+          ) : latestStory?.mediaType === 'video' ? (
+            <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+              <Feather name="video" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
+            </View>
+          ) : latestStory ? (
+            <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
+              <Feather name="image" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
+            </View>
           ) : (
             <View className="w-full h-full items-center justify-center bg-gray-300 dark:bg-gray-700">
               <Feather name="plus" size={28} color={colorScheme === 'dark' ? 'white' : 'black'} />
@@ -195,8 +202,30 @@ const StoryRingRow = memo(function StoryRingRow({
 );
 
 const StoriesScreen = () => {
+  const usersFetchLoggedRef = useRef(false);
+  const mountedAtRef = useRef(Date.now());
+  const firstRenderLoggedRef = useRef(false);
+  const listTuning = useMemo(() => getStoriesRingListTuning(), []);
+
   const { user } = useAuth();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  useProductionScreenTrace('StoriesTab', { lang: i18n.language });
+
+  useEffect(() => {
+    logScreenLifecycle('Stories', 'MOUNT', {
+      mountTimeMs: mountedAtRef.current,
+      authUid: user?.uid ?? null,
+    });
+    storiesLoadLog('STORIES_SCREEN_MOUNT');
+  }, []);
+  useEffect(() => {
+    if (firstRenderLoggedRef.current) return;
+    firstRenderLoggedRef.current = true;
+    logScreenLifecycle('Stories', 'FIRST_RENDER', {
+      elapsedSinceMountMs: Date.now() - mountedAtRef.current,
+      authUid: user?.uid ?? null,
+    });
+  }, [user?.uid]);
   const { colorScheme } = useTheme();
   const router = useRouter();
   const textColor = useThemeClassName('text-black', 'text-white');
@@ -217,7 +246,20 @@ const StoriesScreen = () => {
 
   const { usersData } = useUsersData(userIds);
 
-  // Group stories by user
+  useEffect(() => {
+    if (userIds.length === 0) return;
+    storiesLoadLog('STORIES_USERS_FETCH_START', { userIds: userIds.length });
+    usersFetchLoggedRef.current = true;
+  }, [userIds]);
+
+  useEffect(() => {
+    if (!usersFetchLoggedRef.current || userIds.length === 0) return;
+    storiesLoadLog('STORIES_USERS_FETCH_COMPLETE', {
+      requested: userIds.length,
+      resolved: Object.keys(usersData).length,
+    });
+  }, [userIds, usersData]);
+
   const storyGroups = useMemo(() => {
     const groupsMap = new Map<string, StoryGroup>();
     
@@ -275,6 +317,15 @@ const StoriesScreen = () => {
 
     return out;
   }, [stories, usersData, user?.uid, t, viewedStoryIds]);
+
+  const storyRingGetItemLayout = useCallback(
+    (_: ArrayLike<StoryGroup> | null | undefined, index: number) => ({
+      length: STORY_RING_ITEM_WIDTH,
+      offset: STORY_RING_ITEM_WIDTH * index,
+      index,
+    }),
+    [],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -385,18 +436,20 @@ const StoriesScreen = () => {
         onAddMine={showStoryOptions}
       />
     ),
-    [user?.uid, colorScheme, textColor, t, openStoryViewer, showStoryOptions]
+    [user?.uid, colorScheme, textColor, t, openStoryViewer, showStoryOptions],
   );
 
-  if (storiesLoading) {
-    return (
-      <Screen viewClassName="flex-1">
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color={iconColor} />
-        </View>
-      </Screen>
-    );
-  }
+  const showStoriesSpinner = storiesLoading && stories.length === 0;
+
+  useEffect(() => {
+    logScreenLifecycle('Stories', 'RENDER_STATE', {
+      loading: storiesLoading,
+      stories: stories.length,
+      groups: storyGroups.length,
+      showSpinner: showStoriesSpinner,
+      authUid: user?.uid ?? null,
+    });
+  }, [storiesLoading, stories.length, storyGroups.length, showStoriesSpinner, user?.uid]);
 
   return (
     <Screen viewClassName="flex-1">
@@ -411,6 +464,12 @@ const StoriesScreen = () => {
         </TouchableOpacity>
       </View>
       
+      {showStoriesSpinner ? (
+        <View className="py-12 items-center">
+          <ActivityIndicator size="large" color={iconColor} />
+        </View>
+      ) : null}
+
       {/* Horizontal scrollable stories */}
       {storyGroups.length > 0 ? (
         <View className="py-4 border-b" style={{ borderBottomColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0' }}>
@@ -421,12 +480,15 @@ const StoriesScreen = () => {
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: 8 }}
-            initialNumToRender={6}
-            windowSize={5}
-            removeClippedSubviews={true}
+            getItemLayout={storyRingGetItemLayout}
+            initialNumToRender={listTuning.initialNumToRender}
+            maxToRenderPerBatch={listTuning.maxToRenderPerBatch}
+            windowSize={listTuning.windowSize}
+            updateCellsBatchingPeriod={listTuning.updateCellsBatchingPeriod}
+            removeClippedSubviews={Platform.OS === 'android'}
           />
         </View>
-      ) : (
+      ) : !showStoriesSpinner ? (
         <View className="py-8 items-center border-b" style={{ borderBottomColor: colorScheme === 'dark' ? '#2F2F2F' : '#E0E0E0' }}>
           <Text className={clsx('text-center', textSecondaryColor)}>
             {t('stories.noStories')}
@@ -444,7 +506,7 @@ const StoriesScreen = () => {
             )}
           </TouchableOpacity>
         </View>
-      )}
+      ) : null}
 
       <StoryPickerModal
         visible={showPicker}

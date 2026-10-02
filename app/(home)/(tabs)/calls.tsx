@@ -7,6 +7,7 @@ import { Alert, Modal, Pressable, Share, StyleSheet, Text, TextInput, TouchableO
 import { FlatList } from 'react-native';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { useOfflineAwareFeatures } from '@/lib/hooks/useOfflineAwareFeatures';
 
 import AppMenu from '@/components/AppMenu';
 import Avatar from '@/components/Avatar';
@@ -16,10 +17,14 @@ import Screen from '@/components/Screen';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useThemeClassName } from '@/lib/themeUtils';
 import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
+import { startOutgoingCall } from '@/lib/call/startOutgoingCall';
 import { getCallHistory } from '@/lib/services/callService';
+import { navigateOnce } from '@/lib/safeAction';
 import { getUser } from '@/lib/services/chatService';
 import { Call } from '@/lib/types/call';
+import { resolveDisplayName } from '@/lib/contacts/contactResolver';
 import { User } from '@/lib/types/chat';
+import { useContactsStore } from '@/store/contactsStore';
 import { useCallStore } from '@/store/callStore';
 import { useChatStore } from '@/store/chatStore';
 import clsx from 'clsx';
@@ -36,6 +41,7 @@ const CallsScreen = () => {
   const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
   const iconSecondaryColor = colorScheme === 'dark' ? '#9ca3af' : '#6b7280';
   // Read calls from store instead of local state
+  const contactsRevision = useContactsStore((s) => s.revision);
   const calls = useCallStore((state) => state.calls);
   const chats = useChatStore((state) => state.chats);
   const [userData, setUserData] = useState<Record<string, User>>({});
@@ -122,44 +128,47 @@ const CallsScreen = () => {
 
   const handleCallPress = useCallback(async (call: Call) => {
     if (call.chatId) {
-      router.push(`/(home)/chat/${call.chatId}`);
+      navigateOnce(router, 'push', `/(home)/chat/${call.chatId}`);
     } else if (creatingCall) {
+      return;
+    } else if (!guardFeature('voiceCall')) {
       return;
     } else {
       const otherUserId = call.callerId === user?.uid ? call.receiverId : call.callerId;
       setCreatingCall(true);
       try {
         const { getOrCreateDirectChat } = await import('@/lib/services/chatService');
-        const { createCall } = await import('@/lib/services/callService');
         const chatId = await getOrCreateDirectChat(user!.uid, otherUserId);
         const callType: 'audio' | 'video' = call.type === 'video' ? 'video' : 'audio';
-        const newCallId = await createCall(
-          user!.uid,
-          otherUserId,
+        startOutgoingCall({
+          router,
+          callerId: user!.uid,
+          calleeId: otherUserId,
           callType,
           chatId,
-          undefined,
-          user!.displayName ?? undefined,
-          user!.photoURL ?? undefined,
-        );
-        router.push(`/(home)/call/${newCallId}`);
+          callerName: user!.displayName ?? undefined,
+          callerAvatar: user!.photoURL ?? undefined,
+        });
+        setTimeout(() => setCreatingCall(false), 3000);
       } catch (error) {
         if (__DEV__) console.error('Error initiating call:', error);
         Alert.alert(t('common.error'), t('calls.failedToInitiate'));
-      } finally {
         setCreatingCall(false);
       }
     }
-  }, [router, user?.uid, creatingCall]);
+  }, [router, user?.uid, creatingCall, guardFeature]);
+
+  const { guardFeature } = useOfflineAwareFeatures();
 
   const handleStartCall = useCallback(() => {
+    if (!guardFeature('voiceCall')) return;
     setCreatingLink(false);
     setShowCallTypeModal(true);
-  }, []);
+  }, [guardFeature]);
 
   const handleAudioCall = useCallback(() => {
     setShowCallTypeModal(false);
-    router.push({
+    navigateOnce(router, 'push', {
       pathname: '/(home)/(modal)/new-message',
       params: { callType: 'audio' },
     });
@@ -167,7 +176,7 @@ const CallsScreen = () => {
 
   const handleVideoCall = useCallback(() => {
     setShowCallTypeModal(false);
-    router.push({
+    navigateOnce(router, 'push', {
       pathname: '/(home)/(modal)/new-message',
       params: { callType: 'video' },
     });
@@ -195,7 +204,8 @@ const CallsScreen = () => {
 
   const handleCreateCallLink = async () => {
     if (!user?.uid) return;
-    
+    if (!guardFeature('voiceCall')) return;
+
     setCreatingLink(true);
     setShowCallTypeModal(true);
   };
@@ -279,6 +289,7 @@ const CallsScreen = () => {
           <FlatList
             data={calls}
             keyExtractor={(item) => item.id}
+            extraData={contactsRevision}
             style={styles.list}
             contentContainerStyle={styles.listContent}
             removeClippedSubviews={true}
@@ -291,10 +302,19 @@ const CallsScreen = () => {
             const otherUser = userData[otherUserId];
             const chat = call.chatId ? chats.find(c => c.id === call.chatId) : undefined;
             const nameFromChat = chat?.participantData?.[otherUserId]?.name;
-            const nameFromUser = otherUser
-              ? `${otherUser.firstName} ${otherUser.lastName}`.trim() || otherUser.username
-              : '';
-            const participantName = nameFromUser || nameFromChat || t('calls.unknown');
+            const participantName = otherUser
+              ? resolveDisplayName(
+                  {
+                    phoneNumber: otherUser.phoneNumber,
+                    firstName: otherUser.firstName,
+                    lastName: otherUser.lastName,
+                    username: otherUser.username,
+                    displayName: otherUser.displayName,
+                    participantName: nameFromChat,
+                  },
+                  { fallback: nameFromChat || t('calls.unknown'), logContext: 'calls_tab' }
+                )
+              : nameFromChat || t('calls.unknown');
             const isMissed = call.status === 'missed';
             const isRejected = call.status === 'rejected' || call.status === 'declined';
             const isCompleted = call.status === 'ended' && !!call.duration && call.duration > 0;

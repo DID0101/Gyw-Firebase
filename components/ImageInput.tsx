@@ -1,5 +1,5 @@
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Pressable } from 'react-native';
 
@@ -14,6 +14,7 @@ interface ImageInputProps {
 
 function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
   const { t } = useTranslation();
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     requestPermission();
@@ -31,6 +32,10 @@ function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
   };
 
   const handlePress = () => {
+    if (pickerOpen) {
+      if (__DEV__) console.log('SAFE_ACTION_BLOCKED', { key: 'image_picker' });
+      return;
+    }
     if (!imageUri) selectImage();
     else
       Alert.alert(t('common.delete'), t('common.confirmDeleteImage'), [
@@ -44,6 +49,7 @@ function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
   };
 
   const selectImage = async () => {
+    setPickerOpen(true);
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -56,11 +62,13 @@ function ImageInput({ name, imageUri, onChangeImage }: ImageInputProps) {
       }
     } catch (error) {
       console.error('Error selecting image:', error);
+    } finally {
+      setPickerOpen(false);
     }
   };
 
   return (
-    <Pressable onPress={handlePress} className="items-center justify-center">
+    <Pressable disabled={pickerOpen} onPress={handlePress} className="items-center justify-center">
       <Avatar
         imageUrl={imageUri!}
         size={100}

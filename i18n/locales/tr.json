@@ -69,6 +69,7 @@
     "wrongPhone": "Yanlış telefon numarası?",
     "pleaseEnterEmail": "Lütfen e-posta adresinizi girin",
     "pleaseEnterPhone": "Lütfen telefon numaranızı girin",
+    "enterPhoneNumber": "Ülke koduyla telefon numaranızı girin",
     "phoneNumberExample": " (ör. +1234567890)",
     "verificationRequired": "Doğrulama gerekli. Lütfen e-postanızı veya telefonunuzu kontrol edin.",
     "additionalVerificationRequired": "Ek doğrulama gerekli. Lütfen e-postanızı veya telefonunuzu kontrol edin.",
@@ -90,7 +91,9 @@
     "sessionExpired": "Oturum sona erdi. Lütfen baştan başlayın.",
     "missingProfileData": "Profil verisi eksik. Lütfen kayıt olmayı tekrar deneyin.",
     "invalidPhoneFormat": "Geçersiz telefon numarası formatı.",
-    "codeExpired": "Kod süresi doldu. Lütfen yeni kod isteyin."
+    "codeExpired": "Kod süresi doldu. Lütfen yeni kod isteyin.",
+    "accountNotRegistered": "Bu telefon numarasına kayıtlı hesap bulunamadı. Lütfen önce kayıt olun.",
+    "accountAlreadyExists": "Bu telefon numarasına kayıtlı bir hesap zaten var. Lütfen giriş yapın."
   },
   "welcome": {
     "title1": "Gizliliği yanınıza alın.",
@@ -108,7 +111,10 @@
     "deleteAccountWarning": "Bu, hesabınızı ve tüm ilişkili verileri kalıcı olarak silecektir.",
     "errorDeletingAccount": "Hesabınız silinirken bir hata oluştu. Lütfen tekrar deneyin veya destek ile iletişime geçin.",
     "errorUpdatingProfile": "Görsel yüklenemedi",
-    "uploading": "Yükleniyor..."
+    "uploading": "Yükleniyor...",
+    "blockedAccounts": "Engellenen hesaplar",
+    "blockedAccountsHint": "Engellediğiniz kişiler size mesaj gönderemez. Sohbetleri listenizde gizlenir.",
+    "blockedAccountsEmpty": "Kimseyi engellemediniz."
   },
   "chats": {
     "title": "Sohbetler",
@@ -141,6 +147,16 @@
     "archivedRow": "Arşiv ({{count}})",
     "archivedTitle": "Arşivlenmiş sohbetler",
     "online": "çevrimiçi",
+    "headerCamera": "Kamera",
+    "headerSearch": "Ara",
+    "headerMore": "Diğer seçenekler",
+    "menuNewGroup": "Yeni grup",
+    "menuMarkAllRead": "Tümünü okundu işaretle",
+    "menuArchived": "Arşiv",
+    "menuSettings": "Ayarlar",
+    "menuInviteFriends": "Arkadaşlarını davet et",
+    "markAllReadFailed": "Tüm sohbetler okundu olarak işaretlenemedi. Tekrar deneyin.",
+    "inviteShareMessage": "Gyw'de bana katıl — gizli mesajlaşma.",
     "listActions": {
       "pin": "Sohbeti sabitle",
       "unpin": "Sabitlemeyi kaldır",
@@ -182,6 +198,7 @@
     "connected": "Bağlandı",
     "callEnded": "Arama bitti",
     "failedToInitiate": "Arama başlatılamadı",
+    "devServerUnreachable": "Geliştirme sunucusuna (Metro) bağlanılamıyor. Bilgisayarda \"npx expo start\" çalıştırın, telefon aynı Wi‑Fi veya USB (adb reverse) ile bağlı olsun, ardından uygulamayı yeniden yükleyin.",
     "incomingVideoCall": "Gelen video araması",
     "incomingAudioCall": "Gelen sesli arama",
     "missedCall": "Kaçırılan arama",

@@ -1,7 +1,7 @@
 import Feather from '@expo/vector-icons/Feather';
 import clsx from 'clsx';
 import type { MutableRefObject } from 'react';
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -25,8 +25,14 @@ type Props = {
 };
 
 const ChatsHeaderActions = memo(function ChatsHeaderActions({ iconColor, handlersRef }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const onLanguageChanged = () => setMenuOpen(false);
+    i18n.on('languageChanged', onLanguageChanged);
+    return () => i18n.off('languageChanged', onLanguageChanged);
+  }, [i18n]);
   const [anchor, setAnchor] = useState({ top: 56, right: 8 });
   const moreRef = useRef<View>(null);
   const menuBg = useThemeClassName('bg-white', 'bg-gray-900');

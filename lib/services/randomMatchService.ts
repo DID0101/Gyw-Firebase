@@ -9,15 +9,11 @@
  */
 
 import {
-  collection,
   doc,
   setDoc,
   deleteDoc,
   updateDoc,
   onSnapshot,
-  query,
-  where,
-  limit,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
@@ -54,6 +50,17 @@ export async function joinQueue(
   userId: string,
   preferences: { video: boolean } = { video: true }
 ): Promise<string> {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    const rnAuth = getRnAuth();
+    const uid = rnAuth?.currentUser?.uid;
+    if (!uid) {
+      throw Object.assign(new Error('Not signed in'), { code: 'permission-denied' });
+    }
+    if (uid !== userId) {
+      throw Object.assign(new Error('Auth uid mismatch'), { code: 'permission-denied' });
+    }
+  }
+
   const path = `${QUEUE_COLLECTION}/${userId}`;
   const clientTimeMs = Date.now();
   audit('joinQueue_setDoc', 'before', {
@@ -297,107 +304,57 @@ export async function tryMatch(
   return { matched: false };
 }
 
-/** Subscribe to random session (Omegle-style). Fires when user is matched - as caller OR receiver.
- * Both users get the same session and navigate instantly. No ringing, no accept/reject. */
+/**
+ * Listen on the user's own randomQueue doc for matchedCallId (set by tryRandomMatch CF).
+ * Avoids calls-collection queries that fail security rules on some devices.
+ */
 export function listenForRandomSession(
   userId: string,
   onSession: (callId: string) => void,
   onError?: (err: Error) => void
 ): () => void {
-  audit('listenForRandomSession', 'before', { userId });
+  audit('listenForRandomQueueMatch', 'before', { userId });
+  let fired = false;
 
   const fireSession = (callId: string) => {
-    audit('listenForRandomSession', 'session_found', { callId });
+    if (fired) return;
+    fired = true;
+    audit('listenForRandomQueueMatch', 'session_found', { callId });
     onSession(callId);
   };
 
+  const onSnap = (data: Record<string, unknown> | undefined) => {
+    const callId = data?.matchedCallId;
+    if (typeof callId === 'string' && callId.length > 0) {
+      fireSession(callId);
+    }
+  };
+
+  const onSnapError = (err: unknown) => {
+    audit('listenForRandomQueueMatch', 'error', { errorCode: (err as { code?: string })?.code });
+    onError?.(err instanceof Error ? err : new Error(String(err)));
+  };
+
   if (hasNativeFirestore) {
-    const { collection, query, where, limit, onSnapshot } = require('@react-native-firebase/firestore');
-    const db = getRnFirestore();
-    const callsRef = collection(db, 'calls');
-    const qCaller = query(
-      callsRef,
-      where('callerId', '==', userId),
-      where('isRandom', '==', true),
-      where('status', 'in', ['ringing', 'active']),
-      limit(1)
-    );
-    const qReceiver = query(
-      callsRef,
-      where('receiverId', '==', userId),
-      where('isRandom', '==', true),
-      where('status', 'in', ['ringing', 'active']),
-      limit(1)
-    );
-    const unsubCaller = onSnapshot(
-      qCaller,
-      (snap: any) => {
-        const docs = snap.docs ?? [];
-        const first = docs[0];
-        if (first) fireSession(first.id);
+    const { doc, onSnapshot: rnOnSnapshot } = require('@react-native-firebase/firestore');
+    const ref = doc(getRnFirestore(), QUEUE_COLLECTION, userId);
+    return rnOnSnapshot(
+      ref,
+      (snap: { exists: boolean; data: () => Record<string, unknown> }) => {
+        if (!snap.exists) return;
+        onSnap(snap.data());
       },
-      (err: any) => {
-        audit('listenForRandomSession', 'error', { errorCode: (err as any)?.code });
-        onError?.(err instanceof Error ? err : new Error(String(err)));
-      }
+      onSnapError
     );
-    const unsubReceiver = onSnapshot(
-      qReceiver,
-      (snap: any) => {
-        const docs = snap.docs ?? [];
-        const first = docs[0];
-        if (first) fireSession(first.id);
-      },
-      (err: any) => {
-        audit('listenForRandomSession', 'error', { errorCode: (err as any)?.code });
-        onError?.(err instanceof Error ? err : new Error(String(err)));
-      }
-    );
-    return () => {
-      unsubCaller();
-      unsubReceiver();
-    };
   }
 
-  const callsRef = collection(db, 'calls');
-  const qCaller = query(
-    callsRef,
-    where('callerId', '==', userId),
-    where('isRandom', '==', true),
-    where('status', 'in', ['ringing', 'active']),
-    limit(1)
-  );
-  const qReceiver = query(
-    callsRef,
-    where('receiverId', '==', userId),
-    where('isRandom', '==', true),
-    where('status', 'in', ['ringing', 'active']),
-    limit(1)
-  );
-  const unsubCaller = onSnapshot(
-    qCaller,
-    (snapshot) => {
-      const first = snapshot.docs[0];
-      if (first) fireSession(first.id);
+  const ref = doc(db, QUEUE_COLLECTION, userId);
+  return onSnapshot(
+    ref,
+    (snap) => {
+      if (!snap.exists()) return;
+      onSnap(snap.data() as Record<string, unknown>);
     },
-    (err) => {
-      audit('listenForRandomSession', 'error', { errorCode: (err as any)?.code });
-      onError?.(err instanceof Error ? err : new Error(String(err)));
-    }
+    onSnapError
   );
-  const unsubReceiver = onSnapshot(
-    qReceiver,
-    (snapshot) => {
-      const first = snapshot.docs[0];
-      if (first) fireSession(first.id);
-    },
-    (err) => {
-      audit('listenForRandomSession', 'error', { errorCode: (err as any)?.code });
-      onError?.(err instanceof Error ? err : new Error(String(err)));
-    }
-  );
-  return () => {
-    unsubCaller();
-    unsubReceiver();
-  };
 }

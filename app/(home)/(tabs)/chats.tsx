@@ -7,18 +7,20 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  Alert,
-  Image as RNImage,
-  InteractionManager,
-  Modal,
-  Platform,
-  Pressable,
-  Share,
-  StyleSheet,
-  Text,
-  View,
+    Alert,
+    FlatList,
+    InteractionManager,
+    Modal,
+    Platform,
+    Pressable,
+    Image as RNImage,
+    Share,
+    StyleSheet,
+    Text,
+    View,
 } from 'react-native';
-import { FlatList } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 
 import AppMenu from '@/components/AppMenu';
 import ChatListActionsSheet from '@/components/ChatListActionsSheet';
@@ -28,30 +30,53 @@ import Screen from '@/components/Screen';
 import ScreenLoading from '@/components/ScreenLoading';
 import StoryPickerModal from '@/components/StoryPickerModal';
 import { useTheme } from '@/contexts/ThemeContext';
+import { markAppStart } from '@/lib/debug/appStartupMarkers';
+import { formatChatListTitle, formatLastMessagePreview, safePreviewText } from '@/lib/chatDisplayText';
+import {
+    getIdlePreloadChatCount,
+    getWarmChatLimit,
+    shouldPrefetchChatRoute,
+} from '@/lib/chatMessageLimits';
+import { markChatNavStart, markChatRouterPushReturned, markChatTap } from '@/lib/chatOpenPerf';
+import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
+import { chatRowTouchLog } from '@/lib/debug/chatRowTouchTrace';
+import { searchLoadLog } from '@/lib/debug/searchLoadingTrace';
 import { useChats } from '@/lib/hooks/useChats';
-import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
+import { prefetchRecommendedUsers } from '@/lib/hooks/useContactRecommendedUsers';
+import { useProductionScreenTrace } from '@/lib/hooks/useProductionScreenTrace';
 import { useUserBlocks } from '@/lib/hooks/useUserBlocks';
 import { useUserChatMeta } from '@/lib/hooks/useUserChatMeta';
 import { useUsersData } from '@/lib/hooks/useUsersData';
-import { markChatNavStart, markChatRouterPushReturned, markChatTap } from '@/lib/chatOpenPerf';
 import { isLowTierAndroid } from '@/lib/perf/deviceProfile';
-import { scheduleLikelyRouteChunksIdle } from '@/lib/perf/navigationPreload';
-import { warmChat } from '@/lib/services/chatPreloadService';
-import { getOrCreateDirectChat, markAllChatsReadForUser } from '@/lib/services/chatService';
-import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
-import { useThemeClassName } from '@/lib/themeUtils';
 import {
-  pinUserChat,
-  setUserChatArchived,
-  setUserChatDeletedForMe,
-  setUserChatMuted,
-  unpinUserChat,
+    getArchivedChatsListTuning,
+    getChatListItemLayout,
+    getChatsTabListTuning,
+} from '@/lib/perf/listTuning';
+import { scheduleLikelyRouteChunksIdle } from '@/lib/perf/navigationPreload';
+import { navigateOnce } from '@/lib/safeAction';
+import { warmChat, isActiveMessageListener } from '@/lib/services/chatPreloadService';
+import { getOrCreateDirectChat, markAllChatsReadForUser } from '@/lib/services/chatService';
+import { trackChatOpened } from '@/lib/services/analyticsService';
+import { crashlyticsLog } from '@/lib/services/crashlyticsService';
+import { startPerformanceTrace } from '@/lib/services/performanceService';
+import {
+    pinUserChat,
+    setUserChatArchived,
+    setUserChatDeletedForMe,
+    setUserChatMuted,
+    unpinUserChat,
 } from '@/lib/services/userChatMetaService';
-import { Chat, User } from '@/lib/types/chat';
+import { useThemeClassName } from '@/lib/themeUtils';
+import { Chat } from '@/lib/types/chat';
 import type { UserChatMeta } from '@/lib/types/userChatMeta';
+import { TAB_HEADER_ICON_SIZE } from '@/lib/ui/tabHeader';
 import { useChatMetaStore } from '@/store/chatMetaStore';
-import { useUserBlocksStore } from '@/store/userBlocksStore';
+import { useChatStore } from '@/store/chatStore';
+import { useContactsStore } from '@/store/contactsStore';
 import { usePresenceStore } from '@/store/presenceStore';
+import { useUserBlocksStore } from '@/store/userBlocksStore';
+import { useUserProfileStore } from '@/store/userProfileStore';
 
 const formatTime = (timestamp?: string) => {
   if (!timestamp) return '';
@@ -88,23 +113,20 @@ function compareMainChats(
 interface ChatListItemProps {
   item: Chat;
   currentUserId: string;
-  otherUser: User | null;
   onPress: (chatId: string) => void;
-  onPressIn?: (chatId: string) => void;
   onLongPress?: (chatId: string, displayTitle: string) => void;
 }
 
-/** WhatsApp-like: ~340ms; must stay <500ms so RNGH scroll lists don’t feel “stuck”. */
-const CHAT_ROW_LONG_PRESS_MS = 340;
+/** UI-thread long press (RNGH). Kept ≥500ms so slow taps are not mistaken for menu intent. */
+const CHAT_ROW_LONG_PRESS_MS = 500;
 
 const ChatListItem = memo(function ChatListItem({
   item,
   currentUserId,
-  otherUser,
   onPress,
-  onPressIn,
   onLongPress,
 }: ChatListItemProps) {
+  const longPressActivatedRef = useRef(false);
   const { colorScheme } = useTheme();
   const { t } = useTranslation();
   const chatMeta = useChatMetaStore(useCallback((s) => s.byId[item.id], [item.id]));
@@ -117,6 +139,10 @@ const ChatListItem = memo(function ChatListItem({
   const otherParticipantId =
     item.type === 'direct' ? item.participants.find(p => p !== currentUserId) : undefined;
 
+  const otherUser = useUserProfileStore(
+    useCallback((s) => (otherParticipantId ? s.byId[otherParticipantId] ?? null : null), [otherParticipantId])
+  );
+
   // Each item subscribes to only its own participant's status — avoids whole-list re-renders
   const presenceOnline = usePresenceStore(
     state => (otherParticipantId ? state.onlineUsers?.[otherParticipantId] === true : false)
@@ -127,89 +153,128 @@ const ChatListItem = memo(function ChatListItem({
       ? Date.now() - new Date(otherUser.lastActive).getTime() < 5 * 60 * 1000
       : false);
 
-  const displayName =
-    item.type === 'group'
-      ? item.name || t('chats.groupChat')
-      : otherUser
-      ? `${otherUser.firstName} ${otherUser.lastName}`.trim() ||
-        otherUser.username ||
-        t('calls.unknown')
-      : t('calls.unknown');
+  const otherParticipantIdForTitle = item.participants.find((p) => p !== currentUserId);
+  const participantDataName = otherParticipantIdForTitle
+    ? item.participantData?.[otherParticipantIdForTitle]?.name
+    : undefined;
+  const participantDataPhone = otherParticipantIdForTitle
+    ? (item.participantData?.[otherParticipantIdForTitle] as { phoneNumber?: string } | undefined)
+        ?.phoneNumber
+    : undefined;
+
+  const contactsRevision = useContactsStore((s) => s.revision);
+  const contactsReady = useContactsStore((s) => s.contactsReady);
+  const displayName = useMemo(
+    () =>
+      formatChatListTitle({
+        type: item.type,
+        name: item.name,
+        otherUser,
+        participantDataName,
+        participantDataPhone,
+        participantCount: item.participants?.length ?? 0,
+        fallbackUnknown: t('calls.unknown'),
+        fallbackGroup: t('chats.groupChat'),
+      }),
+    [
+      item.type,
+      item.name,
+      item.participants?.length,
+      otherUser,
+      otherUser?.phoneNumber,
+      participantDataName,
+      participantDataPhone,
+      contactsRevision,
+      contactsReady,
+      t,
+    ]
+  );
+
+  const lastMessageText = useMemo(
+    () =>
+      formatLastMessagePreview(item.lastMessage, currentUserId, {
+        noMessagesYet: t('messages.noMessagesYet'),
+        you: t('messages.you'),
+        youSentMedia: t('messages.youSentMedia'),
+        mediaMessage: t('messages.mediaMessage'),
+        call: t('messages.call'),
+        missedVideoCall: t('calls.missedVideoCall'),
+        missedAudioCall: t('calls.missedAudioCall'),
+        videoCall: t('calls.videoCall'),
+        audioCall: t('calls.audioCall'),
+        callRejected: t('messages.callRejected'),
+        callDuration: t('messages.callDuration'),
+      }),
+    [item.lastMessage, currentUserId, t]
+  );
+
+  const formattedTime = useMemo(
+    () => (item.lastMessageAt ? formatTime(item.lastMessageAt) : ''),
+    [item.lastMessageAt]
+  );
+
+  const handlePressStart = useCallback(() => {
+    longPressActivatedRef.current = false;
+    chatRowTouchLog('PRESS_START', item.id);
+  }, [item.id]);
+
+  const handlePressEnd = useCallback(() => {
+    chatRowTouchLog('PRESS_END', item.id);
+  }, [item.id]);
+
+  const handlePress = useCallback(() => {
+    chatRowTouchLog('ON_PRESS', item.id);
+    if (longPressActivatedRef.current) {
+      chatRowTouchLog('LONG_PRESS_SUPPRESSED_TAP', item.id);
+      longPressActivatedRef.current = false;
+      return;
+    }
+    chatRowTouchLog('NAVIGATE_CHAT', item.id);
+    onPress(item.id);
+  }, [onPress, item.id]);
 
   const handleLongPress = useCallback(() => {
+    chatRowTouchLog('ON_LONG_PRESS', item.id);
+    longPressActivatedRef.current = true;
     onLongPress?.(item.id, displayName);
   }, [onLongPress, item.id, displayName]);
+
+  const rowGesture = useMemo(() => {
+    const longPress = Gesture.LongPress()
+      .minDuration(CHAT_ROW_LONG_PRESS_MS)
+      .maxDistance(14)
+      .onStart(() => {
+        runOnJS(handleLongPress)();
+      });
+
+    const tap = Gesture.Tap()
+      .maxDuration(CHAT_ROW_LONG_PRESS_MS - 80)
+      .maxDistance(14)
+      .onBegin(() => {
+        runOnJS(handlePressStart)();
+      })
+      .onFinalize(() => {
+        runOnJS(handlePressEnd)();
+      })
+      .onEnd(() => {
+        runOnJS(handlePress)();
+      });
+
+    return onLongPress ? Gesture.Exclusive(longPress, tap) : tap;
+  }, [handlePressStart, handlePressEnd, handlePress, handleLongPress, onLongPress]);
 
   const avatar = item.type === 'group' ? item.avatar : otherUser?.avatar;
   const unreadCount = item.unreadCount?.[currentUserId] || 0;
   const isUnread = unreadCount > 0;
 
-  let lastMessageText = t('messages.noMessagesYet');
-  if (item.lastMessage) {
-    if (item.lastMessage.type === 'call') {
-      const callType = item.lastMessage.callType === 'video' ? '📹' : '📞';
-      if (item.lastMessage.callStatus === 'missed') {
-        lastMessageText = `${callType} ${item.lastMessage.callType === 'video' ? t('calls.missedVideoCall') : t('calls.missedAudioCall')}`;
-      } else if (item.lastMessage.callStatus === 'rejected') {
-        lastMessageText = `${callType} ${item.lastMessage.callType === 'video' ? t('calls.videoCall') : t('calls.audioCall')} ${t('messages.callRejected')}`;
-      } else if (item.lastMessage.callStatus === 'ended') {
-        if (item.lastMessage.callDuration && item.lastMessage.callDuration > 0) {
-          const minutes = Math.floor(item.lastMessage.callDuration / 60);
-          const seconds = item.lastMessage.callDuration % 60;
-          const durationText =
-            minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
-          lastMessageText = `${callType} ${item.lastMessage.callType === 'video' ? t('calls.videoCall') : t('calls.audioCall')} ${t('messages.callDuration')} ${durationText}`;
-        } else {
-          lastMessageText = `${callType} ${item.lastMessage.callType === 'video' ? t('calls.videoCall') : t('calls.audioCall')}`;
-        }
-      } else {
-        lastMessageText = item.lastMessage.text || t('messages.call');
-      }
-    } else if (item.lastMessage.text) {
-      lastMessageText =
-        item.lastMessage.senderId === currentUserId
-          ? `${t('messages.you')}: ${item.lastMessage.text}`
-          : item.lastMessage.text;
-    } else {
-      lastMessageText =
-        item.lastMessage.senderId === currentUserId
-          ? t('messages.youSentMedia')
-          : t('messages.mediaMessage');
-    }
-  }
-
   const isPinned = !!chatMeta?.pinnedAt;
   const isMuted = !!chatMeta?.muted;
 
-  const rowRipple =
-    Platform.OS === 'android'
-      ? { color: colorScheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.09)' }
-      : undefined;
-
   return (
-    <Pressable
-      onPressIn={() => onPressIn?.(item.id)}
-      onPress={() => onPress(item.id)}
-      onLongPress={onLongPress ? handleLongPress : undefined}
-      delayPressIn={0}
-      delayLongPress={CHAT_ROW_LONG_PRESS_MS}
-      unstable_pressDelay={0}
-      pressRetentionOffset={{ top: 24, bottom: 24, left: 24, right: 24 }}
-      android_ripple={rowRipple}
-      className={clsx('flex-row items-center px-4 py-3 border-b', borderColor, isUnread && bgColor)}
-      style={({ pressed }) =>
-        Platform.OS === 'android'
-          ? undefined
-          : {
-              opacity: pressed ? 0.96 : 1,
-              backgroundColor: pressed
-                ? colorScheme === 'dark'
-                  ? 'rgba(255,255,255,0.06)'
-                  : 'rgba(0,0,0,0.04)'
-                : undefined,
-            }
-      }
-    >
+    <GestureDetector gesture={rowGesture}>
+      <View
+        className={clsx('flex-row items-center px-4 py-3 border-b', borderColor, isUnread && bgColor)}
+      >
       <View className="relative">
         <PreviewAvatar name={displayName} image={avatar} size={56} fontSize={20} imagePriority="low" />
         {isOnline && (
@@ -233,9 +298,9 @@ const ChatListItem = memo(function ChatListItem({
             {isMuted && (
               <Feather name="bell-off" size={14} color={iconMuted} style={{ marginRight: 6 }} />
             )}
-            {item.lastMessageAt && (
-              <Text className={clsx('text-xs', textSecondaryColor)}>{formatTime(item.lastMessageAt)}</Text>
-            )}
+            {formattedTime ? (
+              <Text className={clsx('text-xs', textSecondaryColor)}>{formattedTime}</Text>
+            ) : null}
           </View>
         </View>
         <View className="flex-row items-center justify-between">
@@ -269,14 +334,16 @@ const ChatListItem = memo(function ChatListItem({
           )}
         </View>
       </View>
-    </Pressable>
+      </View>
+    </GestureDetector>
   );
 });
 
 const ChatsScreen = () => {
   const { user } = useAuth();
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  useProductionScreenTrace('ChatsTab', { lang: i18n.language });
   const { colorScheme } = useTheme();
   const iconColor = colorScheme === 'dark' ? '#ffffff' : '#000000';
   const chatsHandlersRef = useRef<ChatsHeaderHandlers>({} as ChatsHeaderHandlers);
@@ -286,6 +353,36 @@ const ChatsScreen = () => {
   const [showArchived, setShowArchived] = useState(false);
   const { chats, loading } = useChats(user?.uid || '');
   chatsRef.current = chats;
+  const chatListTraceStoppedRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      markAppStart(9, { uid: user?.uid?.slice(0, 8) ?? null });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('APP_START_9_FAILED', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    chatListTraceStoppedRef.current = false;
+    void startPerformanceTrace('chat_list_load');
+    return () => {
+      if (!chatListTraceStoppedRef.current) {
+        void import('@/lib/services/performanceService').then(({ stopPerformanceTrace }) =>
+          stopPerformanceTrace('chat_list_load')
+        );
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (loading || chatListTraceStoppedRef.current) return;
+    chatListTraceStoppedRef.current = true;
+    void import('@/lib/services/performanceService').then(({ stopPerformanceTrace }) =>
+      stopPerformanceTrace('chat_list_load', { chat_count: String(chats.length) })
+    );
+  }, [loading, chats.length]);
   useUserChatMeta(user?.uid);
   useUserBlocks(user?.uid);
   const blocksRevision = useUserBlocksStore((s) => s.revision);
@@ -362,22 +459,43 @@ const ChatsScreen = () => {
 
   const archivedCount = archivedListChats.length;
 
-  // Get all participant user IDs
+  const VISIBLE_PARTICIPANT_CAP = 40;
+
+  /** Stable key: visible chat ids + participant set — avoids refetch when typing updates unrelated fields. */
+  const participantFetchKey = useMemo(() => {
+    const source = showArchived
+      ? [...mainListChats, ...archivedListChats]
+      : mainListChats;
+    const chatIds = source.map((c) => c.id).sort().join(',');
+    const uid = user?.uid ?? '';
+    const parts: string[] = [];
+    for (const chat of source) {
+      for (const p of chat.participants) {
+        if (p !== uid) parts.push(p);
+      }
+    }
+    parts.sort();
+    return `${chatIds}|${parts.join(',')}`;
+  }, [mainListChats, archivedListChats, showArchived, user?.uid]);
+
   const participantIds = useMemo(() => {
     const ids = new Set<string>();
-    chats.forEach(chat => {
-      chat.participants.forEach(id => {
+    const source = showArchived
+      ? [...mainListChats, ...archivedListChats]
+      : mainListChats;
+    for (const chat of source) {
+      for (const id of chat.participants) {
         if (id !== user?.uid) ids.add(id);
-      });
-    });
+        if (ids.size >= VISIBLE_PARTICIPANT_CAP) break;
+      }
+      if (ids.size >= VISIBLE_PARTICIPANT_CAP) break;
+    }
     return Array.from(ids);
-  }, [chats, user?.uid]);
+  }, [participantFetchKey, user?.uid]);
   
-  // Fetch user data for all participants
-  const { usersData, usersRevision } = useUsersData(participantIds);
-  const usersDataRef = useRef(usersData);
-  usersDataRef.current = usersData;
-  
+  // Fetch user profiles into userProfileStore; rows subscribe per participant id.
+  useUsersData(participantIds);
+
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-600', 'text-gray-400');
   const borderColor = useThemeClassName('border-gray-200', 'border-gray-700');
@@ -413,7 +531,7 @@ const ChatsScreen = () => {
           height: result.assets[0].height,
         }));
         setShowPicker(false);
-        router.push({
+        navigateOnce(router, 'push', {
           pathname: '/(home)/(modal)/new-message',
           params: { media: 'true' },
         });
@@ -443,7 +561,7 @@ const ChatsScreen = () => {
           height: result.assets[0].height,
         }));
         setShowPicker(false);
-        router.push({
+        navigateOnce(router, 'push', {
           pathname: '/(home)/(modal)/new-message',
           params: { media: 'true' },
         });
@@ -454,29 +572,50 @@ const ChatsScreen = () => {
   };
 
   const goToChat = useCallback((chatId: string) => {
-    // Touch path: navigation only (no store work, no Firestore, no warm/prefetch here).
-    router.push(`/chat/${chatId}`);
-    queueMicrotask(() => {
-      markChatTap(chatId);
-      markChatNavStart(chatId);
-      markChatRouterPushReturned(chatId);
-    });
-    InteractionManager.runAfterInteractions(() => {
-      warmChat(chatId, 30);
-      requestAnimationFrame(() => {
-        router.prefetch(`/chat/${chatId}`);
+    markChatTap(chatId);
+    markChatNavStart(chatId);
+    const chat = useChatStore.getState().chats.find((c) => c.id === chatId);
+    const chatType = chat?.type === 'group' ? 'group' : 'private';
+    void trackChatOpened(chatId, chatType);
+    crashlyticsLog(`chat_opened chatId=${chatId.slice(0, 8)} type=${chatType}`);
+    void startPerformanceTrace('chat_room_load');
+    const cached = useChatStore.getState().messagesByChat[chatId];
+    if (!cached?.length && !isActiveMessageListener(chatId)) {
+      void warmChat(chatId, getWarmChatLimit(), { background: false });
+    }
+    navigateOnce(router, 'push', `/chat/${chatId}`);
+    markChatRouterPushReturned(chatId);
+    if (shouldPrefetchChatRoute()) {
+      InteractionManager.runAfterInteractions(() => {
+        requestAnimationFrame(() => router.prefetch(`/chat/${chatId}`));
       });
-    });
+    }
   }, [router]);
 
+  const idlePreloadKeyRef = useRef('');
+
   useEffect(() => {
-    // Soft-preload top chats to reduce first-open blank/loading on slower devices.
-    const topN = isLowTierAndroid() ? 2 : 3;
+    // Android: getDocs is serialized and slow on low-tier devices; idle preload blocks
+    // the queue and causes spurious timeouts. Disk shard + live listener on open is enough.
+    if (Platform.OS === 'android') return;
+
+    const topN = getIdlePreloadChatCount(isLowTierAndroid());
     const ids = mainListChats.slice(0, topN).map((c) => c.id).filter(Boolean);
     if (ids.length === 0) return;
+    const preloadKey = ids.join(',');
+    if (preloadKey === idlePreloadKeyRef.current) return;
+    idlePreloadKeyRef.current = preloadKey;
+
     const delay = isLowTierAndroid() ? 280 : 120;
+    const limit = getWarmChatLimit();
     const timer = setTimeout(() => {
-      ids.forEach((id) => warmChat(id, isLowTierAndroid() ? 22 : 30));
+      void (async () => {
+        for (const id of ids) {
+          if (useChatStore.getState().messagesByChat[id]?.length) continue;
+          if (isActiveMessageListener(id)) continue;
+          await warmChat(id, limit, { background: true });
+        }
+      })();
     }, delay);
     return () => clearTimeout(timer);
   }, [mainListChats]);
@@ -487,32 +626,32 @@ const ChatsScreen = () => {
     }, [])
   );
 
-  const warmChatOnPressIn = useCallback((chatId: string) => {
-    warmChat(chatId, isLowTierAndroid() ? 22 : 28);
-  }, []);
+  const handleGywAiHeaderPressIn = useCallback(() => {
+    const id = gywAiChat?.id;
+    if (!id) return;
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        void warmChat(id, getWarmChatLimit());
+        if (shouldPrefetchChatRoute()) {
+          router.prefetch(`/chat/${id}`);
+        }
+      });
+    });
+  }, [gywAiChat?.id, router]);
 
   const openGywAi = useCallback(async () => {
     if (!user?.uid) return;
     try {
       const chatId = gywAiChat?.id ?? (await getOrCreateDirectChat(user.uid, GYW_AI_SYSTEM_ID));
-      warmChat(chatId, 30);
+      void warmChat(chatId, getWarmChatLimit());
       markChatTap(chatId);
       markChatNavStart(chatId);
-      router.push(`/chat/${chatId}`);
+      navigateOnce(router, 'push', `/chat/${chatId}`);
       markChatRouterPushReturned(chatId);
     } catch (e) {
       // Non-fatal: if creation fails, just do nothing
     }
   }, [user?.uid, gywAiChat?.id, router]);
-
-  const handleGywAiHeaderPressIn = useCallback(() => {
-    const id = gywAiChat?.id;
-    if (!id) return;
-    InteractionManager.runAfterInteractions(() => {
-      warmChat(id, 30);
-      requestAnimationFrame(() => router.prefetch(`/chat/${id}`));
-    });
-  }, [gywAiChat?.id, router]);
 
   const chatKeyExtractor = useCallback((item: Chat) => item.id, []);
 
@@ -589,8 +728,12 @@ const ChatsScreen = () => {
 
   chatsHandlersRef.current = {
     openCamera: () => setShowPicker(true),
-    openSearch: () => router.push('/(home)/(modal)/find-by-username' as never),
-    openNewGroup: () => router.push('/(home)/(modal)/new-group' as never),
+    openSearch: () => {
+      searchLoadLog('SEARCH_SCREEN_OPEN');
+      prefetchRecommendedUsers(user?.uid, user?.phoneNumber ?? undefined);
+      navigateOnce(router, 'push', '/(home)/(modal)/find-by-username' as never);
+    },
+    openNewGroup: () => navigateOnce(router, 'push', '/(home)/(modal)/new-group' as never),
     markAllRead: async () => {
       const uid = user?.uid;
       if (!uid) return;
@@ -601,7 +744,7 @@ const ChatsScreen = () => {
       }
     },
     openArchived: () => setShowArchived(true),
-    openSettings: () => router.push('/profile' as never),
+    openSettings: () => navigateOnce(router, 'push', '/profile' as never),
     inviteFriends: () => {
       void Share.share({ message: t('chats.inviteShareMessage') }).catch(() => {});
     },
@@ -650,7 +793,7 @@ const ChatsScreen = () => {
             </View>
             <View className="flex-row items-center justify-between">
               <Text className={clsx('text-sm flex-1 mr-2', textSecondaryColor)} numberOfLines={1}>
-                {gywAiChat?.lastMessage?.text || 'Ask anything'}
+                {safePreviewText(gywAiChat?.lastMessage?.text, 120) || 'Ask anything'}
               </Text>
               {(gywAiChat?.unreadCount?.[user.uid] ?? 0) > 0 && (
                 <View
@@ -739,25 +882,17 @@ const ChatsScreen = () => {
     ]
   );
 
-  const listExtraData = `${metaListRevision}:${usersRevision}`;
-
   const renderChatItem = useCallback(({ item }: { item: Chat }) => {
     const uid = user?.uid;
-    const otherParticipantId = item.type === 'direct'
-      ? item.participants.find((p) => p !== uid)
-      : undefined;
-    const otherUser = otherParticipantId ? usersDataRef.current[otherParticipantId] ?? null : null;
     return (
       <ChatListItem
         item={item}
         currentUserId={uid || ''}
-        otherUser={otherUser}
         onPress={goToChat}
-        onPressIn={warmChatOnPressIn}
         onLongPress={openChatActionsSheet}
       />
     );
-  }, [user?.uid, goToChat, warmChatOnPressIn, openChatActionsSheet]);
+  }, [user?.uid, goToChat, openChatActionsSheet]);
 
   if (loading) {
     return <ScreenLoading />;
@@ -773,7 +908,7 @@ const ChatsScreen = () => {
         {chats.length === 0 && !user?.uid ? (
           <View className="flex-1 items-center justify-center p-8">
             <Text className="text-gray-500 dark:text-gray-400 text-center text-lg mb-2">
-              No chats yet
+              {t('chats.noChats')}
             </Text>
             <Text className="text-gray-400 dark:text-gray-500 text-center">
               {t('chats.startChatHint')}
@@ -784,13 +919,10 @@ const ChatsScreen = () => {
             data={mainListChats}
             renderItem={renderChatItem}
             keyExtractor={chatKeyExtractor}
-            extraData={listExtraData}
+            getItemLayout={getChatListItemLayout}
             contentContainerStyle={{ paddingBottom: 10 }}
             removeClippedSubviews={true}
-            maxToRenderPerBatch={isLowTierAndroid() ? 6 : 10}
-            updateCellsBatchingPeriod={isLowTierAndroid() ? 80 : 50}
-            initialNumToRender={isLowTierAndroid() ? 8 : 15}
-            windowSize={isLowTierAndroid() ? 5 : 10}
+            {...getChatsTabListTuning()}
             keyboardShouldPersistTaps="handled"
             ListHeaderComponent={chatsFlatListHeader}
           />
@@ -819,14 +951,12 @@ const ChatsScreen = () => {
               data={archivedListChats}
               renderItem={renderChatItem}
               keyExtractor={chatKeyExtractor}
-              extraData={listExtraData}
+              getItemLayout={getChatListItemLayout}
               keyboardShouldPersistTaps="handled"
               style={{ flex: 1 }}
               contentContainerStyle={{ paddingBottom: 24, flexGrow: 1 }}
               removeClippedSubviews={true}
-              maxToRenderPerBatch={8}
-              initialNumToRender={12}
-              windowSize={8}
+              {...getArchivedChatsListTuning()}
             />
           </View>
         </View>

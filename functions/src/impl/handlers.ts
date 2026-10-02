@@ -10,47 +10,10 @@ import {
   type Transaction,
 } from "firebase-admin/firestore";
 
+/** @deprecated Use handleCleanupStaleCalls in callCleanup.ts */
 export async function handleMarkStaleRingingCallsMissed(): Promise<null> {
-  const db = getDb();
-  const snap = await db.collection("calls").where("status", "==", "ringing").limit(300).get();
-  const now = Date.now();
-  let updated = 0;
-  let batch = db.batch();
-  let ops = 0;
-
-  for (const doc of snap.docs) {
-    const data = doc.data();
-    const created = data.createdAt as Timestamp | undefined;
-    if (!created || typeof created.toMillis !== "function") continue;
-    const expiresAt = data.expiresAt as Timestamp | undefined;
-    const timeoutMs = typeof data.ringTimeoutSecs === "number" ? data.ringTimeoutSecs * 1000 : 30_000;
-    const isExpired =
-      (expiresAt && typeof expiresAt.toMillis === "function" && now >= expiresAt.toMillis()) ||
-      now - created.toMillis() >= timeoutMs;
-    if (!isExpired) continue;
-
-    batch.update(doc.ref, {
-      status: "missed",
-      updatedAt: FieldValue.serverTimestamp(),
-      endedAt: FieldValue.serverTimestamp(),
-      missedReason: "server_ring_timeout",
-      timeoutAt: FieldValue.serverTimestamp(),
-    });
-    ops++;
-    updated++;
-    if (ops >= 400) {
-      await batch.commit();
-      batch = db.batch();
-      ops = 0;
-    }
-  }
-
-  if (ops > 0) await batch.commit();
-
-  if (updated > 0) {
-    functions.logger.info("[markStaleRingingCallsMissed] marked missed", { updated });
-  }
-  return null;
+  const { handleCleanupStaleCalls } = require("./callCleanup") as typeof import("./callCleanup");
+  return handleCleanupStaleCalls();
 }
 
 const RANDOM_QUEUE = "randomQueue";
@@ -189,15 +152,25 @@ export async function handleTryRandomMatch(
       const callRef = getDb().collection("calls").doc();
       transaction.set(callRef, {
         callerId: userId,
+        calleeId: otherUserId,
         receiverId: otherUserId,
+        callType: "video",
         type: "video",
         status: "ringing",
         isRandom: true,
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      transaction.delete(queueRef);
-      transaction.delete(otherDoc!.ref);
+      transaction.update(queueRef, {
+        status: "matched",
+        matchedCallId: callRef.id,
+        matchedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.update(otherDoc!.ref, {
+        status: "matched",
+        matchedCallId: callRef.id,
+        matchedAt: FieldValue.serverTimestamp(),
+      });
 
       return callRef.id;
     });
@@ -210,14 +183,14 @@ export async function handleTryRandomMatch(
     });
 
     const callDoc = await getDb().collection("calls").doc(callId).get();
-    const callerInQueue = await queueRef.get();
-    const otherInQueue = await getDb().collection(RANDOM_QUEUE).doc(otherUserId!).get();
+    const callerQueue = await queueRef.get();
+    const otherQueue = await getDb().collection(RANDOM_QUEUE).doc(otherUserId!).get();
 
     functions.logger.info(`${MIN_TAG} POST_MATCH_VALIDATION`, {
       callDocId: callId,
       callDocExists: callDoc.exists,
-      callerRemovedFromQueue: !callerInQueue.exists,
-      otherRemovedFromQueue: !otherInQueue.exists,
+      callerQueueMatchedCallId: callerQueue.data()?.matchedCallId ?? null,
+      otherQueueMatchedCallId: otherQueue.data()?.matchedCallId ?? null,
     });
 
     return {

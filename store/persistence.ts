@@ -1,4 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { MAX_PERSISTED_MESSAGES_PER_CHAT } from '@/lib/chatMessageLimits';
+import { isLegacyAndroid, isLowTierAndroid } from '@/lib/perf/deviceProfile';
+import { Platform } from 'react-native';
 import { Chat, ChatMessage } from '@/lib/types/chat';
 import { Call } from '@/lib/types/call';
 import { Story } from '@/lib/services/storyService';
@@ -10,12 +13,30 @@ const storage = AsyncStorage;
 const KEYS = {
   CHATS: 'chats',
   MESSAGES: 'messages',
+  /** Index of chat ids with per-chat message shards (bounded O(1) writes). */
+  MESSAGE_SHARD_INDEX: 'msg_shard_index',
   CALLS: 'calls',
   STORIES: 'stories',
   LAST_SYNC: 'lastSync',
   /** Per-auth-user list of story doc ids the user has watched (ring UX). */
   STORY_VIEWED_IDS: 'storyViewedIds',
 } as const;
+
+const MESSAGE_SHARD_PREFIX = 'msg_shard:';
+const MESSAGE_SHARD_INDEX_CAP = 48;
+/** First N shards loaded synchronously on cold start; rest hydrate in background. */
+const STAGED_SHARD_LOAD_FIRST = 12;
+
+function stagedShardLoadCount(): number {
+  if (Platform.OS !== 'android') return STAGED_SHARD_LOAD_FIRST;
+  if (isLegacyAndroid()) return 4;
+  if (isLowTierAndroid()) return 6;
+  return STAGED_SHARD_LOAD_FIRST;
+}
+
+function messageShardKey(chatId: string): string {
+  return `${MESSAGE_SHARD_PREFIX}${chatId}`;
+}
 
 const CHATS_SAVE_DEBOUNCE_MS = 900;
 const MESSAGES_SAVE_DEBOUNCE_MS = 750;
@@ -64,7 +85,7 @@ export const persistence = {
     return [];
   },
   
-  // Save messages to AsyncStorage (by chatId)
+  // Save messages to AsyncStorage (by chatId) — legacy monolithic blob (avoid on hot path).
   saveMessages: async (chatId: string, messages: ChatMessage[]) => {
     try {
       const allMessages = await persistence.loadAllMessages();
@@ -72,6 +93,92 @@ export const persistence = {
       await storage.setItem(KEYS.MESSAGES, JSON.stringify(allMessages));
     } catch (error) {
       if (__DEV__) console.error('Error saving messages to AsyncStorage:', error);
+    }
+  },
+
+  /** Per-chat shard: last N messages only — no full-blob read/write. */
+  saveMessageShard: async (chatId: string, messages: ChatMessage[]) => {
+    if (!chatId) return;
+    try {
+      const bounded = messages.slice(0, MAX_PERSISTED_MESSAGES_PER_CHAT);
+      await storage.setItem(messageShardKey(chatId), JSON.stringify(bounded));
+      const rawIndex = await storage.getItem(KEYS.MESSAGE_SHARD_INDEX);
+      let index: string[] = [];
+      if (rawIndex) {
+        try {
+          const parsed = JSON.parse(rawIndex) as unknown;
+          if (Array.isArray(parsed)) index = parsed.filter((id): id is string => typeof id === 'string');
+        } catch {
+          index = [];
+        }
+      }
+      const next = [chatId, ...index.filter((id) => id !== chatId)].slice(0, MESSAGE_SHARD_INDEX_CAP);
+      await storage.setItem(KEYS.MESSAGE_SHARD_INDEX, JSON.stringify(next));
+    } catch (error) {
+      if (__DEV__) console.error('Error saving message shard:', error);
+    }
+  },
+
+  loadShardsForChatIds: async (chatIds: string[]): Promise<Record<string, ChatMessage[]>> => {
+    if (chatIds.length === 0) return {};
+    try {
+      const keys = chatIds.map(messageShardKey);
+      const pairs = await storage.multiGet(keys);
+      const out: Record<string, ChatMessage[]> = {};
+      for (let i = 0; i < pairs.length; i++) {
+        const [, value] = pairs[i]!;
+        const chatId = chatIds[i]!;
+        if (!value) continue;
+        try {
+          const parsed = JSON.parse(value) as unknown;
+          if (Array.isArray(parsed)) out[chatId] = parsed as ChatMessage[];
+        } catch {
+          /* skip corrupt shard */
+        }
+      }
+      return out;
+    } catch (error) {
+      if (__DEV__) console.error('Error loading message shards for ids:', error);
+      return {};
+    }
+  },
+
+  loadAllMessageShards: async (): Promise<Record<string, ChatMessage[]>> => {
+    try {
+      const rawIndex = await storage.getItem(KEYS.MESSAGE_SHARD_INDEX);
+      if (!rawIndex) return {};
+      const index = JSON.parse(rawIndex) as unknown;
+      if (!Array.isArray(index)) return {};
+      const chatIds = index.filter((id): id is string => typeof id === 'string');
+      return persistence.loadShardsForChatIds(chatIds);
+    } catch (error) {
+      if (__DEV__) console.error('Error loading message shards:', error);
+      return {};
+    }
+  },
+
+  /**
+   * Staged cold start: load recent shards first, return remaining chat ids for background hydrate.
+   */
+  loadMessageShardsStaged: async (): Promise<{
+    shards: Record<string, ChatMessage[]>;
+    remainingChatIds: string[];
+  }> => {
+    try {
+      const rawIndex = await storage.getItem(KEYS.MESSAGE_SHARD_INDEX);
+      if (!rawIndex) return { shards: {}, remainingChatIds: [] };
+      const index = JSON.parse(rawIndex) as unknown;
+      if (!Array.isArray(index)) return { shards: {}, remainingChatIds: [] };
+      const chatIds = index.filter((id): id is string => typeof id === 'string');
+      if (chatIds.length === 0) return { shards: {}, remainingChatIds: [] };
+      const firstCount = stagedShardLoadCount();
+      const first = chatIds.slice(0, firstCount);
+      const rest = chatIds.slice(firstCount);
+      const shards = await persistence.loadShardsForChatIds(first);
+      return { shards, remainingChatIds: rest };
+    } catch (error) {
+      if (__DEV__) console.error('Error in staged shard load:', error);
+      return { shards: {}, remainingChatIds: [] };
     }
   },
   
@@ -188,9 +295,25 @@ export const persistence = {
   clearAll: async () => {
     try {
       cancelDebouncedPersistence();
+      const shardIndexRaw = await storage.getItem(KEYS.MESSAGE_SHARD_INDEX);
+      const shardKeys: string[] = [];
+      if (shardIndexRaw) {
+        try {
+          const index = JSON.parse(shardIndexRaw) as unknown;
+          if (Array.isArray(index)) {
+            for (const id of index) {
+              if (typeof id === 'string') shardKeys.push(messageShardKey(id));
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       await storage.multiRemove([
         KEYS.CHATS,
         KEYS.MESSAGES,
+        KEYS.MESSAGE_SHARD_INDEX,
+        ...shardKeys,
         KEYS.CALLS,
         KEYS.STORIES,
         KEYS.LAST_SYNC,
@@ -221,7 +344,7 @@ export function queueSaveMessages(chatId: string, messages: ChatMessage[]): void
     messageSaveTimers.delete(chatId);
     const latest = messageSavePending.get(chatId);
     messageSavePending.delete(chatId);
-    if (latest) void persistence.saveMessages(chatId, latest);
+    if (latest) void persistence.saveMessageShard(chatId, latest);
   }, MESSAGES_SAVE_DEBOUNCE_MS);
   messageSaveTimers.set(chatId, t);
 }

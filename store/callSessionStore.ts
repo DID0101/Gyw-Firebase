@@ -10,7 +10,11 @@ type State = {
   activeSessionCallId: string | null;
   /** Dedupe rapid double-fires from Firestore snapshot (same callId). */
   lastIncomingNavigationAt: Record<string, number>;
+  /** Set on incoming video accept; consumed when the active call screen starts WebRTC. */
+  pendingAnswerWithCamera: boolean;
   setActiveSessionCallId: (callId: string | null) => void;
+  setPendingAnswerWithCamera: (withCamera: boolean) => void;
+  clearPendingAnswerWithCamera: () => void;
   /** Returns false if this callId was navigated to very recently (duplicate incoming). */
   shouldNavigateToIncomingCall: (callId: string) => boolean;
   reset: () => Promise<void>;
@@ -19,8 +23,14 @@ type State = {
 export const useCallSessionStore = create<State>((set, get) => ({
   activeSessionCallId: null,
   lastIncomingNavigationAt: {},
+  pendingAnswerWithCamera: true,
 
   setActiveSessionCallId: (callId) => set({ activeSessionCallId: callId }),
+
+  setPendingAnswerWithCamera: (withCamera) =>
+    set({ pendingAnswerWithCamera: withCamera }),
+
+  clearPendingAnswerWithCamera: () => set({ pendingAnswerWithCamera: true }),
 
   shouldNavigateToIncomingCall: (callId) => {
     const now = Date.now();
@@ -36,6 +46,10 @@ export const useCallSessionStore = create<State>((set, get) => ({
     try {
       await AsyncStorage.removeItem(STORAGE_KEY);
     } catch (_) {}
-    set({ activeSessionCallId: null, lastIncomingNavigationAt: {} });
+    set({
+      activeSessionCallId: null,
+      lastIncomingNavigationAt: {},
+      pendingAnswerWithCamera: true,
+    });
   },
 }));

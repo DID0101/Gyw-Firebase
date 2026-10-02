@@ -8,7 +8,12 @@ import { CHAT_DELETED_FOR_EVERYONE_TEXT } from '@/lib/constants/chatMessages';
 import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
 import type { UserChatMeta } from '@/lib/types/userChatMeta';
 import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
+import { prodDebug, prodDebugError } from '@/lib/debug/prodDebug';
+import { chatsConversationFingerprint } from '@/store/chatStore';
 import { Platform } from 'react-native';
+
+/** Avoid metadata-only snapshot churn on reconnect (native + web). */
+export const FIRESTORE_SNAPSHOT_OPTS = { includeMetadataChanges: false } as const;
 
 /** Firestore rejects undefined - strip it before writing. Export for use in layout/sign-up. */
 export function sanitizeForFirestore(obj: Record<string, any>): Record<string, any> {
@@ -72,6 +77,91 @@ if (Platform.OS !== 'web' && hasRnFirebase) {
 
 export const hasNativeFirestore = Platform.OS !== 'web' && !!rnFirestore;
 
+function snapListen(
+  ref: any,
+  onNext: (snap: any) => void,
+  onError?: (err: any) => void
+): () => void {
+  if (!rnFirestore) return () => {};
+
+  if (__DEV__) {
+    try {
+      const {
+        trackListenerAttach,
+        trackListenerDetach,
+        trackListenerSnapshot,
+      } = require('@/lib/debug/networkAudit/ListenerTracker') as typeof import('@/lib/debug/networkAudit/ListenerTracker');
+      const { recordFirestoreSnapshotMetadata } = require('@/lib/debug/networkAudit/FirebaseConnectionMonitor') as typeof import('@/lib/debug/networkAudit/FirebaseConnectionMonitor');
+      const listenerId = trackListenerAttach(ref, { stack: new Error().stack });
+      const wrappedNext = (snap: any) => {
+        trackListenerSnapshot(listenerId, snap);
+        recordFirestoreSnapshotMetadata({
+          fromCache: snap?.metadata?.fromCache,
+          hasPendingWrites: snap?.metadata?.hasPendingWrites,
+        });
+        onNext(snap);
+      };
+      const unsubscribe = onError
+        ? rnFirestore.onSnapshot(ref, FIRESTORE_SNAPSHOT_OPTS, wrappedNext, onError)
+        : rnFirestore.onSnapshot(ref, FIRESTORE_SNAPSHOT_OPTS, wrappedNext);
+      return () => {
+        trackListenerDetach(listenerId);
+        unsubscribe();
+      };
+    } catch {
+      /* audit toolkit not loaded yet */
+    }
+  }
+
+  if (onError) {
+    return rnFirestore.onSnapshot(ref, FIRESTORE_SNAPSHOT_OPTS, onNext, onError);
+  }
+  return rnFirestore.onSnapshot(ref, FIRESTORE_SNAPSHOT_OPTS, onNext);
+}
+
+function chatMetaSnapshotFingerprint(byId: Record<string, UserChatMeta>): string {
+  const keys = Object.keys(byId).sort();
+  return keys
+    .map((id) => {
+      const m = byId[id]!;
+      return `${id}:${m.pinnedAt ?? ''}:${m.archived ? 1 : 0}:${m.muted ? 1 : 0}:${m.deletedAt ?? ''}:${m.mutedUntil ?? ''}`;
+    })
+    .join('|');
+}
+
+function callDocListenerFingerprint(call: Record<string, unknown> | null): string {
+  if (!call) return '';
+  return [
+    call.status,
+    call.type ?? call.callType,
+    call.callerId,
+    call.receiverId ?? call.calleeId,
+    call.endedAt ?? '',
+    call.updatedAt ?? '',
+  ].join('\t');
+}
+
+function chatDocListenerFingerprint(data: Record<string, unknown>): string {
+  const typing = data.typing ? JSON.stringify(data.typing) : '';
+  const participantData = data.participantData ? JSON.stringify(data.participantData) : '';
+  return [
+    data.id,
+    data.lastMessageAt ?? '',
+    data.updatedAt ?? '',
+    data.lastSenderId ?? '',
+    typing,
+    participantData,
+  ].join('\t');
+}
+
+function storiesListFingerprint(
+  stories: { id: string; expiresAt?: string; viewers?: unknown[]; likes?: unknown[] }[]
+): string {
+  return stories
+    .map((s) => `${s.id}:${s.expiresAt ?? ''}:${s.viewers?.length ?? 0}:${s.likes?.length ?? 0}`)
+    .join('|');
+}
+
 /** Same shape as Firestore auto-ids (20 chars, A–Z a–z 0–9) for batch.set without addDoc. */
 function newNativeMessageDocId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -105,9 +195,11 @@ export function subscribeToChatsNative(
   const q = rnFirestore.query(
     rnFirestore.collection(db, 'chats'),
     rnFirestore.where('participants', 'array-contains', userId),
-    rnFirestore.orderBy('lastMessageAt', 'desc')
+    rnFirestore.orderBy('lastMessageAt', 'desc'),
+    rnFirestore.limit(30)
   );
-  const unsubscribe = rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  const unsubscribe = snapListen(
     q,
     (snapshot: any) => {
       const chats: any[] = [];
@@ -122,6 +214,9 @@ export function subscribeToChatsNative(
           updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
         });
       });
+      const fp = chatsConversationFingerprint(chats);
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onChats(chats);
     },
     (err: any) => {
@@ -168,13 +263,17 @@ export function subscribeUserChatMetaNative(
   }
   const db = rnFirestore.getFirestore();
   const colRef = rnFirestore.collection(db, 'users', userId, 'chatMeta');
-  const unsubscribe = rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  const unsubscribe = snapListen(
     colRef,
     (snapshot: any) => {
       const byId: Record<string, UserChatMeta> = {};
       snapshot.forEach((docSnap: any) => {
         byId[docSnap.id] = nativeChatMetaDocToMeta(docSnap.data());
       });
+      const fp = chatMetaSnapshotFingerprint(byId);
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onMeta(byId);
     },
     (err: any) => {
@@ -249,7 +348,8 @@ export function subscribeUserChatPreferencesNative(
   }
   const db = rnFirestore.getFirestore();
   const colRef = rnFirestore.collection(db, 'users', userId, 'chatPreferences');
-  return rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  return snapListen(
     colRef,
     (snapshot: any) => {
       const out: Record<string, boolean> = {};
@@ -257,6 +357,9 @@ export function subscribeUserChatPreferencesNative(
         const data = typeof docSnap.data === 'function' ? docSnap.data() : docSnap.data;
         if (data?.muted === true) out[docSnap.id] = true;
       });
+      const fp = Object.keys(out).sort().join(',');
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onMutedByChatId(out);
     },
     (err: any) => {
@@ -279,7 +382,8 @@ export function subscribeUserBlockedPeersNative(
   }
   const db = rnFirestore.getFirestore();
   const colRef = rnFirestore.collection(db, 'users', userId, 'blockedUsers');
-  return rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  return snapListen(
     colRef,
     (snapshot: any) => {
       const out: Record<string, true> = {};
@@ -287,6 +391,9 @@ export function subscribeUserBlockedPeersNative(
         const data = typeof docSnap.data === 'function' ? docSnap.data() : docSnap.data;
         if (data?.blocked === true) out[docSnap.id] = true;
       });
+      const fp = Object.keys(out).sort().join(',');
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onBlocked(out);
     },
     (err: any) => {
@@ -440,10 +547,14 @@ export async function getCallHistoryNative(userId: string, limitCount: number = 
   }
 
   const col = rnFirestore.collection(db, 'calls');
+  // Only callerId/calleeId queries — receiverId list queries fail Firestore rules (permission-denied).
   const settled = await Promise.allSettled([
-    rnFirestore.getDocs(rnFirestore.query(col, rnFirestore.where('callerId', '==', userId))),
-    rnFirestore.getDocs(rnFirestore.query(col, rnFirestore.where('calleeId', '==', userId))),
-    rnFirestore.getDocs(rnFirestore.query(col, rnFirestore.where('receiverId', '==', userId))),
+    rnFirestore.getDocs(
+      rnFirestore.query(col, rnFirestore.where('callerId', '==', userId), rnFirestore.limit(limitCount))
+    ),
+    rnFirestore.getDocs(
+      rnFirestore.query(col, rnFirestore.where('calleeId', '==', userId), rnFirestore.limit(limitCount))
+    ),
   ]);
   settled.forEach((res, idx) => {
     if (res.status !== 'fulfilled') {
@@ -468,9 +579,11 @@ export async function getStoriesNative() {
   if (!hasNativeFirestore || !rnFirestore) return [];
   const db = rnFirestore.getFirestore();
   const now = rnFirestore.Timestamp.now();
+  const STORIES_READ_CAP = 80;
   const q = rnFirestore.query(
     rnFirestore.collection(db, 'stories'),
-    rnFirestore.where('expiresAt', '>', now)
+    rnFirestore.where('expiresAt', '>', now),
+    rnFirestore.limit(STORIES_READ_CAP)
   );
   const snapshot = await rnFirestore.getDocs(q);
   const stories: any[] = [];
@@ -667,7 +780,7 @@ export function subscribeStoryLikeStateNative(
     rnFirestore.collection(db, 'stories', storyId, 'likes'),
     rnFirestore.limit(CAP)
   );
-  const u1 = rnFirestore.onSnapshot(
+  const u1 = snapListen(
     q,
     (snap: any) => {
       latest.likeCount = snap.size;
@@ -680,7 +793,7 @@ export function subscribeStoryLikeStateNative(
     }
   );
   const selfRef = rnFirestore.doc(db, 'stories', storyId, 'likes', viewerUid);
-  const u2 = rnFirestore.onSnapshot(
+  const u2 = snapListen(
     selfRef,
     (snap: any) => {
       latest.liked = snap.exists();
@@ -725,7 +838,8 @@ export function subscribeStoryLikesSheetNative(
   const db = rnFirestore.getFirestore();
   const col = rnFirestore.collection(db, 'stories', storyId, 'likes');
   const q = rnFirestore.query(col, rnFirestore.orderBy('createdAt', 'desc'), rnFirestore.limit(pageSize));
-  return rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  return snapListen(
     q,
     (snap: any) => {
       const rows: StoryLikeRow[] = [];
@@ -743,6 +857,9 @@ export function subscribeStoryLikesSheetNative(
           avatarUrl: v?.avatarUrl,
         });
       });
+      const fp = rows.map((r) => `${r.userId}:${r.createdAt}`).join('|');
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onRows(rows);
     },
     (e: any) => {
@@ -766,7 +883,8 @@ export function subscribeStoryViewsSheetNative(
   const db = rnFirestore.getFirestore();
   const col = rnFirestore.collection(db, 'stories', storyId, 'views');
   const q = rnFirestore.query(col, rnFirestore.orderBy('viewedAt', 'desc'), rnFirestore.limit(pageSize));
-  return rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  return snapListen(
     q,
     (snap: any) => {
       const rows: StoryViewRow[] = [];
@@ -784,6 +902,9 @@ export function subscribeStoryViewsSheetNative(
           avatarUrl: v?.avatarUrl,
         });
       });
+      const fp = rows.map((r) => `${r.viewerId}:${r.viewedAt}`).join('|');
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onRows(rows);
     },
     (e: any) => {
@@ -824,17 +945,26 @@ export function subscribeToStoriesNative(
   onError?: (err: Error) => void
 ): () => void {
   if (!hasNativeFirestore || !rnFirestore) {
+    prodDebug('FIRESTORE_LISTENER_UNAVAILABLE', { collection: 'stories', provider: 'native' });
     onStories([]);
     if (onError) onError(new Error('Native Firestore not available'));
     return () => {};
   }
   const db = rnFirestore.getFirestore();
   const now = rnFirestore.Timestamp.now();
+  const STORIES_LISTENER_CAP = 80;
   const q = rnFirestore.query(
     rnFirestore.collection(db, 'stories'),
-    rnFirestore.where('expiresAt', '>', now)
+    rnFirestore.where('expiresAt', '>', now),
+    rnFirestore.limit(STORIES_LISTENER_CAP)
   );
-  const unsubscribe = rnFirestore.onSnapshot(
+  prodDebug('FIRESTORE_LISTENER_START', {
+    collection: 'stories',
+    provider: 'native',
+    where: 'expiresAt > now',
+  });
+  let lastFingerprint: string | null = null;
+  const unsubscribe = snapListen(
     q,
     (snapshot: any) => {
       const stories: any[] = [];
@@ -854,9 +984,22 @@ export function subscribeToStoriesNative(
         });
       });
       stories.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      prodDebug('FIRESTORE_LISTENER_SNAPSHOT', {
+        collection: 'stories',
+        provider: 'native',
+        count: stories.length,
+        snapshotSize: snapshot?.size ?? stories.length,
+        fromCache: snapshot?.metadata?.fromCache ?? null,
+        hasPendingWrites: snapshot?.metadata?.hasPendingWrites ?? null,
+      });
+      const fp = storiesListFingerprint(stories);
+      // Always emit the first snapshot (including empty); '' === '' must not skip it.
+      if (lastFingerprint !== null && fp === lastFingerprint) return;
+      lastFingerprint = fp;
       onStories(stories);
     },
     (err: any) => {
+      prodDebugError('FIRESTORE_LISTENER_ERROR', err, { collection: 'stories', provider: 'native' });
       if (__DEV__) console.error('Error listening to stories:', err);
       if (onError) onError(err);
     }
@@ -870,7 +1013,8 @@ export async function getUsersNative(): Promise<any[]> {
   const db = rnFirestore.getFirestore();
   const q = rnFirestore.query(
     rnFirestore.collection(db, 'users'),
-    rnFirestore.orderBy('username', 'asc')
+    rnFirestore.orderBy('username', 'asc'),
+    rnFirestore.limit(100)
   );
   const snapshot = await rnFirestore.getDocs(q);
   const users: any[] = [];
@@ -978,7 +1122,9 @@ export function subscribeToChatMessagesNative(
     rnFirestore.orderBy('createdAt', 'desc'),
     rnFirestore.limit(pageSize)
   );
-  const unsubscribe = rnFirestore.onSnapshot(
+  let lastHeadFingerprint = '';
+  let deliveredOnce = false;
+  const unsubscribe = snapListen(
     q,
     (snapshot: any) => {
       const messages: any[] = [];
@@ -986,6 +1132,13 @@ export function subscribeToChatMessagesNative(
         const data = docSnap.data();
         messages.push(normalizeMessageDoc(docSnap.id, chatId, data));
       });
+      const n = messages.length;
+      const head = n > 0 ? messages[0] : null;
+      const tail = n > 1 ? messages[n - 1] : head;
+      const fp = `${n}\t${head?.id ?? ''}\t${head?.status ?? ''}\t${tail?.id ?? ''}`;
+      if (deliveredOnce && fp === lastHeadFingerprint) return;
+      deliveredOnce = true;
+      lastHeadFingerprint = fp;
       onMessages(messages);
     },
     (err: any) => {
@@ -1037,21 +1190,28 @@ export function subscribeToChatDocNative(
   }
   const db = rnFirestore.getFirestore();
   const ref = rnFirestore.doc(db, 'chats', chatId);
-  const unsubscribe = rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  const unsubscribe = snapListen(
     ref,
     (snap: any) => {
       if (!snap.exists) {
+        if (lastFingerprint === '__null__') return;
+        lastFingerprint = '__null__';
         onSnapshot(null);
         return;
       }
       const data = snap.data();
-      onSnapshot({
+      const payload = {
         id: snap.id,
         ...data,
         lastMessageAt: data.lastMessageAt?.toDate?.()?.toISOString() || data.lastMessageAt,
         createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || data.updatedAt,
-      });
+      };
+      const fp = chatDocListenerFingerprint(payload);
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
+      onSnapshot(payload);
     },
     (err: any) => {
       if (__DEV__) console.error('Native chat doc listener error:', err);
@@ -1074,21 +1234,36 @@ export function subscribeToUserDocNative(
   }
   const db = rnFirestore.getFirestore();
   const ref = rnFirestore.doc(db, 'users', uid);
-  const unsubscribe = rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  const unsubscribe = snapListen(
     ref,
     (snap: any) => {
       if (!snap.exists) {
+        if (lastFingerprint === '__null__') return;
+        lastFingerprint = '__null__';
         onSnapshot(null);
         return;
       }
       const data = snap.data() ?? {};
-      onSnapshot({
+      const payload = {
         id: snap.id,
         ...data,
         lastActive: (data as any).lastActive?.toDate?.()?.toISOString() ?? (data as any).lastActive,
         createdAt: (data as any).createdAt?.toDate?.()?.toISOString() || (data as any).createdAt,
         updatedAt: (data as any).updatedAt?.toDate?.()?.toISOString() || (data as any).updatedAt,
-      });
+      };
+      const fp = [
+        payload.id,
+        payload.isOnline,
+        payload.lastActive,
+        payload.firstName,
+        payload.lastName,
+        payload.displayName,
+        payload.avatar ?? payload.photoURL,
+      ].join('\t');
+      if (fp === lastFingerprint) return;
+      lastFingerprint = fp;
+      onSnapshot(payload);
     },
     (err: any) => {
       if (__DEV__) console.error('Native user doc listener error:', err);
@@ -1265,15 +1440,24 @@ export async function incrementUnreadForOtherParticipantsNative(
 }
 
 /** Reset unread count for user when they open chat (native API). */
-export async function markMessagesAsReadNative(chatId: string, userId: string): Promise<void> {
+export async function markMessagesAsReadNative(
+  chatId: string,
+  userId: string,
+  opts?: { lastReadMessageId?: string }
+): Promise<void> {
   if (!hasNativeFirestore || !rnFirestore) return;
   const db = rnFirestore.getFirestore();
   const chatRef = rnFirestore.doc(db, 'chats', chatId);
-  // Use field path update — atomic, does not overwrite other participants' unread counts.
-  await rnFirestore.updateDoc(chatRef, {
+  const now = new Date().toISOString();
+  const update: Record<string, unknown> = {
     [`unreadCount.${userId}`]: 0,
+    [`readState.${userId}.lastReadAt`]: now,
     updatedAt: rnFirestore.serverTimestamp(),
-  });
+  };
+  if (opts?.lastReadMessageId) {
+    update[`readState.${userId}.lastReadMessageId`] = opts.lastReadMessageId;
+  }
+  await rnFirestore.updateDoc(chatRef, update);
 }
 
 /** Batch-reset unread for one user across many chats (chunked; max ~450 updates per commit). */
@@ -1549,7 +1733,8 @@ export async function getOrCreateDirectChatNative(userId1: string, userId2: stri
   const q = rnFirestore.query(
     rnFirestore.collection(db, 'chats'),
     rnFirestore.where('type', '==', 'direct'),
-    rnFirestore.where('participants', 'array-contains', userId1)
+    rnFirestore.where('participants', 'array-contains', userId1),
+    rnFirestore.limit(40)
   );
   const snapshot = await rnFirestore.getDocs(q);
 
@@ -1609,21 +1794,35 @@ export async function createCallNative(
   isRandom?: boolean,
   callerName?: string,
   callerAvatar?: string,
+  roomId?: string,
 ): Promise<string> {
   if (!hasNativeFirestore || !rnFirestore) throw new Error('Native Firestore not available');
   const db = rnFirestore.getFirestore();
+  const now = Date.now();
   const callData: Record<string, any> = {
+    callId: roomId ?? undefined,
     callerId,
     receiverId,
     calleeId: receiverId, // mirrors receiverId so _layout.tsx Firestore listener (queries calleeId) fires
     type,
+    callType: type,
     status: 'ringing',
+    ringTimeoutSecs: 60,
+    callerName: callerName ?? '',
+    callerAvatar: callerAvatar ?? '',
     createdAt: rnFirestore.serverTimestamp(),
+    updatedAt: rnFirestore.serverTimestamp(),
+    expiresAt: rnFirestore.Timestamp.fromMillis(now + 60_000),
+    deleteAfter: rnFirestore.Timestamp.fromMillis(now + 7 * 24 * 60 * 60 * 1000),
   };
   if (chatId) callData.chatId = chatId;
   if (isRandom) callData.isRandom = true;
-  if (callerName) callData.callerName = callerName;
-  if (callerAvatar) callData.callerAvatar = callerAvatar;
+  if (!isRandom) callData.deferIncomingPush = true;
+  if (roomId) {
+    callData.callId = roomId;
+    await rnFirestore.setDoc(rnFirestore.doc(db, 'calls', roomId), callData);
+    return roomId;
+  }
   const docRef = await rnFirestore.addDoc(rnFirestore.collection(db, 'calls'), callData);
   return docRef.id;
 }
@@ -1712,6 +1911,14 @@ export async function updateCallReceiverReadyNative(callId: string): Promise<voi
 }
 
 /** Get call by ID (native API). */
+function normalizeCallStatusNative(status: string | undefined): string {
+  if (!status) return 'ringing';
+  if (status === 'answered') return 'accepted';
+  if (status === 'rejected') return 'declined';
+  if (status === 'cancelled') return 'canceled';
+  return status;
+}
+
 export async function getCallNative(callId: string): Promise<any | null> {
   if (!hasNativeFirestore || !rnFirestore) return null;
   const db = rnFirestore.getFirestore();
@@ -1721,6 +1928,7 @@ export async function getCallNative(callId: string): Promise<any | null> {
   return {
     id: snap.id,
     ...data,
+    status: normalizeCallStatusNative(data?.status),
     createdAt: data?.createdAt?.toDate?.()?.toISOString() || data?.createdAt,
     endedAt: data?.endedAt?.toDate?.()?.toISOString() || data?.endedAt,
   };
@@ -1737,24 +1945,39 @@ export function subscribeToCallNative(
   }
   const db = rnFirestore.getFirestore();
   const ref = rnFirestore.doc(db, 'calls', callId);
-  return rnFirestore.onSnapshot(
+  let lastFingerprint = '';
+  return snapListen(
     ref,
     (snap: any) => {
       if (snap.exists) {
         const data = snap.data();
-        onCall({
+        const status = normalizeCallStatusNative(data?.status);
+        const payload = {
           id: snap.id,
           ...data,
+          status,
           createdAt: data?.createdAt?.toDate?.()?.toISOString() || data?.createdAt,
           endedAt: data?.endedAt?.toDate?.()?.toISOString() || data?.endedAt,
-        });
+        };
+        const fp = callDocListenerFingerprint(payload);
+        if (fp === lastFingerprint) return;
+        lastFingerprint = fp;
+        if (status === 'accepted' && __DEV__) {
+          console.log('CALLER_CALL_STATE_CHANGED accepted callId=' + callId);
+          console.log('CALLER_STOP_RING_TRIGGERED callId=' + callId);
+        }
+        onCall(payload);
       } else {
+        if (lastFingerprint === '__null__') return;
+        lastFingerprint = '__null__';
         onCall(null);
       }
     },
     (err: any) => {
-      if (__DEV__) console.error('Error listening to call:', err);
-      onCall(null);
+      const code = err?.code ?? '';
+      if (__DEV__ && code !== 'firestore/permission-denied' && code !== 'permission-denied') {
+        console.error('Error listening to call:', err);
+      }
     }
   );
 }
@@ -1766,7 +1989,8 @@ export async function sendSignalingMessageNative(
   to: string,
   type: string,
   sdp?: any,
-  candidate?: any
+  candidate?: any,
+  candidates?: any[],
 ): Promise<void> {
   if (!hasNativeFirestore || !rnFirestore) throw new Error('Native Firestore not available');
   const db = rnFirestore.getFirestore();
@@ -1774,7 +1998,45 @@ export async function sendSignalingMessageNative(
   const data: Record<string, any> = { from, to, type, timestamp: rnFirestore.serverTimestamp() };
   if (sdp) data.sdp = sdp;
   if (candidate) data.candidate = candidate;
+  if (candidates && candidates.length > 0) data.candidates = candidates;
   await rnFirestore.addDoc(messagesRef, data);
+}
+
+function mapSignalingDoc(callId: string, data: Record<string, unknown>): Record<string, unknown> {
+  return {
+    callId,
+    from: data.from,
+    to: data.to,
+    type: data.type,
+    ...(data.sdp ? { sdp: data.sdp } : {}),
+    ...(data.candidate ? { candidate: data.candidate } : {}),
+    ...(Array.isArray(data.candidates) ? { candidates: data.candidates } : {}),
+    timestamp:
+      (data.timestamp as { toDate?: () => Date })?.toDate?.()?.toISOString() ||
+      data.timestamp,
+  };
+}
+
+/** One-shot read of signaling messages already in Firestore (callee accept before listener catches offer). */
+export async function fetchPendingSignalingForCalleeNative(
+  callId: string,
+  calleeId: string,
+): Promise<Record<string, unknown>[]> {
+  if (!hasNativeFirestore || !rnFirestore) return [];
+  const db = rnFirestore.getFirestore();
+  const messagesRef = rnFirestore.collection(rnFirestore.doc(db, 'callSignaling', callId), 'messages');
+  const q = rnFirestore.query(messagesRef, rnFirestore.where('to', '==', calleeId));
+  const snapshot = await rnFirestore.getDocs(q);
+  const rows: Array<{ msg: Record<string, unknown>; ms: number }> = [];
+  snapshot.docs.forEach((docSnap: { data: () => Record<string, unknown> }) => {
+    const data = docSnap.data();
+    const ts = data.timestamp as { toDate?: () => Date } | string | undefined;
+    const ms =
+      typeof ts === 'object' && ts?.toDate ? ts.toDate().getTime() : typeof ts === 'string' ? Date.parse(ts) : 0;
+    rows.push({ msg: mapSignalingDoc(callId, data), ms });
+  });
+  rows.sort((a, b) => a.ms - b.ms);
+  return rows.map((r) => r.msg);
 }
 
 /** Subscribe to signaling messages (native API). Returns unsubscribe. */
@@ -1786,22 +2048,20 @@ export function subscribeToSignalingNative(
   if (!hasNativeFirestore || !rnFirestore) return () => {};
   const db = rnFirestore.getFirestore();
   const messagesRef = rnFirestore.collection(rnFirestore.doc(db, 'callSignaling', callId), 'messages');
-  return rnFirestore.onSnapshot(
-    messagesRef,
-    (snapshot: any) => {
-      snapshot.docChanges().forEach((change: any) => {
+  let initialSnapshot = true;
+  return snapListen(messagesRef, (snapshot: any) => {
+      const changes = initialSnapshot
+        ? snapshot.docs.map((docSnap: { data: () => Record<string, unknown> }) => ({
+            type: 'added',
+            doc: docSnap,
+          }))
+        : snapshot.docChanges();
+      initialSnapshot = false;
+      changes.forEach((change: { type: string; doc: { data: () => Record<string, unknown> } }) => {
         if (change.type === 'added') {
           const data = change.doc.data();
           if (data.to === userId) {
-            onMessage({
-              callId,
-              from: data.from,
-              to: data.to,
-              type: data.type,
-              ...(data.sdp && { sdp: data.sdp }),
-              ...(data.candidate && { candidate: data.candidate }),
-              timestamp: data.timestamp?.toDate?.()?.toISOString() || data.timestamp,
-            });
+            onMessage(mapSignalingDoc(callId, data));
           }
         }
       });

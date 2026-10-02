@@ -1,5 +1,6 @@
 import { Feather } from '@expo/vector-icons';
-import { Dimensions, Image, Modal, Pressable, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
+import { Dimensions, Modal, Pressable, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -24,7 +25,6 @@ const ImageViewer = ({ visible, imageUri, onClose }: ImageViewerProps) => {
       statusBarTranslucent
     >
       <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)' }}>
-        {/* Header */}
         <View
           style={{
             position: 'absolute',
@@ -55,7 +55,6 @@ const ImageViewer = ({ visible, imageUri, onClose }: ImageViewerProps) => {
           </View>
         </View>
 
-        {/* Image Container */}
         <Pressable
           style={{
             flex: 1,
@@ -69,8 +68,11 @@ const ImageViewer = ({ visible, imageUri, onClose }: ImageViewerProps) => {
             style={{
               width: SCREEN_WIDTH,
               height: SCREEN_HEIGHT,
-              resizeMode: 'contain',
             }}
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            recyclingKey={imageUri}
+            priority="high"
           />
         </Pressable>
       </View>
@@ -79,4 +81,3 @@ const ImageViewer = ({ visible, imageUri, onClose }: ImageViewerProps) => {
 };
 
 export default ImageViewer;
-

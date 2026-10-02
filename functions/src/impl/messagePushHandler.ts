@@ -111,6 +111,11 @@ export async function handleChatMessageCreated(
   });
 
   const senderName = msg.senderName?.trim() || "Message";
+  const senderDoc = await db.collection("users").doc(senderId).get();
+  const senderPhone =
+    typeof senderDoc.data()?.phoneNumber === "string"
+      ? (senderDoc.data()!.phoneNumber as string).trim()
+      : "";
   const text = previewText(msg);
   const avatar = msg.senderAvatar ?? "";
   const sentAt = String(toMillis(msg.createdAt));
@@ -129,7 +134,9 @@ export async function handleChatMessageCreated(
         });
         return;
       }
-      const unreadCount = chat.unreadCount?.[receiverId] ?? 1;
+      // Message onCreate may run before client unread increment lands — ensure at least 1 for this push.
+      const rawUnread = chat.unreadCount?.[receiverId] ?? 0;
+      const unreadCount = Math.max(rawUnread, 1);
       const tokenSnap = await db.collection("userTokens").doc(receiverId).get();
       if (!tokenSnap.exists) return;
       const { fcmToken } = (tokenSnap.data() ?? {}) as UserTokenDoc;
@@ -142,6 +149,7 @@ export async function handleChatMessageCreated(
           chatId,
           senderId,
           senderName,
+          senderPhone,
           text,
           messageId,
           avatar,

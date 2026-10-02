@@ -105,7 +105,18 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
     throw new functionsV1.https.HttpsError("invalid-argument", "chatId and userMessageId are required");
   }
 
+  functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_REQUEST]", {
+    callable: "gywAiMultimodalV1",
+    uid,
+    chatId,
+    userMessageId,
+  });
+
   const geminiKey = resolveGeminiApiKey();
+  functionsV1.logger.info("[PROD_DEBUG][GYW_AI_KEY_SOURCE]", {
+    callable: "gywAiMultimodalV1",
+    geminiHasKey: !!geminiKey,
+  });
   if (!geminiKey) {
     throw new functionsV1.https.HttpsError(
       "failed-precondition",
@@ -151,6 +162,15 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
   const userCaption = typeof msg.text === "string" ? msg.text.trim() : "";
   const explicitMode = parseAiMode(msg.aiMode);
   const route = inferMultimodalRoute(userCaption, explicitMode);
+  functionsV1.logger.info("[PROD_DEBUG][GYW_AI_MULTIMODAL_ROUTE]", {
+    uid,
+    chatId,
+    userMessageId,
+    route,
+    explicitMode,
+    captionLength: userCaption.length,
+    hasImageUrl: !!imageUrl,
+  });
 
   const typingField = `typing.${GYW_AI_SYSTEM_ID}`;
   await chatRef.set(
@@ -237,6 +257,16 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
           { merge: true }
         );
 
+        functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_RESPONSE]", {
+          callable: "gywAiMultimodalV1",
+          uid,
+          chatId,
+          userMessageId,
+          messageId: aiDoc.id,
+          kind: "image",
+          textLength: caption.length,
+          hasImageUrl: true,
+        });
         return { ok: true, messageId: aiDoc.id, kind: "image", imageUrl: imagePublicUrl, text: caption };
       }
 
@@ -245,7 +275,9 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
         "Gyw AI could not produce an edited image (the image model returned no image data). " +
         "Tap Retry, choose Create / edit when sending the photo, try a shorter prompt, or confirm your Gemini API key has access to image-capable models (e.g. gemini-2.5-flash-image or gemini-3.1-flash-image-preview).";
 
-      functionsV1.logger.error("[gywAiMultimodal] image_gen produced no image buffer", {
+      functionsV1.logger.error("[PROD_DEBUG][GYW_AI_PROVIDER_ERROR]", {
+        callable: "gywAiMultimodalV1",
+        reason: "IMAGE_GEN_NO_BUFFER",
         chatId,
         userMessageId,
         captionLen: userCaption.length,
@@ -283,6 +315,16 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
         { merge: true }
       );
 
+      functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_RESPONSE]", {
+        callable: "gywAiMultimodalV1",
+        uid,
+        chatId,
+        userMessageId,
+        messageId: aiDoc.id,
+        kind: "text",
+        reason: "image_gen_failed",
+        textLength: explain.length,
+      });
       return { ok: true, messageId: aiDoc.id, kind: "text", text: explain };
     }
 
@@ -297,7 +339,14 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
       });
     } catch (e: any) {
       const diag = classifyGeminiError(e);
-      functionsV1.logger.error("[gywAiMultimodal] vision failed", { diag });
+      functionsV1.logger.error("[PROD_DEBUG][GYW_AI_PROVIDER_ERROR]", {
+        callable: "gywAiMultimodalV1",
+        route: "vision",
+        uid,
+        chatId,
+        userMessageId,
+        diag,
+      });
       throw new functionsV1.https.HttpsError(
         "unavailable",
         "Gyw AI could not analyze this image. Please try again.",
@@ -337,10 +386,24 @@ export async function handleGywAiMultimodal(request: CallableRequest): Promise<{
       { merge: true }
     );
 
+    functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_RESPONSE]", {
+      callable: "gywAiMultimodalV1",
+      uid,
+      chatId,
+      userMessageId,
+      messageId: aiDoc.id,
+      kind: "text",
+      route: "vision",
+      textLength: replyText.length,
+    });
     return { ok: true, messageId: aiDoc.id, kind: "text", text: replyText };
   } catch (e: any) {
     if (e instanceof functionsV1.https.HttpsError) throw e;
-    functionsV1.logger.error("[gywAiMultimodal] unhandled error", {
+    functionsV1.logger.error("[PROD_DEBUG][GYW_AI_ERROR]", {
+      callable: "gywAiMultimodalV1",
+      uid,
+      chatId,
+      userMessageId,
       message: e?.message,
       stack: e?.stack,
       name: e?.name,

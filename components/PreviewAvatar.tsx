@@ -1,4 +1,5 @@
 import type { ImageProps } from 'expo-image';
+import { memo } from 'react';
 import Avatar from './Avatar';
 
 export interface PreviewAvatarProps {
@@ -9,13 +10,13 @@ export interface PreviewAvatarProps {
   imagePriority?: ImageProps['priority'];
 }
 
-const PreviewAvatar = ({
+const PreviewAvatar = memo(function PreviewAvatar({
   name,
   image,
   size = 44,
   fontSize = 20,
   imagePriority = 'normal',
-}: PreviewAvatarProps) => {
+}: PreviewAvatarProps) {
   return (
     <Avatar
       size={size}
@@ -26,6 +27,6 @@ const PreviewAvatar = ({
       imagePriority={imagePriority}
     />
   );
-};
+});
 
 export default PreviewAvatar;

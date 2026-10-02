@@ -17,14 +17,14 @@ import android.os.VibratorManager;
 import android.util.Log;
 
 /**
- * Plays the default ringtone + repeating vibration for incoming calls.
+ * Plays custom app ringtone + repeating vibration for incoming calls.
  *
- * <p>Some OEMs suppress or mis-route notification channel sound/vibration. Driving ring + haptics
- * explicitly keeps wake behaviour reliable alongside {@link GywIncomingCallNotifier}.
+ * <p>Notification channels are silent — this class is the only ring/haptic source.
  */
 public final class GywIncomingCallAlerts {
   private static final String TAG = "GywIncomingCallAlerts";
-  private static final long[] VIBRATE_PATTERN = {0, 550, 180, 550, 180, 750, 280, 550};
+  private static final long[] VIBRATE_PATTERN_AUDIO = {0, 550, 180, 550, 180, 750, 280, 550};
+  private static final long[] VIBRATE_PATTERN_VIDEO = {0, 200, 100, 200, 100, 400, 120, 280};
   private static final long AUTO_STOP_MS = 45_000L;
 
   private static final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -33,6 +33,7 @@ public final class GywIncomingCallAlerts {
   private static Ringtone activeRingtone;
   private static Vibrator activeVibrator;
   private static String activeCallId;
+  private static long[] activeVibratePattern = VIBRATE_PATTERN_AUDIO;
   private static AudioManager activeAudioManager;
   private static AudioFocusRequest activeAudioFocusRequest;
   private static AudioManager.OnAudioFocusChangeListener focusChangeListener;
@@ -47,10 +48,34 @@ public final class GywIncomingCallAlerts {
     return uri;
   }
 
+  /** Custom {@code res/raw/ringtone.wav} — works in killed state via android.resource URI. */
+  public static Uri appRingtoneUri(Context context) {
+    if (context == null) return null;
+    try {
+      int resId =
+          context.getResources().getIdentifier("ringtone", "raw", context.getPackageName());
+      if (resId != 0) {
+        return Uri.parse("android.resource://" + context.getPackageName() + "/" + resId);
+      }
+    } catch (Exception e) {
+      Log.w(TAG, "appRingtoneUri lookup failed: " + e.getMessage());
+    }
+    return null;
+  }
+
   /** Starts ring + vibrate for {@code callId}. Idempotent if already ringing the same id. */
   public static synchronized void start(Context ctx, String callId) {
+    start(ctx, callId, "audio");
+  }
+
+  public static synchronized void start(Context ctx, String callId, String callType) {
     if (callId == null || callId.isEmpty()) return;
     Context app = ctx.getApplicationContext();
+
+    if (IncomingCallGuard.isAnswered(app, callId)) {
+      Log.d(TAG, "RING_START blocked=answered callId=" + callId);
+      return;
+    }
 
     if (callId.equals(activeCallId) && activeRingtone != null) {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && activeRingtone.isPlaying()) {
@@ -61,8 +86,15 @@ public final class GywIncomingCallAlerts {
       }
     }
 
+    if (activeCallId != null && !callId.equals(activeCallId)) {
+      Log.w(TAG, "RING_RESTART prevCallId=" + activeCallId + " newCallId=" + callId);
+    } else {
+      Log.d(TAG, "RING_START callId=" + callId + " callType=" + callType);
+    }
     stop(app);
     activeCallId = callId;
+    activeVibratePattern =
+        "video".equalsIgnoreCase(callType) ? VIBRATE_PATTERN_VIDEO : VIBRATE_PATTERN_AUDIO;
 
     startRingtone(app);
     startVibrate(app);
@@ -81,6 +113,7 @@ public final class GywIncomingCallAlerts {
   }
 
   public static synchronized void stop(Context ctx) {
+    Log.d(TAG, "RING_STOP callId=" + activeCallId);
     Log.d(TAG, "CALL_CLEANUP start component=GywIncomingCallAlerts callId=" + activeCallId);
     Context app = ctx != null ? ctx.getApplicationContext() : null;
     if (autoStopTask != null) {
@@ -96,9 +129,15 @@ public final class GywIncomingCallAlerts {
 
   private static void startRingtone(Context app) {
     try {
-      Uri uri = defaultRingtoneUri(app);
+      Uri uri = appRingtoneUri(app);
       if (uri == null) {
-        Log.w(TAG, "No default ringtone URI");
+        uri = defaultRingtoneUri(app);
+        Log.w(TAG, "Using system default ringtone (res/raw/ringtone missing)");
+      } else {
+        Log.d(TAG, "Using app ringtone: " + uri);
+      }
+      if (uri == null) {
+        Log.w(TAG, "No ringtone URI");
         return;
       }
 
@@ -122,6 +161,9 @@ public final class GywIncomingCallAlerts {
       rt.play();
       activeRingtone = rt;
       Log.d(TAG, "Ringtone playing");
+      if (activeCallId != null) {
+        CallLatencyTrace.mark(activeCallId, "RINGTONE_STARTED");
+      }
     } catch (Exception e) {
       Log.w(TAG, "Ringtone failed: " + e.getMessage());
     }
@@ -145,13 +187,14 @@ public final class GywIncomingCallAlerts {
       Vibrator v = getVibrator(app);
       if (v == null || !v.hasVibrator()) return;
       activeVibrator = v;
+      long[] pattern = activeVibratePattern;
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        int n = VIBRATE_PATTERN.length;
+        int n = pattern.length;
         int[] amps = new int[n];
         for (int i = 0; i < n; i++) {
-          amps[i] = VIBRATE_PATTERN[i] == 0 ? 0 : VibrationEffect.DEFAULT_AMPLITUDE;
+          amps[i] = pattern[i] == 0 ? 0 : VibrationEffect.DEFAULT_AMPLITUDE;
         }
-        VibrationEffect eff = VibrationEffect.createWaveform(VIBRATE_PATTERN, amps, 0);
+        VibrationEffect eff = VibrationEffect.createWaveform(pattern, amps, 0);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
           VibrationAttributes attrs =
               VibrationAttributes.createForUsage(VibrationAttributes.USAGE_RINGTONE);
@@ -160,7 +203,7 @@ public final class GywIncomingCallAlerts {
           v.vibrate(eff);
         }
       } else {
-        v.vibrate(VIBRATE_PATTERN, 0);
+        v.vibrate(pattern, 0);
       }
       Log.d(TAG, "Vibrator started");
     } catch (Exception e) {
