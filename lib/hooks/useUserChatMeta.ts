@@ -1,5 +1,6 @@
 import { db } from '@/lib/firebase';
 import {
+  FIRESTORE_SNAPSHOT_OPTS,
   hasNativeFirestore,
   subscribeUserChatMetaNative,
   subscribeUserChatPreferencesNative,
@@ -55,14 +56,29 @@ export function useUserChatMeta(userId: string | undefined) {
   const metaRef = useRef<MetaById>({});
   const prefMutedRef = useRef<Record<string, boolean>>({});
 
+  const lastPublishedSigRef = useRef('');
+
   const publish = () => {
-    setAllFromServer(mergeMetaWithPrefs(metaRef.current, prefMutedRef.current));
+    const merged = mergeMetaWithPrefs(metaRef.current, prefMutedRef.current);
+    const keys = new Set([...Object.keys(merged)]);
+    const parts: string[] = [];
+    for (const id of [...keys].sort()) {
+      const m = merged[id] ?? {};
+      parts.push(
+        `${id}:${m.pinnedAt ?? ''}:${m.archived ? 1 : 0}:${m.muted ? 1 : 0}:${m.deletedAt ?? ''}:${m.mutedUntil ?? ''}`
+      );
+    }
+    const sig = parts.join('|');
+    if (sig === lastPublishedSigRef.current) return;
+    lastPublishedSigRef.current = sig;
+    setAllFromServer(merged);
   };
 
   useEffect(() => {
     if (!userId) {
       metaRef.current = {};
       prefMutedRef.current = {};
+      lastPublishedSigRef.current = '';
       setAllFromServer({});
       return;
     }
@@ -95,6 +111,7 @@ export function useUserChatMeta(userId: string | undefined) {
       const metaCol = collection(db, 'users', userId, 'chatMeta');
       unsubMeta = onSnapshot(
         metaCol,
+        FIRESTORE_SNAPSHOT_OPTS,
         (snap) => {
           const byId: MetaById = {};
           snap.forEach((d) => {
@@ -110,6 +127,7 @@ export function useUserChatMeta(userId: string | undefined) {
       const prefCol = collection(db, 'users', userId, 'chatPreferences');
       unsubPref = onSnapshot(
         prefCol,
+        FIRESTORE_SNAPSHOT_OPTS,
         (snap) => {
           const muted: Record<string, boolean> = {};
           snap.forEach((d) => {

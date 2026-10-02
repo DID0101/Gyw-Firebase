@@ -1,7 +1,8 @@
 import { Feather } from '@expo/vector-icons';
 import clsx from 'clsx';
-import { Link, useRouter } from 'expo-router';
-import { useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Platform, Pressable, Text, View } from 'react-native';
 
@@ -10,9 +11,25 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 import Screen from '@/components/Screen';
 import TextField from '@/components/TextField';
 import { useThemeClassName } from '@/lib/themeUtils';
-import { sendPhoneOTP, confirmPhoneOTP, friendlyAuthError } from '@/lib/phoneAuth';
-import { db } from '@/lib/firebase';
-import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
+import {
+  sendPhoneOTP,
+  confirmPhoneOTP,
+  friendlyAuthError,
+  restorePhoneLoginSession,
+  compatSavePendingLogin,
+  loadPendingLoginIfFresh,
+  clearPendingLogin,
+  compatSignOut,
+} from '@/lib/auth/authCompat';
+import { assertPhoneAllowedForAuth } from '@/lib/auth/phoneRegistrationCheck';
+import { clearServerOtpSession } from '@/lib/auth/phoneOtpSessionStore';
+import { hasCompleteProfileForSignIn } from '@/lib/auth/userProfileRead';
+import { waitForAuthToken } from '@/lib/auth/waitForAuthToken';
+import { getNetworkQuality } from '@/lib/reliability/NetworkManager';
+import { useProductionScreenTrace } from '@/lib/hooks/useProductionScreenTrace';
+import { navigateOnce } from '@/lib/safeAction';
+import { trackLogin } from '@/lib/services/analyticsService';
+import { crashlyticsLog } from '@/lib/services/crashlyticsService';
 
 function formatPhone(text: string): string {
   const cleaned = text.replace(/[^\d+]/g, '');
@@ -22,14 +39,36 @@ function formatPhone(text: string): string {
 const SignInScreen = () => {
   const router = useRouter();
   const { t, i18n } = useTranslation();
+  useProductionScreenTrace('SignIn', { lang: i18n.language });
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-500', 'text-gray-400');
+  const languagePillBg = useThemeClassName('bg-white/90', 'bg-gray-800/90');
   const [showLanguageModal, setShowLanguageModal] = useState(false);
 
   const [phone, setPhone] = useState('');
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void loadPendingLoginIfFresh().then((saved) => {
+        if (cancelled) return;
+        if (!saved?.verificationId) {
+          setVerificationId(null);
+          setCode('');
+          return;
+        }
+        restorePhoneLoginSession(saved);
+        setPhone(saved.phone);
+        setVerificationId(saved.verificationId);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   const languages = [
     { code: 'en', name: 'English' },
@@ -45,14 +84,25 @@ const SignInScreen = () => {
       Alert.alert(t('auth.error'), t('auth.pleaseEnterPhone'));
       return;
     }
+    if (!getNetworkQuality().isOnline) {
+      Alert.alert(t('auth.error'), friendlyAuthError({ code: 'network/offline' }));
+      return;
+    }
+    if (loading) return;
     setLoading(true);
     try {
+      await assertPhoneAllowedForAuth(formatted, 'signIn');
       const vid = await sendPhoneOTP(formatted);
       setPhone(formatted);
       setVerificationId(vid);
+      await compatSavePendingLogin({
+        phone: formatted,
+        verificationId: vid,
+        savedAt: new Date().toISOString(),
+      });
       Alert.alert(t('auth.success'), t('auth.otpSent'));
     } catch (error: any) {
-      if (__DEV__) console.error('Error sending OTP:', error);
+      if (__DEV__) console.warn('OTP send failed:', error?.code ?? error?.message ?? error);
       Alert.alert(t('auth.error'), friendlyAuthError(error));
     } finally {
       setLoading(false);
@@ -66,34 +116,33 @@ const SignInScreen = () => {
     }
     setLoading(true);
     try {
+      const pending = await loadPendingLoginIfFresh();
+      if (pending?.verificationId === verificationId) {
+        restorePhoneLoginSession(pending);
+      }
       const { uid } = await confirmPhoneOTP(verificationId, code);
 
-      // Check if Firestore profile is complete
-      let hasProfile = false;
-      try {
-        if (Platform.OS !== 'web' && hasRnFirebase) {
-          const rnFs = require('@react-native-firebase/firestore');
-          const snap = await rnFs.getDoc(rnFs.doc(getRnFirestore(), 'users', uid));
-          const d = snap.exists ? snap.data() : null;
-          hasProfile = !!(d?.firstName && d?.username);
-        } else {
-          const { doc, getDoc } = await import('firebase/firestore');
-          const snap = await getDoc(doc(db, 'users', uid));
-          const d = snap.exists() ? snap.data() : null;
-          hasProfile = !!(d?.firstName && d?.username);
-        }
-      } catch (_) {
-        // If we can't check (network/permission), go to chats and let home handle it
-        hasProfile = true;
+      await waitForAuthToken();
+      const hasProfile = await hasCompleteProfileForSignIn(uid, phone);
+      if (!hasProfile) {
+        await compatSignOut();
+        await clearPendingLogin();
+        setVerificationId(null);
+        setCode('');
+        Alert.alert(t('auth.error'), t('auth.accountNotRegistered'));
+        return;
       }
 
-      if (hasProfile) {
-        router.replace('/(home)/(tabs)/chats');
-      } else {
-        router.replace({ pathname: '/sign-up', params: { completeProfile: '1', phone } });
-      }
+      await AsyncStorage.setItem(`profileCompleteCache:v1:${uid}`, '1');
+
+      crashlyticsLog(`user_login uid=${uid.slice(0, 8)}`);
+      void trackLogin('phone');
+
+      await clearPendingLogin();
+      await clearServerOtpSession();
+      navigateOnce(router, 'replace', '/(home)/(tabs)/chats');
     } catch (error: any) {
-      if (__DEV__) console.error('Error verifying OTP:', error);
+      if (__DEV__) console.warn('OTP verify failed:', error?.code ?? error?.message ?? error);
       const msg = friendlyAuthError(error);
       const code_ = error?.code ?? '';
       if (code_ === 'auth/code-expired' || code_ === 'auth/session-expired') {
@@ -109,6 +158,8 @@ const SignInScreen = () => {
   const resetToPhone = () => {
     setVerificationId(null);
     setCode('');
+    setPhone('');
+    void clearPendingLogin();
   };
 
   return (
@@ -119,7 +170,7 @@ const SignInScreen = () => {
           onPress={() => setShowLanguageModal(true)}
           className={clsx(
             'flex-row items-center gap-2.5 px-3.5 py-2 rounded-full',
-            useThemeClassName('bg-white/90', 'bg-gray-800/90'),
+            languagePillBg,
             'shadow-sm',
           )}
           style={({ pressed }) => ({ opacity: pressed ? 0.8 : 1 })}
@@ -147,13 +198,15 @@ const SignInScreen = () => {
       {!verificationId && (
         <>
           <TextField
+            testID="auth-phone-input"
             value={phone}
             placeholder={`${t('auth.phoneNumber')} (e.g. +1234567890)`}
             onChangeText={(v) => setPhone(formatPhone(v))}
             keyboardType="phone-pad"
-            autoComplete="tel"
+            autoComplete="off"
+            textContentType="none"
           />
-          <Button onPress={sendOTP}>{t('auth.sendOTP')}</Button>
+          <Button testID="auth-send-otp" onPress={sendOTP}>{t('auth.sendOTP')}</Button>
         </>
       )}
 
@@ -171,9 +224,9 @@ const SignInScreen = () => {
             maxLength={6}
             autoFocus
           />
-          <Button onPress={verifyOTP}>{t('auth.verify')}</Button>
+          <Button testID="auth-verify-otp" onPress={verifyOTP}>{t('common.verify')}</Button>
           <Pressable onPress={resetToPhone}>
-            <Text className="text-center text-[#FF5722]">{t('auth.wrongPhoneNumber')}</Text>
+            <Text className="text-center text-[#FF5722]">{t('auth.wrongPhone')}</Text>
           </Pressable>
         </>
       )}
@@ -186,11 +239,11 @@ const SignInScreen = () => {
         </Link>
       </View>
 
-      {/* reCAPTCHA anchor (web only) */}
-      {Platform.OS === 'web' && (
+      {/* Hidden reCAPTCHA anchor (web invisible OTP) */}
+      {Platform.OS === 'web' && !verificationId && (
         <View
           nativeID="recaptcha-container"
-          style={{ display: 'none', position: 'absolute', width: 0, height: 0 }}
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, overflow: 'hidden' }}
         />
       )}
     </Screen>

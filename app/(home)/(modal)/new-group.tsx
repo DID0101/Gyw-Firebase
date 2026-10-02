@@ -12,7 +12,10 @@ import UserCheckbox from '@/components/UserCheckbox';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUsers } from '@/lib/hooks/useUsers';
 import { createGroupChat } from '@/lib/services/chatService';
+import { trackGroupCreated } from '@/lib/services/analyticsService';
+import { crashlyticsLog } from '@/lib/services/crashlyticsService';
 import { User } from '@/lib/types/chat';
+import { buildDisplayName, sanitizeGroupName, textIncludes } from '@/lib/unicodeText';
 
 const NewGroupScreen = () => {
   const { user: currentUser } = useAuth();
@@ -31,12 +34,11 @@ const NewGroupScreen = () => {
       .filter(u => u.uid !== currentUser?.uid)
       .filter(u => {
         if (!query.trim()) return true;
-        const searchLower = query.toLowerCase();
         return (
-          u.username?.toLowerCase().includes(searchLower) ||
-          u.firstName?.toLowerCase().includes(searchLower) ||
-          u.lastName?.toLowerCase().includes(searchLower) ||
-          `${u.firstName} ${u.lastName}`.toLowerCase().includes(searchLower)
+          textIncludes(u.username, query) ||
+          textIncludes(u.firstName, query) ||
+          textIncludes(u.lastName, query) ||
+          textIncludes(buildDisplayName(u.firstName, u.lastName), query)
         );
       });
   }, [allUsers, currentUser?.uid, query]);
@@ -51,7 +53,8 @@ const NewGroupScreen = () => {
   };
 
   const createNewGroup = async () => {
-    if (!groupName.trim()) {
+    const safeGroupName = sanitizeGroupName(groupName);
+    if (!safeGroupName) {
       alert(t('groups.enterGroupName'));
       return;
     }
@@ -64,9 +67,12 @@ const NewGroupScreen = () => {
     setCreatingGroup(true);
 
     try {
-      const chatId = await createGroupChat(currentUser.uid, groupName.trim(), selectedUsers, {
+      const chatId = await createGroupChat(currentUser.uid, safeGroupName, selectedUsers, {
         description: groupDescription.trim() || undefined,
       });
+
+      crashlyticsLog(`group_created chatId=${chatId.slice(0, 8)} members=${selectedUsers.length + 1}`);
+      void trackGroupCreated(chatId, selectedUsers.length + 1);
 
       // Navigate to the new group chat
       router.dismissTo({
@@ -94,9 +100,9 @@ const NewGroupScreen = () => {
   const sortedUsers = useMemo(
     () =>
       users.sort((a, b) => {
-        const nameA = `${a.firstName} ${a.lastName}`;
-        const nameB = `${b.firstName} ${b.lastName}`;
-        return nameA.localeCompare(nameB);
+        const nameA = buildDisplayName(a.firstName, a.lastName);
+        const nameB = buildDisplayName(b.firstName, b.lastName);
+        return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
       }),
     [users]
   );

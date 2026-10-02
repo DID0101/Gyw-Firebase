@@ -8,19 +8,20 @@ import {
   updateDoc,
   onSnapshot,
   serverTimestamp,
+  Timestamp,
   query,
   where,
   orderBy,
   limit,
   getDocs,
 } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { functions, httpsCallable } from '@/lib/firebase';
+import { db, functions, httpsCallable } from '@/lib/firebase';
 import {
   createCallNative,
   getCallHistoryNative,
   getCallNative,
   hasNativeFirestore,
+  fetchPendingSignalingForCalleeNative,
   sendSignalingMessageNative,
   subscribeToCallNative,
   subscribeToSignalingNative,
@@ -28,6 +29,11 @@ import {
   updateCallStatusNative,
 } from '@/lib/firestoreNative';
 import { Call, CallSignaling } from '@/lib/types/call';
+import { runOnceByKey } from '@/lib/safeAction';
+import { withNetworkSafety } from '@/lib/safeNetwork';
+import { isCallEnding, teardownCallImmediately } from '@/lib/call/fastCallTeardown';
+import { callLatencyMark, callLatencyStart } from '@/lib/perf/callLatencyTrace';
+import { useCallManagerStore } from '@/store/callManagerStore';
 
 function csLog(...args: unknown[]) {
   if (__DEV__) console.log(...args);
@@ -53,6 +59,135 @@ const TERMINAL_STATUSES = new Set([
   'timeout',
 ]);
 
+export type CallEndReason = 'cancelled' | 'ended' | 'declined';
+
+export type InitiateCallParams = {
+  /** Pre-generated Firestore doc id — use for navigate-first outgoing calls. */
+  callId?: string;
+  callerId: string;
+  calleeId: string;
+  callType: 'audio' | 'video';
+  chatId?: string;
+  callerName?: string;
+  callerAvatar?: string;
+  isRandom?: boolean;
+};
+
+/** Client-side call doc id — no network. */
+export function preGenerateCallId(): string {
+  return doc(collection(db, 'calls')).id;
+}
+
+const RING_TIMEOUT_SECS = 60;
+const CALL_DELETE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Rules-compliant ringing stub so listeners work before the CF finishes.
+ * Safe to call before navigate-first outgoing UI.
+ */
+export async function writeOutgoingCallStub(params: InitiateCallParams & { callId: string }): Promise<void> {
+  const { callId, callerId, calleeId, callType, chatId, callerName, callerAvatar } = params;
+  const now = Date.now();
+  const expiresAt = Timestamp.fromMillis(now + RING_TIMEOUT_SECS * 1000);
+  const deleteAfter = Timestamp.fromMillis(now + CALL_DELETE_AFTER_MS);
+  const normalizedType: 'audio' | 'video' = callType === 'video' ? 'video' : 'audio';
+
+  const callData: Record<string, unknown> = {
+    callId,
+    callerId,
+    calleeId,
+    receiverId: calleeId,
+    callType: normalizedType,
+    type: normalizedType,
+    status: 'ringing',
+    ringTimeoutSecs: RING_TIMEOUT_SECS,
+    callerName: (callerName ?? '').trim() || 'Unknown Caller',
+    callerAvatar: callerAvatar ?? '',
+    deferIncomingPush: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    expiresAt,
+    deleteAfter,
+  };
+  if (chatId) callData.chatId = chatId;
+
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    await createCallNative(
+      callerId,
+      calleeId,
+      normalizedType,
+      chatId,
+      false,
+      callerName,
+      callerAvatar,
+      callId,
+    );
+    return;
+  }
+
+  await setDoc(doc(db, 'calls', callId), callData);
+  callLatencyMark(callId, 'CALL_DOC_CREATED');
+}
+
+/** In-flight initiation guard — blocks double-tap without debounce latency. */
+const initiateCallInFlight = new Map<string, Promise<string>>();
+
+function releaseInitiateCallKey(key: string): void {
+  setTimeout(() => initiateCallInFlight.delete(key), 5000);
+}
+
+/** Wake callee immediately — do not wait for WebRTC offer / getUserMedia. */
+async function notifyCalleeRinging(callId: string): Promise<void> {
+  const notifyFn = httpsCallable<{ roomId: string }, { success: boolean }>(
+    functions,
+    'notifyIncomingCall',
+  );
+  try {
+    await withNetworkSafety(() => notifyFn({ roomId: callId }), {
+      label: 'notify_incoming_call',
+      timeoutMs: 8000,
+      maxAttempts: 2,
+    });
+    callLatencyMark(callId, 'FCM_SENT');
+  } catch (err) {
+    const code = (err as { code?: string })?.code ?? '';
+    if (code === 'not-found' || code === 'functions/not-found') {
+      csWarn(
+        '[callService] notifyIncomingCall not deployed — callee may rely on Firestore only',
+        callId,
+      );
+    } else {
+      csWarn('[callService] notifyIncomingCall failed (non-fatal)', err);
+    }
+  }
+}
+
+/** Caller SDP offer — runs in parallel with notifyCalleeRinging when possible. */
+async function finalizeOutgoingOffer(
+  callId: string,
+  callerId: string,
+  receiverId: string,
+): Promise<void> {
+  try {
+    const { webRTCService } = await import('./webrtcService');
+    await webRTCService.createAndSendOffer(callId, callerId, receiverId);
+  } catch (err) {
+    csWarn('[callService] finalizeOutgoingOffer failed', err);
+  }
+}
+
+/** Offer + ring push — ring is not blocked on media/SDP. */
+async function finalizeOutgoingOfferAndNotify(
+  callId: string,
+  callerId: string,
+  receiverId: string,
+): Promise<void> {
+  await Promise.all([
+    notifyCalleeRinging(callId),
+    finalizeOutgoingOffer(callId, callerId, receiverId),
+  ]);
+}
+
 const normalizeCallStatus = (status: string | undefined): Call['status'] => {
   if (!status) return 'ringing';
   if (status === 'answered') return 'accepted' as Call['status'];
@@ -67,91 +202,278 @@ function isCallEligibleForHistory(call: Call): boolean {
   return TERMINAL_STATUSES.has(call.status);
 }
 
-// Create a new call
-export const createCall = async (
+/**
+ * Start an outgoing call (fast path).
+ *
+ * 1. Pre-generate callId
+ * 2. Start WebRTC / ICE prep in parallel with Firestore write
+ * 3. Create offer + persist SDP on call doc
+ * 4. notifyIncomingCall CF sends data-only FCM (after media is ready)
+ */
+export const initiateCall = async (params: InitiateCallParams): Promise<string> => {
+  const {
+    callId: preCallId,
+    callerId,
+    calleeId: receiverId,
+    callType,
+    chatId,
+    callerName,
+    callerAvatar,
+    isRandom,
+  } = params;
+  const normalizedType: 'audio' | 'video' = callType === 'video' ? 'video' : 'audio';
+  const opts: CreateCallOptions = {
+    ...(chatId ? { chatId } : {}),
+    ...(isRandom ? { isRandom: true } : {}),
+  };
+  const roomId = preCallId ?? preGenerateCallId();
+  const dedupeKey =
+    preCallId ??
+    [
+      'start_call',
+      callerId,
+      receiverId,
+      normalizedType,
+      opts.chatId ?? '',
+      opts.isRandom ? 'random' : 'regular',
+    ].join(':');
+
+  const inFlight = initiateCallInFlight.get(dedupeKey);
+  if (inFlight) {
+    if (__DEV__) csLog('[callService] CALL_INIT_IN_FLIGHT — joining existing', { dedupeKey });
+    return inFlight;
+  }
+
+  const promise = (async (): Promise<string> => {
+    const isVideo = normalizedType === 'video';
+    const { beginOutgoingCallerMediaPrep } = await import('./webrtcService');
+
+    let docExists = false;
+    try {
+      docExists = !!(await getCall(roomId));
+    } catch {
+      docExists = false;
+    }
+
+    if (!opts.isRandom) {
+      try {
+        const initiateCallFn = httpsCallable<
+          {
+            callerId: string;
+            calleeId: string;
+            roomId: string;
+            callType: 'audio' | 'video';
+            callerName: string;
+            callerAvatar: string;
+            chatId?: string;
+          },
+          { success: boolean; roomId: string }
+        >(functions, 'initiateCall');
+
+        const writePromise = withNetworkSafety(
+          () =>
+            initiateCallFn({
+              callerId,
+              calleeId: receiverId,
+              roomId,
+              callType: normalizedType,
+              callerName: callerName ?? '',
+              callerAvatar: callerAvatar ?? '',
+              ...(opts.chatId ? { chatId: opts.chatId } : {}),
+            }),
+          { label: 'initiate_call', timeoutMs: 12000, maxAttempts: 3 },
+        );
+
+        const [mediaPrepResult, cfResult] = await Promise.allSettled([
+          beginOutgoingCallerMediaPrep(roomId, isVideo, callerId, receiverId),
+          writePromise,
+        ]);
+
+        if (cfResult.status === 'rejected') {
+          throw cfResult.reason;
+        }
+        if (mediaPrepResult.status === 'rejected') {
+          csWarn('[callService] media prep failed (continuing audio-only path)', mediaPrepResult.reason);
+        }
+
+        const res = cfResult.value;
+        if (res?.data?.success && res.data.roomId) {
+          const callId = res.data.roomId;
+          callLatencyMark(callId, 'CALL_DOC_CREATED');
+          const { logCallInitiating } = await import('@/lib/call/callDevLog');
+          logCallInitiating(callId, { callerId, receiverId, type: normalizedType });
+          const { useCallManagerStore } = await import('@/store/callManagerStore');
+          useCallManagerStore.getState().setActiveCallId(callId);
+          // Ring callee immediately; SDP offer continues in parallel.
+          void notifyCalleeRinging(callId);
+          await finalizeOutgoingOffer(callId, callerId, receiverId);
+          csLog('Call initiated (callable):', { roomId: callId, callerId, receiverId, type: normalizedType });
+          return callId;
+        }
+        csWarn('[callService] initiateCall callable returned unsuccessful response');
+      } catch (err) {
+        csWarn('[callService] initiateCall callable failed, falling back to direct write', err);
+      }
+    }
+
+    if (!docExists && Platform.OS !== 'web' && hasNativeFirestore) {
+      const [nativeResult, mediaPrepResult] = await Promise.allSettled([
+        createCallNative(
+          callerId,
+          receiverId,
+          normalizedType,
+          opts.chatId,
+          opts.isRandom,
+          callerName,
+          callerAvatar,
+          roomId,
+        ),
+        !opts.isRandom ? beginOutgoingCallerMediaPrep(roomId, isVideo, callerId, receiverId) : Promise.resolve(),
+      ]);
+      if (nativeResult.status === 'rejected') throw nativeResult.reason;
+      if (mediaPrepResult.status === 'rejected') {
+        csWarn('[callService] media prep failed (native path)', mediaPrepResult.reason);
+      }
+      const callId = nativeResult.value;
+      const { logCallInitiating } = await import('@/lib/call/callDevLog');
+      logCallInitiating(callId, { callerId, receiverId, type: normalizedType, path: 'native' });
+      if (!opts.isRandom) {
+        const { useCallManagerStore } = await import('@/store/callManagerStore');
+        useCallManagerStore.getState().setActiveCallId(callId);
+        callLatencyMark(callId, 'CALL_DOC_CREATED');
+        void notifyCalleeRinging(callId);
+        await finalizeOutgoingOffer(callId, callerId, receiverId);
+      }
+      csLog('Call created (native):', { callId, callerId, receiverId, type: normalizedType });
+      return callId;
+    }
+
+    if (!docExists) {
+      const now = Date.now();
+      const callData: Record<string, unknown> = {
+        callId: roomId,
+        callerId,
+        receiverId,
+        calleeId: receiverId,
+        type: normalizedType,
+        callType: normalizedType,
+        status: 'ringing',
+        ringTimeoutSecs: RING_TIMEOUT_SECS,
+        deferIncomingPush: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        expiresAt: Timestamp.fromMillis(now + RING_TIMEOUT_SECS * 1000),
+        deleteAfter: Timestamp.fromMillis(now + CALL_DELETE_AFTER_MS),
+      };
+      if (opts.chatId) callData.chatId = opts.chatId;
+      if (opts.isRandom) callData.isRandom = true;
+      if (callerName) callData.callerName = callerName;
+      if (callerAvatar) callData.callerAvatar = callerAvatar;
+
+      const callDocRef = doc(collection(db, 'calls'), roomId);
+      const [writeResult, mediaPrepResult] = await Promise.allSettled([
+        setDoc(callDocRef, callData),
+        !opts.isRandom ? beginOutgoingCallerMediaPrep(roomId, isVideo, callerId, receiverId) : Promise.resolve(),
+      ]);
+
+      if (writeResult.status === 'rejected') throw writeResult.reason;
+      if (mediaPrepResult.status === 'rejected') {
+        csWarn('[callService] media prep failed (direct write)', mediaPrepResult.reason);
+      }
+    } else if (!opts.isRandom) {
+      const mediaPrepResult = await Promise.allSettled([
+        beginOutgoingCallerMediaPrep(roomId, isVideo, callerId, receiverId),
+      ]);
+      if (mediaPrepResult[0].status === 'rejected') {
+        csWarn('[callService] media prep failed (stub exists)', mediaPrepResult[0].reason);
+      }
+    }
+
+    const { useCallManagerStore } = await import('@/store/callManagerStore');
+    useCallManagerStore.getState().setActiveCallId(roomId);
+    if (!opts.isRandom) {
+      callLatencyMark(roomId, 'CALL_DOC_CREATED');
+      void notifyCalleeRinging(roomId);
+      await finalizeOutgoingOffer(roomId, callerId, receiverId);
+    }
+    const { logCallInitiating } = await import('@/lib/call/callDevLog');
+    logCallInitiating(roomId, {
+      callerId,
+      receiverId,
+      type: normalizedType,
+      path: docExists ? 'stub_then_finalize' : 'direct_write',
+    });
+    return roomId;
+  })();
+
+  initiateCallInFlight.set(dedupeKey, promise);
+  promise.finally(() => releaseInitiateCallKey(dedupeKey));
+  return promise;
+};
+
+/** Positional wrapper for legacy import sites. */
+export async function createCall(
   callerId: string,
   receiverId: string,
   type: 'audio' | 'video',
   chatId?: string,
   options?: CreateCallOptions,
-  /** Caller's display name — stored in the call doc so the receiver's
-   *  CallKeep / lock-screen notification can show the name without a
-   *  separate Firestore lookup. */
   callerName?: string,
   callerAvatar?: string,
-): Promise<string> => {
-  // Defensive: some UI surfaces may pass an untyped value (e.g. old call history rows).
-  // Keep the backend contract strict: only 'audio'|'video'.
-  const normalizedType: 'audio' | 'video' = type === 'video' ? 'video' : 'audio';
-  const opts = options ?? (chatId !== undefined ? { chatId } : {});
-  const roomId = doc(collection(db, 'calls')).id;
-
-  // Canonical production path: callable writes call doc + pushes.
-  // Keep random path on direct Firestore because it uses a separate flow.
-  if (!opts.isRandom) {
-    try {
-      const initiateCallFn = httpsCallable<any, { success: boolean; roomId: string }>(functions, 'initiateCall');
-      const res = await initiateCallFn({
-        callerId,
-        calleeId: receiverId,
-        roomId,
-        callType: normalizedType,
-        callerName: callerName ?? '',
-        callerAvatar: callerAvatar ?? '',
-      });
-      if (res?.data?.success && res.data.roomId) {
-        csLog('Call created (callable):', { roomId: res.data.roomId, callerId, receiverId, type });
-        return res.data.roomId;
-      }
-    } catch (err) {
-      csWarn('[callService] initiateCall callable failed, falling back to direct write', err);
-    }
-  }
-
-  if (Platform.OS !== 'web' && hasNativeFirestore) {
-    const callId = await createCallNative(
-      callerId,
-      receiverId,
-      normalizedType,
-      opts.chatId,
-      opts.isRandom,
-      callerName,
-      callerAvatar,
-    );
-    csLog('Call created (native):', { callId, callerId, receiverId, type, chatId: opts.chatId, isRandom: opts.isRandom, status: 'ringing' });
-    return callId;
-  }
-
-  const callsRef = collection(db, 'calls');
-  const callData: any = {
+): Promise<string> {
+  return initiateCall({
+    callId: undefined,
     callerId,
-    receiverId,
-    calleeId: receiverId, // mirrors receiverId so _layout.tsx Firestore listener (queries calleeId) fires
-    type: normalizedType,
-    status: 'ringing' as const,
-    createdAt: serverTimestamp(),
-  };
-
-  if (opts.chatId) callData.chatId = opts.chatId;
-  if (opts.isRandom) callData.isRandom = true;
-  if (callerName) callData.callerName = callerName;
-  if (callerAvatar) callData.callerAvatar = callerAvatar;
-
-  const callDocRef = doc(callsRef);
-  await setDoc(callDocRef, callData);
-
-  csLog('Call created:', {
-    callId: callDocRef.id,
-    callerId,
-    receiverId,
-    type,
-    chatId: opts.chatId,
-    isRandom: opts.isRandom,
-    status: 'ringing',
+    calleeId: receiverId,
+    callType: type,
+    chatId: chatId ?? options?.chatId,
+    isRandom: options?.isRandom,
+    callerName,
+    callerAvatar,
   });
+}
 
-  return callDocRef.id;
-};
+/**
+ * End / cancel / decline — instant UI teardown; Firestore/WebRTC/FCM in background.
+ */
+export function endCallSession(
+  callId: string,
+  reason: CallEndReason,
+  options?: { chatId?: string; duration?: number; skipNativeDismiss?: boolean },
+): void {
+  if (!callId) return;
+
+  if (isCallEnding(callId)) {
+    if (__DEV__) csWarn('[endCallSession] CALL_ALREADY_ENDING', callId);
+    return;
+  }
+
+  const activeId = useCallManagerStore.getState().activeCallId;
+  if (activeId && activeId !== callId) {
+    if (__DEV__) {
+      csWarn('[endCallSession] activeCallId mismatch — skipping stale end', {
+        callId,
+        activeCallId: activeId,
+        reason,
+      });
+    }
+    return;
+  }
+
+  teardownCallImmediately(callId, reason, options);
+}
+
+/** Accept incoming call — Firestore status update (non-blocking); navigate via handleAnswerCallNavigation. */
+export async function acceptCall(callId: string): Promise<void> {
+  const { callManagerActionsRef } = await import('@/lib/hooks/useCallManager');
+  await callManagerActionsRef.answerCall(callId);
+}
+
+/** Decline incoming call — Firestore first, then clears stores. */
+export async function declineCall(callId: string): Promise<void> {
+  const { callManagerActionsRef } = await import('@/lib/hooks/useCallManager');
+  await callManagerActionsRef.rejectCall(callId);
+}
 
 /** Signal that receiver has set up signaling and is ready for the offer (random calls only). */
 export const updateCallReceiverReady = async (callId: string): Promise<void> => {
@@ -193,20 +515,53 @@ export const updateCallStatus = async (
   chatId?: string
 ): Promise<void> => {
   const normalizedStatus = normalizeCallStatus(status as string);
+  if (normalizedStatus === 'accepted' || normalizedStatus === 'active') {
+    console.log('ACCEPT_FIRESTORE_UPDATE_START', { callId, normalizedStatus });
+  }
+  return runOnceByKey(
+    ['call_status', callId, normalizedStatus, chatId ?? '', typeof duration === 'number' ? duration : ''].join(':'),
+    async () => {
+  // #region agent log
+  if (normalizedStatus === 'declined' || normalizedStatus === 'rejected') {
+    try {
+      const { auth } = await import('@/lib/firebase');
+      const { debugSessionLog } = await import('@/lib/debugSessionLog');
+      debugSessionLog(
+        'callService.ts:updateCallStatus',
+        'terminal_status_write',
+        { callId, normalizedStatus, selfUid: auth?.currentUser?.uid ?? null },
+        'A',
+      );
+    } catch {}
+  }
+  // #endregion
   try {
     const transitionFn = httpsCallable<any, { success: true; status: string }>(functions, 'transitionCallState');
-    await transitionFn({
-      roomId: callId,
-      nextStatus: normalizedStatus,
-      ...(typeof duration === 'number' ? { duration } : {}),
-    });
+    await withNetworkSafety(
+      () =>
+        transitionFn({
+          roomId: callId,
+          nextStatus: normalizedStatus,
+          ...(typeof duration === 'number' ? { duration } : {}),
+        }),
+      { label: `call_status:${normalizedStatus}`, timeoutMs: 10000, maxAttempts: 3 }
+    );
+    if (normalizedStatus === 'accepted' || normalizedStatus === 'active') {
+      console.log('ACCEPT_FIRESTORE_UPDATE_SUCCESS', { callId, normalizedStatus, via: 'transitionCallState' });
+    }
     return;
   } catch (err) {
+    if (normalizedStatus === 'accepted') {
+      console.log('ACCEPT_FIRESTORE_UPDATE_FAILED', { callId, via: 'transitionCallState', error: String(err) });
+    }
     if (__DEV__) console.warn('[callService] transitionCallState callable failed, fallback to direct update', err);
   }
 
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    await updateCallStatusNative(callId, normalizedStatus, duration, chatId);
+    await withNetworkSafety(
+      () => updateCallStatusNative(callId, normalizedStatus, duration, chatId),
+      { label: `call_status_native:${normalizedStatus}`, timeoutMs: 10000, maxAttempts: 3 }
+    );
     return;
   }
 
@@ -251,6 +606,13 @@ export const updateCallStatus = async (
       chatId
     );
   }
+    },
+    {
+      debounceMs: TERMINAL_STATUSES.has(normalizedStatus) ? 5000 : 1200,
+      logLabel: `call_status:${normalizedStatus}`,
+      blockedLog: 'CALL_DUPLICATE_PREVENTED',
+    }
+  );
 };
 
 // Create a system message for call log in chat
@@ -373,6 +735,7 @@ export const subscribeToCall = (
   const callRef = doc(db, 'calls', callId);
   return onSnapshot(
     callRef,
+    { includeMetadataChanges: false },
     (callDoc) => {
       if (callDoc.exists()) {
         const data = callDoc.data();
@@ -391,8 +754,11 @@ export const subscribeToCall = (
       }
     },
     (error) => {
-      console.error('Error listening to call:', error);
-      callback(null);
+      const code = (error as { code?: string })?.code ?? '';
+      if (__DEV__ && code !== 'permission-denied') {
+        console.error('Error listening to call:', error);
+      }
+      // Do not treat transient listen errors as "call deleted" — avoids spurious safeBack.
     }
   );
 };
@@ -404,11 +770,12 @@ export const sendSignalingMessage = async (
   to: string,
   type: CallSignaling['type'],
   sdp?: RTCSessionDescriptionInit,
-  candidate?: RTCIceCandidateInit
+  candidate?: RTCIceCandidateInit,
+  candidates?: RTCIceCandidateInit[],
 ): Promise<void> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
-      await sendSignalingMessageNative(callId, from, to, type, sdp, candidate);
+      await sendSignalingMessageNative(callId, from, to, type, sdp, candidate, candidates);
       csLog(`Signaling ${type} sent from ${from} to ${to} (native)`);
       return;
     }
@@ -419,6 +786,7 @@ export const sendSignalingMessage = async (
       type,
       ...(sdp && { sdp }),
       ...(candidate && { candidate }),
+      ...(candidates && candidates.length > 0 && { candidates }),
       timestamp: serverTimestamp(),
     });
     csLog(`Signaling ${type} sent from ${from} to ${to}`);
@@ -426,6 +794,46 @@ export const sendSignalingMessage = async (
     console.error(`Error sending signaling ${type}:`, error);
     throw error;
   }
+};
+
+/** Messages already written before callee subscribes (offer + queued ICE). */
+export const fetchPendingSignalingForCallee = async (
+  callId: string,
+  calleeId: string,
+): Promise<CallSignaling[]> => {
+  if (Platform.OS !== 'web' && hasNativeFirestore) {
+    const rows = await fetchPendingSignalingForCalleeNative(callId, calleeId);
+    return rows as CallSignaling[];
+  }
+  const signalingRef = collection(db, 'callSignaling', callId, 'messages');
+  const q = query(signalingRef, where('to', '==', calleeId));
+  const snapshot = await getDocs(q);
+  const rows: Array<{ message: CallSignaling; ms: number }> = [];
+  snapshot.forEach((docSnap) => {
+    const data = docSnap.data();
+    const ts = data.timestamp;
+    const ms =
+      ts && typeof (ts as { toDate?: () => Date }).toDate === 'function'
+        ? (ts as { toDate: () => Date }).toDate().getTime()
+        : typeof ts === 'string'
+          ? Date.parse(ts)
+          : 0;
+    rows.push({
+      ms,
+      message: {
+        callId,
+        from: data.from,
+        to: data.to,
+        type: data.type,
+        ...(data.sdp && { sdp: data.sdp }),
+        ...(data.candidate && { candidate: data.candidate }),
+        ...(Array.isArray(data.candidates) && { candidates: data.candidates }),
+        timestamp: (ts as { toDate?: () => Date })?.toDate?.()?.toISOString() || ts,
+      } as CallSignaling,
+    });
+  });
+  rows.sort((a, b) => a.ms - b.ms);
+  return rows.map((r) => r.message);
 };
 
 // Listen to signaling messages
@@ -443,10 +851,16 @@ export const subscribeToSignaling = (
 
   csLog(`Subscribing to signaling for user ${userId} on call ${callId}`);
 
+  let initialSnapshot = true;
   return onSnapshot(
     q,
+    { includeMetadataChanges: false },
     (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
+      const changes = initialSnapshot
+        ? snapshot.docs.map((docSnap) => ({ type: 'added' as const, doc: docSnap }))
+        : snapshot.docChanges();
+      initialSnapshot = false;
+      changes.forEach((change) => {
         if (change.type === 'added') {
           const data = change.doc.data();
           
@@ -459,6 +873,7 @@ export const subscribeToSignaling = (
               type: data.type,
               ...(data.sdp && { sdp: data.sdp }),
               ...(data.candidate && { candidate: data.candidate }),
+              ...(Array.isArray(data.candidates) && { candidates: data.candidates }),
               timestamp: data.timestamp?.toDate?.()?.toISOString() || data.timestamp,
             };
             csLog(`Signaling ${message.type} received from ${message.from}`);
@@ -610,8 +1025,9 @@ export const createCallLink = async (
   creatorId: string,
   type: 'audio' | 'video'
 ): Promise<{ linkId: string; linkUrl: string }> => {
-  const callLinksRef = collection(db, 'callLinks');
-  
+  return runOnceByKey(
+    ['create_call_link', creatorId, type].join(':'),
+    async () => {
   // Generate unique link ID
   let linkId = generateCallLinkId();
   let attempts = 0;
@@ -647,6 +1063,13 @@ export const createCallLink = async (
   const linkUrl = `https://signal-clone.app/call/${linkId}`;
   
   return { linkId, linkUrl };
+    },
+    {
+      debounceMs: 2500,
+      logLabel: 'create_call_link',
+      blockedLog: 'CALL_DUPLICATE_PREVENTED',
+    }
+  );
 };
 
 // Get call link by ID
@@ -713,11 +1136,11 @@ export const joinCallLink = async (
     return existingCallId;
   } else {
     // Create new call
-    const callId = await createCall(
-      userId === linkData.creatorId ? userId : linkData.creatorId,
-      userId === linkData.creatorId ? linkData.creatorId : userId,
-      linkData.type
-    );
+    const callId = await initiateCall({
+      callerId: userId === linkData.creatorId ? userId : linkData.creatorId,
+      calleeId: userId === linkData.creatorId ? linkData.creatorId : userId,
+      callType: linkData.type === 'video' ? 'video' : 'audio',
+    });
     
     // Update link with active call ID
     await updateDoc(linkRef, {

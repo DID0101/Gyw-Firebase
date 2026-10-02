@@ -1,18 +1,34 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Linking from 'expo-linking';
 import { Stack, usePathname, useRouter } from 'expo-router';
-import { collection, doc, getDoc, onSnapshot, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, AppState, AppStateStatus, InteractionManager, Platform } from 'react-native';
+import {
+    Alert,
+    AppState,
+    AppStateStatus,
+    InteractionManager,
+    NativeEventEmitter,
+    NativeModules,
+    Platform,
+} from 'react-native';
 
 import { CallManagerHost } from '@/components/CallManagerHost';
 import ScreenLoading from '@/components/ScreenLoading';
 import { useAuth } from '@/contexts/AuthContext';
+import { handleAnswerCallNavigation } from '@/lib/call/handleAnswerCallNavigation';
 import { db } from '@/lib/firebase';
-import { loadFromStorage, preloadAppData } from '@/lib/services/preloadService';
-import { updateCallStatus } from '@/lib/services/callService';
+import { callManagerActionsRef } from '@/lib/hooks/useCallManager';
+import { releaseImageMemoryCache } from '@/lib/memoryPressure';
+import { refreshNetworkSnapshot } from '@/lib/networkState';
+import { initReliability } from '@/lib/reliability/initReliability';
+import { setSentryScreen } from '@/lib/reliability/SentryManager';
+import { loadFromStorage, preloadAppData, preloadAppDataOnForeground } from '@/lib/services/preloadService';
 import { useCallSessionStore } from '@/store/callSessionStore';
+import { useCallStore } from '@/store/callStore';
+import { useChatStore } from '@/store/chatStore';
+import { useContactsStore } from '@/store/contactsStore';
 
 // RN Firebase Firestore (single app from rnFirebase)
 import { getRnFirestore, hasRnFirebase } from '@/lib/rnFirebase';
@@ -41,8 +57,49 @@ const HomeLayout = () => {
   const setupDoneForUidRef = useRef<string | null>(null);
   const pathnameRef = useRef(pathname);
 
+  useEffect(() => {
+    initReliability();
+  }, []);
+
   // Keep pathnameRef current so the incoming-call guard always sees latest route
-  useEffect(() => { pathnameRef.current = pathname; }, [pathname]);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+    if (pathname) setSentryScreen(pathname);
+    if (__DEV__ && pathname?.includes('/call/')) {
+      console.log('ACCEPT_PATHNAME_CALL_ROUTE', { pathname, ts: Date.now() });
+    }
+  }, [pathname]);
+
+  // Android: gyw://call/{id}?accept=1 — callee accept (native full-screen / notification)
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !user?.uid) return;
+
+    const openCallFromUrl = (url: string) => {
+      if (!url) return;
+      const normalized = url.replace(/^exp\+gyw:\/\//, 'gyw://');
+      if (!normalized.includes('gyw://call/')) return;
+      try {
+        const noScheme = normalized.replace(/^gyw:\/\//, '');
+        const pathPart = noScheme.startsWith('call/') ? noScheme.slice('call/'.length) : '';
+        const [idRaw, queryRaw] = pathPart.split('?', 2);
+        const callId = decodeURIComponent(idRaw || '').trim();
+        if (!callId) return;
+        const qs = queryRaw ? new URLSearchParams(queryRaw) : new URLSearchParams();
+        if (qs.get('accept') !== '1') return;
+        const callType = qs.get('callType') === 'video' ? 'video' : 'audio';
+        console.log('ACCEPT_DEEPLINK_URL', { callId, callType, url: normalized });
+        void handleAnswerCallNavigation(router, { callId, callType });
+      } catch {
+        /* ignore malformed deep links */
+      }
+    };
+
+    void Linking.getInitialURL().then((u) => {
+      if (u) openCallFromUrl(u);
+    });
+    const sub = Linking.addEventListener('url', (e) => openCallFromUrl(e.url));
+    return () => sub.remove();
+  }, [user?.uid, router]);
 
   // Android: open chat from notification / inline-reply deep link (gyw://chat/{id}?…)
   useEffect(() => {
@@ -61,7 +118,13 @@ const HomeLayout = () => {
         if (qs.get('markRead') === '1') q.push('markRead=1');
         if (qs.get('fromReply') === '1') q.push('fromReply=1');
         const suffix = q.length ? `?${q.join('&')}` : '';
-        router.push(`/chat/${chatId}${suffix}` as never);
+        const chatPath = `/chat/${chatId}${suffix}` as never;
+        // Cold start / notification: replace so GO_BACK is not dispatched on an empty stack.
+        if (qs.get('fromNotif')) {
+          router.replace(chatPath);
+        } else {
+          router.push(chatPath);
+        }
       } catch {
         /* ignore malformed deep links */
       }
@@ -97,6 +160,9 @@ const HomeLayout = () => {
 
     if (setupDoneForUidRef.current === user.uid) return;
     setupDoneForUidRef.current = user.uid;
+
+    // Paint home shell immediately — user doc verify/create runs in background.
+    setSetupComplete(true);
 
     const setupUser = async () => {
       try {
@@ -148,49 +214,85 @@ const HomeLayout = () => {
         if (pendingPhone) await AsyncStorage.removeItem('pendingPhone');
       } catch (error) {
         if (__DEV__) console.error('Error setting up user:', error);
-      } finally {
-        setSetupComplete(true);
       }
     };
 
-    setupUser();
+    void setupUser();
   }, [user?.uid, authLoading, router]);
 
-  // 1.1 Load cached data then preload — after first interactions so home shell paints quickly.
+  // Warm MMKV caches as soon as auth resolves (do not wait for Firestore user setup).
   useEffect(() => {
-    if (!user?.uid || !setupComplete) return;
+    if (authLoading || !user?.uid) return;
+    let cancelled = false;
+    void loadFromStorage().catch(() => {});
+    void import('@/store/contactsStore').then(({ useContactsStore }) => {
+      if (!cancelled) void useContactsStore.getState().hydrateFromStorage().catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, authLoading]);
+
+  // Firestore preload after first frame — never blocks home shell.
+  useEffect(() => {
+    if (!user?.uid || authLoading) return;
     let cancelled = false;
     const task = InteractionManager.runAfterInteractions(() => {
-      void (async () => {
-        await loadFromStorage().catch(() => {});
-        if (cancelled) return;
-        await preloadAppData(user.uid).catch(() => {});
-      })();
+      if (cancelled) return;
+      void preloadAppData(user.uid).catch(() => {});
     });
     return () => {
       cancelled = true;
       task.cancel?.();
     };
-  }, [user?.uid, setupComplete]);
+  }, [user?.uid, authLoading]);
 
-  // 1.15 Contacts — defer so startup / first tab transition stays responsive.
+  // 1.15 Foreground reconnect — debounced, stale-gated (avoid full contact scan every resume).
   useEffect(() => {
     if (Platform.OS === 'web' || !user?.uid || !setupComplete) return;
-    const t = setTimeout(() => {
-      void (async () => {
-        try {
-          const Contacts = await import('expo-contacts');
-          const s = await Contacts.getPermissionsAsync();
-          if (!s.granted && s.canAskAgain !== false) {
-            await Contacts.requestPermissionsAsync();
-          }
-        } catch {
-          /* ignore */
-        }
-      })();
-    }, 2800);
-    return () => clearTimeout(t);
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let interactionTask: { cancel?: () => void } | null = null;
+    let cancelled = false;
+
+    const runForegroundReconnect = () => {
+      if (cancelled) return;
+      refreshNetworkSnapshot();
+      void useContactsStore.getState().refreshContactsIfStale();
+      interactionTask?.cancel?.();
+      interactionTask = InteractionManager.runAfterInteractions(() => {
+        if (cancelled) return;
+        void preloadAppDataOnForeground(user.uid!).catch(() => {});
+      });
+    };
+
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        runForegroundReconnect();
+      }, Platform.OS === 'android' ? 350 : 200);
+    });
+
+    return () => {
+      cancelled = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      interactionTask?.cancel?.();
+      sub.remove();
+    };
   }, [user?.uid, setupComplete]);
+
+  // 1.155 Background — drop cold message caches + image RAM (disk cache kept).
+  useEffect(() => {
+    if (Platform.OS === 'web' || !user?.uid) return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'background') return;
+      useChatStore.getState().trimMemoryFootprint();
+      releaseImageMemoryCache();
+    });
+    return () => sub.remove();
+  }, [user?.uid]);
 
   // 1.16 Android: observe battery + full-screen-intent capability (no auto system UI).
   //
@@ -247,109 +349,139 @@ const HomeLayout = () => {
     })();
   }, [user?.uid, setupComplete, t]);
 
-  // Shared handler — Firestore (1.2) + legacy paths. Android ringing is native (FCM → FSI);
-  // iOS uses PushKit CallKit + in-app navigation here.
-  const handleIncomingCallRef = useRef<
-    (callId: string, meta?: { callerName?: string; type?: 'audio' | 'video' }) => Promise<void>
-  >(async () => {});
-
+  // Android: register answer/decline listeners as soon as user is signed in (do not wait setupComplete).
   useEffect(() => {
-    handleIncomingCallRef.current = async (callId, meta) => {
-      if (pathnameRef.current?.includes(`/call/${callId}`)) return;
-      if (pathnameRef.current?.includes('/call/')) return;
-      const activeId = useCallSessionStore.getState().activeSessionCallId;
-      if (activeId && activeId !== callId) {
-        try {
-          await updateCallStatus(callId, 'busy');
-        } catch (e) {
-          if (__DEV__) console.warn('[incomingCall] busy auto-reject failed', e);
-        }
-        return;
-      }
-      if (Platform.OS === 'android') {
-        // Incoming UI + ring: GywFirebaseMessagingService (FCM) → GywIncomingCallService →
-        // IncomingCallActivity (native). JS does not navigate — deep link from acceptCall() does.
-        return;
-      }
+    if (Platform.OS !== 'android' || !user?.uid) return;
 
-      if (!useCallSessionStore.getState().shouldNavigateToIncomingCall(callId)) return;
+    const callEmitter = new NativeEventEmitter(NativeModules.IncomingCallModule);
+    const answerSub = callEmitter.addListener(
+      'onAnswerCall',
+      async (payload: { callId?: string; callType?: string }) => {
+        if (!payload?.callId) return;
+        console.log('ACCEPT_JS_EVENT_RECEIVED', {
+          callId: payload.callId,
+          callType: payload.callType,
+          ts: Date.now(),
+        });
+        const ct = payload.callType === 'video' ? 'video' : 'audio';
+        void handleAnswerCallNavigation(router, {
+          callId: payload.callId,
+          callType: ct,
+        });
+      },
+    );
+    const declineSub = callEmitter.addListener(
+      'onDeclineCall',
+      async (payload: { callId?: string }) => {
+        if (!payload?.callId) return;
+        await callManagerActionsRef.rejectCall(payload.callId);
+      },
+    );
 
-      if (__DEV__) console.log('[incomingCall] Navigating to call screen:', callId);
-      router.push(`/(home)/call/${callId}` as any);
-    };
-    // Ref assignment only — pathname/session read via refs + stores inside handler.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 1.2 Incoming call listener — phone B rings when app is in the foreground/background
-  // Fires as soon as a new call document with status='ringing' appears for this user.
-  useEffect(() => {
-    if (!user?.uid) return;
-
-    const uid = user.uid;
-
-    let unsubscribe: (() => void) | null = null;
-
-    if (useNativeFirestore && rnFirestoreMod) {
-      // Native path (Android / iOS) — shares auth with native Firebase
-      const rnDb = getRnFirestore();
-      const callsRef = rnFirestoreMod.collection(rnDb, 'calls');
-      // NOTE: `initiateCall` CF writes `calleeId` — NOT `receiverId`.
-      // The legacy `receiverId` field is only present on documents written
-      // directly by the client before the CF was introduced.
-      const q = rnFirestoreMod.query(
-        callsRef,
-        rnFirestoreMod.where('calleeId', '==', uid),
-        rnFirestoreMod.where('status', '==', 'ringing'),
-      );
-      unsubscribe = rnFirestoreMod.onSnapshot(
-        q,
-        (snap: any) => {
-          snap.docChanges().forEach((change: any) => {
-            if (change.type === 'added') {
-              const d =
-                typeof change.doc.data === 'function' ? change.doc.data() : change.doc.data ?? {};
-              const t = d.type === 'video' ? 'video' : 'audio';
-              void handleIncomingCallRef.current(change.doc.id, {
-                callerName: typeof d.callerName === 'string' ? d.callerName : undefined,
-                type: t,
-              });
-            }
+    const bridge = NativeModules.IncomingCallBridge;
+    let bridgeAcceptSub: { remove: () => void } | undefined;
+    let bridgeDeclineSub: { remove: () => void } | undefined;
+    if (bridge) {
+      const bridgeEmitter = new NativeEventEmitter(bridge);
+      bridgeAcceptSub = bridgeEmitter.addListener(
+        'IncomingCallAccepted',
+        async (payload: { chatId?: string; callType?: string }) => {
+          if (!payload?.chatId) return;
+          const callType = payload.callType === 'video' ? 'video' : 'audio';
+          void handleAnswerCallNavigation(router, {
+            callId: payload.chatId,
+            callType,
           });
         },
-        (err: any) => {
-          if (__DEV__) console.warn('[incomingCall] listener error:', err?.message);
-        }
       );
-    } else {
-      // Web path
-      const q = query(
-        collection(db, 'calls'),
-        where('calleeId', '==', uid),
-        where('status', '==', 'ringing'),
-      );
-      unsubscribe = onSnapshot(
-        q,
-        (snap) => {
-          snap.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-              const d = change.doc.data();
-              const t = d.type === 'video' ? 'video' : 'audio';
-              void handleIncomingCallRef.current(change.doc.id, {
-                callerName: typeof d.callerName === 'string' ? d.callerName : undefined,
-                type: t,
-              });
-            }
-          });
+      bridgeDeclineSub = bridgeEmitter.addListener(
+        'IncomingCallDeclined',
+        async (payload: { chatId?: string }) => {
+          if (payload?.chatId) await callManagerActionsRef.rejectCall(payload.chatId);
         },
-        (err) => {
-          if (__DEV__) console.warn('[incomingCall] listener error:', err?.message);
-        }
       );
     }
 
-    return () => { unsubscribe?.(); };
-  }, [user?.uid]);
+    return () => {
+      answerSub.remove();
+      declineSub.remove();
+      bridgeAcceptSub?.remove();
+      bridgeDeclineSub?.remove();
+    };
+  }, [user?.uid, router]);
+
+  // Android: MainActivity ANSWER_CALL / gyw://call intent — navigate without waiting Firestore user setup.
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !user?.uid) return;
+
+    const mod = NativeModules.IncomingCallModule as {
+      getInitialCallIntent?: () => Promise<{
+        callId: string;
+        callType: 'audio' | 'video';
+        callerUid?: string;
+        callerName?: string;
+        callerPhotoURL?: string;
+        answered?: boolean;
+        autoAccept?: boolean;
+      } | null>;
+    } | undefined;
+
+    if (!mod?.getInitialCallIntent) return;
+
+    const handledAcceptIntents = new Set<string>();
+
+    const processAcceptIntent = async (source: string) => {
+      try {
+        const initial = await mod.getInitialCallIntent();
+        if (!initial?.callId) return;
+
+        const shouldAutoAccept = initial.autoAccept === true || initial.answered === true;
+        if (!shouldAutoAccept) return;
+
+        if (handledAcceptIntents.has(initial.callId)) return;
+        if (useCallSessionStore.getState().activeSessionCallId === initial.callId) return;
+        handledAcceptIntents.add(initial.callId);
+        setTimeout(() => handledAcceptIntents.delete(initial.callId), 60_000);
+
+        console.log('ACCEPT_GET_INITIAL_INTENT', {
+          callId: initial.callId,
+          callType: initial.callType,
+          answered: initial.answered,
+          autoAccept: initial.autoAccept,
+          source,
+          ts: Date.now(),
+        });
+
+        const callId = initial.callId;
+        const callType = initial.callType === 'video' ? 'video' : 'audio';
+
+        const { markCallAccepted } = await import('@/lib/call/incomingCallGuard');
+        const { useCallManagerStore } = await import('@/store/callManagerStore');
+
+        markCallAccepted(callId, 'getInitialCallIntent_autoAccept');
+        useCallManagerStore.getState().markCalleeAnswered(callId);
+
+        useCallStore.getState().setIncomingCall({
+          callId,
+          callType,
+          status: 'accepted',
+          callerId: initial.callerUid ?? '',
+          callerName: initial.callerName ?? 'Incoming call',
+          callerAvatar: initial.callerPhotoURL,
+          timestamp: Date.now(),
+        });
+
+        useCallManagerStore.getState().setActiveCallId(callId);
+        void handleAnswerCallNavigation(router, { callId, callType });
+      } catch (e) {
+        if (__DEV__) console.warn('[HomeLayout] getInitialCallIntent failed', e);
+      }
+    };
+
+    void processAcceptIntent('mount');
+  }, [user?.uid, router]);
+
+  // Incoming call state: useCallManager (CallManagerHost) — single Firestore doc listener.
 
   // 2. Presence heartbeat
   useEffect(() => {
@@ -456,9 +588,8 @@ const HomeLayout = () => {
           options={{
             headerShown: false,
             freezeOnBlur: true,
-            // Faster than default slide (~200ms): cuts perceived tap→room lag.
-            animation: 'fade',
-            animationDuration: 120,
+            animation: 'slide_from_right',
+            animationDuration: 200,
           }}
         />
         <Stack.Screen

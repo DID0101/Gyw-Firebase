@@ -31,6 +31,7 @@ import {
   viewStoryNative,
 } from '@/lib/firestoreNative';
 import type { StoryLikeRow, StoryViewRow } from '@/lib/firestoreNative';
+import { prodDebug, prodDebugError } from '@/lib/debug/prodDebug';
 
 export type { StoryLikeRow, StoryViewRow } from '@/lib/firestoreNative';
 
@@ -100,6 +101,7 @@ export const createStory = async (
   mediaType: 'image' | 'video',
   caption?: string
 ): Promise<string> => {
+  prodDebug('STORY_CREATE_START', { userIdPrefix: userId.slice(0, 8), mediaType, platform: Platform.OS });
   try {
     const fileExtension = mediaType === 'video' ? 'mp4' : 'jpg';
     const timestamp = Date.now();
@@ -109,13 +111,16 @@ export const createStory = async (
 
     let mediaUrl: string;
     if (Platform.OS !== 'web') {
+      prodDebug('STORAGE_UPLOAD_START', { feature: 'stories', provider: 'native', storagePath, mediaType });
       const { getRnStorage } = require('@/lib/rnFirebase');
       const { ref, putFile, getDownloadURL } = require('@react-native-firebase/storage');
       const rnStorage = getRnStorage();
       const storageRef = ref(rnStorage, storagePath);
       await putFile(storageRef, mediaUri);
       mediaUrl = await getDownloadURL(storageRef);
+      prodDebug('STORAGE_UPLOAD_SUCCESS', { feature: 'stories', provider: 'native', storagePath });
     } else {
+      prodDebug('STORAGE_UPLOAD_START', { feature: 'stories', provider: 'web', storagePath, mediaType });
       const storageRef = ref(storage, storagePath);
       const response = await fetch(mediaUri);
       if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
@@ -133,6 +138,7 @@ export const createStory = async (
       }
       await uploadBytes(storageRef, blob);
       mediaUrl = await getDownloadURL(storageRef);
+      prodDebug('STORAGE_UPLOAD_SUCCESS', { feature: 'stories', provider: 'web', storagePath });
     }
 
     const storyData: Omit<Story, 'id'> = {
@@ -145,17 +151,23 @@ export const createStory = async (
     };
 
     if (Platform.OS !== 'web' && hasNativeFirestore) {
-      return addStoryNative(storyData);
+      prodDebug('FIRESTORE_WRITE_START', { collection: 'stories', provider: 'native', op: 'addStory' });
+      const storyId = await addStoryNative(storyData);
+      prodDebug('FIRESTORE_WRITE_SUCCESS', { collection: 'stories', provider: 'native', op: 'addStory', storyId });
+      return storyId;
     }
 
     const storiesRef = collection(db, 'stories');
+    prodDebug('FIRESTORE_WRITE_START', { collection: 'stories', provider: 'web', op: 'addDoc' });
     const docRef = await addDoc(storiesRef, {
       ...storyData,
       createdAt: serverTimestamp(),
       expiresAt: Timestamp.fromDate(expiresAt),
     });
+    prodDebug('FIRESTORE_WRITE_SUCCESS', { collection: 'stories', provider: 'web', op: 'addDoc', storyId: docRef.id });
     return docRef.id;
   } catch (error) {
+    prodDebugError('STORY_CREATE_ERROR', error, { userIdPrefix: userId.slice(0, 8), mediaType });
     if (__DEV__) console.error('Error creating story:', error);
     throw error;
   }
@@ -169,9 +181,10 @@ export const getStories = async (): Promise<Story[]> => {
     // Remove orderBy to avoid index requirement - we'll sort in memory
     const q = query(
       storiesRef,
-      where('expiresAt', '>', now)
+      where('expiresAt', '>', now),
+      limit(80)
     );
-    
+    prodDebug('FIRESTORE_READ_START', { collection: 'stories', provider: 'web', op: 'getStories', where: 'expiresAt > now' });
     const snapshot = await getDocs(q);
     const stories: Story[] = [];
     
@@ -195,9 +208,10 @@ export const getStories = async (): Promise<Story[]> => {
     stories.sort((a, b) => 
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-    
+    prodDebug('FIRESTORE_READ_SUCCESS', { collection: 'stories', provider: 'web', op: 'getStories', count: stories.length });
     return stories;
   } catch (error) {
+    prodDebugError('FIRESTORE_READ_ERROR', error, { collection: 'stories', provider: 'web', op: 'getStories' });
     if (__DEV__) console.error('Error getting stories:', error);
     throw error;
   }
@@ -207,11 +221,15 @@ export const getStories = async (): Promise<Story[]> => {
 export const getUserStories = async (userId: string): Promise<Story[]> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
-      return getUserStoriesNative(userId) as Promise<Story[]>;
+      prodDebug('FIRESTORE_READ_START', { collection: 'stories', provider: 'native', op: 'getUserStories', userIdPrefix: userId.slice(0, 8) });
+      const rows = await getUserStoriesNative(userId) as Story[];
+      prodDebug('FIRESTORE_READ_SUCCESS', { collection: 'stories', provider: 'native', op: 'getUserStories', count: rows.length });
+      return rows;
     }
     const now = new Date();
     const storiesRef = collection(db, 'stories');
     const q = query(storiesRef, where('userId', '==', userId));
+    prodDebug('FIRESTORE_READ_START', { collection: 'stories', provider: 'web', op: 'getUserStories', userIdPrefix: userId.slice(0, 8) });
     const snapshot = await getDocs(q);
     const stories: Story[] = [];
     snapshot.forEach((doc) => {
@@ -233,8 +251,10 @@ export const getUserStories = async (userId: string): Promise<Story[]> => {
       }
     });
     stories.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    prodDebug('FIRESTORE_READ_SUCCESS', { collection: 'stories', provider: 'web', op: 'getUserStories', count: stories.length });
     return stories;
   } catch (error) {
+    prodDebugError('FIRESTORE_READ_ERROR', error, { collection: 'stories', op: 'getUserStories', userIdPrefix: userId.slice(0, 8) });
     if (__DEV__) console.error('Error getting user stories:', error);
     throw error;
   }
@@ -272,7 +292,9 @@ export const getStory = async (storyId: string): Promise<Story | null> => {
 export const viewStory = async (storyId: string, userId: string): Promise<void> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
+      prodDebug('FIRESTORE_WRITE_START', { collection: 'stories/views', provider: 'native', op: 'viewStory', storyId, userIdPrefix: userId.slice(0, 8) });
       await viewStoryNative(storyId, userId);
+      prodDebug('FIRESTORE_WRITE_SUCCESS', { collection: 'stories/views', provider: 'native', op: 'viewStory', storyId });
       return;
     }
     const storyRef = doc(db, 'stories', storyId);
@@ -303,7 +325,9 @@ export const viewStory = async (storyId: string, userId: string): Promise<void> 
       username: username || 'User',
       ...(avatarUrl ? { avatarUrl } : {}),
     });
+    prodDebug('FIRESTORE_WRITE_SUCCESS', { collection: 'stories/views', provider: 'web', op: 'viewStory', storyId });
   } catch (error) {
+    prodDebugError('FIRESTORE_WRITE_ERROR', error, { collection: 'stories/views', op: 'viewStory', storyId, userIdPrefix: userId.slice(0, 8) });
     if (__DEV__) console.error('Error viewing story:', error);
     throw error;
   }
@@ -313,6 +337,7 @@ export const viewStory = async (storyId: string, userId: string): Promise<void> 
 export const toggleLikeStory = async (storyId: string, userId: string): Promise<boolean> => {
   try {
     if (Platform.OS !== 'web' && hasNativeFirestore) {
+      prodDebug('FIRESTORE_WRITE_START', { collection: 'stories/likes', provider: 'native', op: 'toggleLikeStory', storyId, userIdPrefix: userId.slice(0, 8) });
       return toggleLikeStoryNative(storyId, userId);
     }
     const storyRef = doc(db, 'stories', storyId);
@@ -346,8 +371,10 @@ export const toggleLikeStory = async (storyId: string, userId: string): Promise<
       username: username || 'User',
       ...(avatarUrl ? { avatarUrl } : {}),
     });
+    prodDebug('FIRESTORE_WRITE_SUCCESS', { collection: 'stories/likes', provider: 'web', op: 'toggleLikeStory', storyId });
     return true;
   } catch (error) {
+    prodDebugError('FIRESTORE_WRITE_ERROR', error, { collection: 'stories/likes', op: 'toggleLikeStory', storyId, userIdPrefix: userId.slice(0, 8) });
     if (__DEV__) console.error('Error toggling like:', error);
     throw error;
   }

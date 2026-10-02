@@ -1,15 +1,14 @@
 package com.gyw1.chat
 
 import android.app.ActivityManager
-import android.app.KeyguardManager
 import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
-import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.os.Build
 import android.util.Log
-import android.view.Display
 import androidx.core.content.ContextCompat
 import com.facebook.react.HeadlessJsTaskService
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -64,7 +63,12 @@ class GywFirebaseMessagingService : FirebaseMessagingService() {
 
     /** Chat pushes — handled only by {@link GywMessageNotifier} (separate channels from calls). */
     private val CHAT_MESSAGE_TYPES = setOf("chat_message", "CHAT_MESSAGE")
+
+    /** Defer RN headless until native fullscreen activity has time to appear. */
+    private const val DEFER_RN_AFTER_NATIVE_UI_MS = 2800L
   }
+
+  private val deferRnHandler = Handler(Looper.getMainLooper())
 
   // ── onMessageReceived ─────────────────────────────────────────────────────
   //
@@ -84,6 +88,19 @@ class GywFirebaseMessagingService : FirebaseMessagingService() {
       type = "incoming_call"
       data["type"] = type
     }
+
+    val processImportance = myProcessImportance(applicationContext)
+    if (processImportance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE) {
+      Log.d(TAG, "KILLED_FCM_RECEIVED msgId=${message.messageId} type=$type")
+    }
+    val dataOnly = message.notification == null
+    Log.d(TAG, "CALL_PUSH_DATA_ONLY=$dataOnly")
+    Log.d(
+      TAG,
+      "CALL_PAYLOAD_RECEIVED callId=${data["callId"]} type=$type " +
+        "hasNotification=${message.notification != null} priority=${message.priority} " +
+        "originalPriority=${message.originalPriority} keys=${data.keys}"
+    )
 
     val callState = if (GywIncomingCallNotifier.hasActiveIncomingCallUi(applicationContext)) "active" else "idle"
     Log.d(
@@ -111,7 +128,9 @@ class GywFirebaseMessagingService : FirebaseMessagingService() {
       // ── Cancellation: stop ring + dismiss UI immediately ──────────────────
       type in CANCEL_TYPES -> {
         val callId = data["callId"]
-        Log.d(TAG, "cancel/end push callId=$callId type=$type")
+        Log.d(TAG, "CALLER_TERMINAL_RECEIVED callId=$callId type=$type")
+        Log.d(TAG, "CALLER_RING_STOP callId=$callId")
+        Log.d(TAG, "CALLER_NOTIFICATION_CANCEL callId=$callId")
         GywIncomingCallNotifier.stopRingingAndDismissUi(applicationContext, callId)
         HeadlessCallTask.start(applicationContext, data)
         forwardToRnFirebase(message)
@@ -123,7 +142,6 @@ class GywFirebaseMessagingService : FirebaseMessagingService() {
       type in CHAT_MESSAGE_TYPES -> {
         Log.d(TAG, "chat_message FCM — GywMessageNotifier only (no call pipeline)")
         GywMessageNotifier.handleFcmMessage(applicationContext, data)
-        forwardToRnFirebase(message)
       }
 
       // ── All other types: forward to RN Firebase JS layer ─────────────────
@@ -137,103 +155,153 @@ class GywFirebaseMessagingService : FirebaseMessagingService() {
   // ── Incoming call orchestration ───────────────────────────────────────────
 
   private fun handleIncomingCall(data: Map<String, String>, message: RemoteMessage) {
-    val callId     = data["callId"]     ?: run { Log.w(TAG, "INCOMING_CALL missing callId"); return }
-    val callerName = data["callerName"] ?: "Incoming call"
-    val callType   = data["callType"]   ?: "audio"
-    val ctx        = applicationContext
-
-    Log.d(TAG, "handleIncomingCall callId=$callId caller=$callerName type=$callType")
-    if (!IncomingCallGuard.tryAcquire(ctx, callId, "fcm_native")) {
+    val callId       = data["callId"]       ?: run { Log.w(TAG, "INCOMING_CALL missing callId"); return }
+    val tsRaw        = data["timestamp"]    ?: data["ts"] ?: ""
+    val tsMs         = tsRaw.toLongOrNull() ?: System.currentTimeMillis()
+    if (System.currentTimeMillis() - tsMs > 30_000L) {
+      Log.w(TAG, "INCOMING_CALL stale callId=$callId ageMs=${System.currentTimeMillis() - tsMs}")
       return
     }
+    val callerPhone  = data["callerPhone"]  ?: data["caller_phone"] ?: ""
+    val profileCallerName = data["callerName"] ?: data["caller_name"] ?: ""
+    val callerUid    = data["callerUid"]    ?: data["callerId"] ?: ""
+    val callerAvatar = data["callerPhotoURL"] ?: data["callerAvatar"] ?: ""
+    val callTypeRaw  = data["callType"]     ?: "audio"
+    val meta =
+        IncomingCallMetadata.resolveFromFcm(
+            callId,
+            callerUid,
+            callerPhone,
+            profileCallerName,
+            callerAvatar,
+            callTypeRaw,
+        )
+    val callerName = meta.callerName
+    val callType = meta.callType
+    val ctx        = applicationContext
+    val isVideo    = GywIncomingCallNotifier.isVideoCallType(callType)
+
+    CallLatencyTrace.start(callId, "CALL_START_T0", tsMs)
+    CallLatencyTrace.mark(callId, "FCM_RECEIVED")
+
+    val processImportance = myProcessImportance(ctx)
+    val processColdStart =
+      processImportance >= ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+    IncomingCallPathConfig.logActiveMode(TAG)
+    Log.d(TAG, "handleIncomingCall callId=$callId caller=$callerName uid=$callerUid CALL_TYPE=$callType raw=$callTypeRaw ts=$tsMs")
+    Log.w(TAG, "CALLER_META_PAYLOAD callId=$callId callerName=$callerName callerAvatar=$callerAvatar callerUid=$callerUid callType=$callType")
+    Log.d(TAG, "PROCESS_WAS_COLD_STARTED=$processColdStart APP_PROCESS_RECREATED=$processColdStart importance=$processImportance")
+    OemPermissionDiagnostics.log(ctx, TAG)
+    IncomingCallPathConfig.logPhoneAccountAudit(ctx, TAG)
+
+    if (!IncomingCallGuard.tryAcquire(ctx, callId, "fcm_native")) {
+      Log.d(TAG, "INCOMING_UI_BLOCKED source=fcm_native callId=$callId")
+      return
+    }
+    Log.w(TAG, "INCOMING_UI_OPEN source=fcm_native callId=$callId status=ringing")
 
     // 1. Dismiss any previous incoming call surface (idempotent, fast)
     GywIncomingCallNotifier.clearIncomingCallUiBeforeRinging(ctx)
 
-    // 2. Start HeadlessCallTask so JS can update Firestore / local cache.
-    //    Do this BEFORE the FGS so the WakeLock window starts immediately.
-    HeadlessCallTask.start(ctx, data)
-
-    // 3. Acquire an explicit WakeLock so the screen wakes on lock-screen arrival.
-    acquireWakeLock(ctx)
-
-    // 3a. Start ring/vibrate immediately from the FCM service context.
-    //     GywIncomingCallService also calls start() — idempotent for the same callId.
-    //     This ensures ringing happens even on highly restrictive OEM builds where
-    //     startForegroundService() is delayed or silently killed before the service
-    //     can call startForeground().
-    GywIncomingCallAlerts.start(ctx, callId)
-
-    // 4. Telecom path (Android O+, MANAGE_OWN_CALLS granted).
-    //    Registers the call with the OS Telecom subsystem; provides Bluetooth
-    //    headset integration, system-level mute, etc.
-    val telecomHandled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      CallConnectionService.addIncomingCall(ctx, callId, callerName, callType)
-    } else {
-      false
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      CallConnectionService.registerPhoneAccount(ctx)
     }
-    Log.d(TAG, "Telecom path: telecomHandled=$telecomHandled")
+    val phoneAccountOk =
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+        CallConnectionService.isPhoneAccountRegistered(ctx)
+    Log.d(TAG, "PHONE_ACCOUNT_REGISTERED=$phoneAccountOk SELF_MANAGED_CALL_ENABLED=$phoneAccountOk")
 
-    // 5. FGS path — always start alongside Telecom because:
-    //    (a) CAPABILITY_SELF_MANAGED phones still need our custom UI
-    //    (b) some OEMs silently drop self-managed connections
-    //    GywIncomingCallService calls startForeground(FOREGROUND_SERVICE_TYPE_PHONE_CALL)
-    //    and launches IncomingCallActivity.
+    IncomingCallProcessState.logIncomingUxContext(ctx, TAG)
+    val restrictive = IncomingCallProcessState.isRestrictiveEnvironment(ctx)
+    Log.d(
+      TAG,
+      "CALL_TYPE=$callType restrictive=$restrictive isVideo=$isVideo policy=attempt_fullscreen+notification_backup",
+    )
+
+    if (restrictive) {
+      acquireWakeLock(ctx)
+      Log.d(TAG, "SCREEN_WAKE_TRIGGERED source=fcm_restrictive callId=$callId")
+    }
+
+    GywIncomingCallAlerts.start(ctx, callId, callType)
+
+    GywIncomingCallNotifier.postPremiumIncomingCallNotification(
+      ctx,
+      callId,
+      callerName,
+      callerAvatar,
+      callType,
+    )
+
+    if (IncomingCallProcessState.shouldLaunchFromFcmImmediately(ctx)) {
+      Log.w(TAG, "FULLSCREEN_ATTEMPTED=true source=fcm_foreground callId=$callId")
+      val launched =
+          IncomingCallUiLauncher.launchDirect(
+              ctx,
+              callId,
+              callerName,
+              callerAvatar,
+              callType,
+              "fcm_foreground",
+              callerUid,
+              meta.callerPhone,
+          )
+      Log.d(TAG, "foreground incoming call directLaunch=$launched callId=$callId")
+      IncomingCallUiLauncher.logFullscreenAttemptResult(ctx, callId, launched, 500L)
+    }
+
+    val telecomHandled =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        CallConnectionService.addIncomingCall(
+          ctx, callId, callerName, callType, callerAvatar, callerUid,
+        )
+      } else {
+        false
+      }
+    Log.d(TAG, "TELECOM_CALL_ADDED=$telecomHandled callType=$callType isVideo=$isVideo")
+    if (telecomHandled) {
+      CallLatencyTrace.mark(callId, "TELECOM_INCOMING_ADDED")
+    }
+
     try {
-      val fullScreenIncomingUi = shouldUseFullPresentation(ctx)
-      Log.d(
-        TAG,
-        "CALL_UI_MODE = " + if (fullScreenIncomingUi) "FULLSCREEN_LOCKED" else "HEADSUP_UNLOCKED"
-      )
+      Log.d(TAG, "CALL_UI_MODE=attempt_fullscreen_with_notification_backup")
       val svc = Intent(ctx, GywIncomingCallService::class.java).apply {
-        putExtra(GywIncomingCallService.EXTRA_CALL_ID,    callId)
+        putExtra(GywIncomingCallService.EXTRA_CALL_ID, callId)
         putExtra(GywIncomingCallService.EXTRA_CALLER_NAME, callerName)
-        putExtra(GywIncomingCallService.EXTRA_CALL_TYPE,  callType)
-        putExtra(GywIncomingCallService.EXTRA_FULL_SCREEN_MODE, fullScreenIncomingUi)
+        putExtra(GywIncomingCallService.EXTRA_CALLER_AVATAR, meta.callerAvatar)
+        putExtra(GywIncomingCallService.EXTRA_CALL_TYPE, callType)
+        putExtra("callerUid", meta.callerUid)
+        putExtra("callerPhone", meta.callerPhone)
+        putExtra(GywIncomingCallService.EXTRA_FULL_SCREEN_MODE, restrictive)
+        putExtra(GywIncomingCallService.EXTRA_TELECOM_DISPATCHED, telecomHandled)
       }
       ContextCompat.startForegroundService(ctx, svc)
       Log.d(TAG, "GywIncomingCallService startForegroundService dispatched")
     } catch (e: Exception) {
-      Log.e(TAG, "startForegroundService failed — falling back to notifier: ${e.message}")
-      // Last resort: post a high-priority notification without a foreground service.
-      // This will not wake the screen on killed state but is better than nothing.
-      val bundle = android.os.Bundle().apply { data.forEach { (k, v) -> putString(k, v) } }
-      val fullScreenIncomingUi = shouldUseFullPresentation(ctx)
-      Log.d(
-        TAG,
-        "CALL_UI_MODE = " + if (fullScreenIncomingUi) "FULLSCREEN_LOCKED" else "HEADSUP_UNLOCKED"
+      Log.e(TAG, "startForegroundService failed: ${e.message}")
+      GywIncomingCallNotifier.postPremiumIncomingCallNotification(
+        ctx,
+        callId,
+        callerName,
+        callerAvatar,
+        callType,
       )
-      GywIncomingCallNotifier.show(ctx, bundle, fullScreenIncomingUi)
     }
 
-    // 6. Forward to RN Firebase so the foreground onMessage() / JS listeners fire
-    //    if the app happens to be in foreground (navigation, state sync).
-    forwardToRnFirebase(message)
+    val deferRn = restrictive || IncomingCallProcessState.shouldAttemptFullscreenActivity(ctx)
+    if (deferRn) {
+      Log.d(TAG, "DEFER_RN_HEADLESS ms=$DEFER_RN_AFTER_NATIVE_UI_MS callId=$callId")
+      deferRnHandler.postDelayed({
+        HeadlessCallTask.start(ctx, data)
+        forwardToRnFirebase(message)
+      }, DEFER_RN_AFTER_NATIVE_UI_MS)
+    } else {
+      HeadlessCallTask.start(ctx, data)
+      forwardToRnFirebase(message)
+    }
   }
 
   // ── Screen / process state helpers ───────────────────────────────────────
-
-  /**
-   * True when the device is asleep, locked, or screen-off.
-   * Full-screen intent should be used in this case.
-   * When the user is in another app (screen on, unlocked), heads-up only.
-   */
-  @Suppress("DEPRECATION")
-  private fun shouldUseFullPresentation(ctx: Context): Boolean {
-    val pm  = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
-    val km  = ctx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-    val interactive  = pm?.isInteractive ?: true
-    val keyguardLocked = km?.isKeyguardLocked ?: false
-    val displayOff   = isDefaultDisplayOff(ctx)
-    return keyguardLocked || !interactive || displayOff
-  }
-
-  private fun isDefaultDisplayOff(ctx: Context): Boolean {
-    return try {
-      val dm = ctx.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
-      dm?.getDisplay(Display.DEFAULT_DISPLAY)?.state == Display.STATE_OFF
-    } catch (_: Exception) { false }
-  }
 
   // ── WakeLock ──────────────────────────────────────────────────────────────
 

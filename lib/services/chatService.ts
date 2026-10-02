@@ -37,9 +37,10 @@ import {
     deleteField,
     doc,
     getDoc,
-  getDocs,
-  increment,
-  query,
+    getDocs,
+    increment,
+    limit,
+    query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -49,7 +50,18 @@ import {
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { assertChatSendAllowed } from '@/lib/chatSendGuards';
 import { getRnAuth, hasRnFirebase } from '@/lib/rnFirebase';
+import { runOnceByKey } from '@/lib/safeAction';
+import { buildDisplayName, coerceDisplayString, sanitizeProfileName } from '@/lib/unicodeText';
+import { withNetworkSafety } from '@/lib/safeNetwork';
 import { Platform } from 'react-native';
+import {
+  trackChatCreated,
+  trackImageSent,
+  trackMessageSent,
+  trackVoiceMessageSent,
+} from '@/lib/services/analyticsService';
+import { crashlyticsLog } from '@/lib/services/crashlyticsService';
+import { startPerformanceTrace } from '@/lib/services/performanceService';
 
 /** JS SDK `auth` is not populated on native when using @react-native-firebase/auth — use RN user for checks/callables. */
 function getSignedInUid(): string | null {
@@ -104,6 +116,15 @@ export type SendChatMessageOptions = {
   };
 };
 
+/** Prefer batch send (1 RTT) using recipientUserIds or participants already in memory. */
+function resolveRecipientUserIds(senderId: string, options?: SendChatMessageOptions): string[] {
+  const fromRecipients = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  if (fromRecipients.length > 0) return fromRecipients;
+  const participants = options?.participantsForSendGuard;
+  if (!Array.isArray(participants) || participants.length === 0) return [];
+  return participants.filter((id) => id && id !== senderId);
+}
+
 async function addWebMessageAndUpdateChatBatch(
   chatId: string,
   cleanedMessageData: Record<string, any>,
@@ -145,7 +166,8 @@ export const getOrCreateDirectChat = async (userId1: string, userId2: string): P
   const q = query(
     chatsRef,
     where('type', '==', 'direct'),
-    where('participants', 'array-contains', userId1)
+    where('participants', 'array-contains', userId1),
+    limit(40)
   );
 
   const snapshot = await getDocs(q);
@@ -176,13 +198,24 @@ export const getOrCreateDirectChat = async (userId1: string, userId2: string): P
   
   // User 1 data
   const user1Participant: any = {
-    name: user1Data ? `${user1Data.firstName || ''} ${user1Data.lastName || ''}`.trim() : 'User',
+    name: user1Data
+      ? buildDisplayName(
+          user1Data.firstName,
+          user1Data.lastName,
+          user1Data.username,
+          'User',
+          { displayName: user1Data.displayName }
+        )
+      : 'User',
   };
   if (user1Data?.avatar) {
     user1Participant.avatar = user1Data.avatar;
   }
   if (user1Data?.username) {
     user1Participant.username = user1Data.username;
+  }
+  if (user1Data?.phoneNumber) {
+    user1Participant.phoneNumber = user1Data.phoneNumber;
   }
   participantData[userId1] = user1Participant;
   
@@ -191,13 +224,24 @@ export const getOrCreateDirectChat = async (userId1: string, userId2: string): P
     userId2 === GYW_AI_SYSTEM_ID
       ? { name: GYW_AI_DISPLAY_NAME }
       : {
-          name: user2Data ? `${user2Data.firstName || ''} ${user2Data.lastName || ''}`.trim() : 'User',
+          name: user2Data
+            ? buildDisplayName(
+                user2Data.firstName,
+                user2Data.lastName,
+                user2Data.username,
+                'User',
+                { displayName: user2Data.displayName }
+              )
+            : 'User',
         };
   if (user2Data?.avatar) {
     user2Participant.avatar = user2Data.avatar;
   }
   if (user2Data?.username) {
     user2Participant.username = user2Data.username;
+  }
+  if (user2Data?.phoneNumber) {
+    user2Participant.phoneNumber = user2Data.phoneNumber;
   }
   participantData[userId2] = user2Participant;
 
@@ -217,6 +261,9 @@ export const getOrCreateDirectChat = async (userId1: string, userId2: string): P
   const chatDocRef = doc(chatsRef);
   await setDoc(chatDocRef, removeUndefined(newChat));
 
+  void trackChatCreated(chatDocRef.id, 'private');
+  crashlyticsLog(`chat_created chatId=${chatDocRef.id.slice(0, 8)} type=private`);
+
   return chatDocRef.id;
 };
 
@@ -230,6 +277,18 @@ export const sendMessage = async (
   replyTo?: { messageId: string; senderName: string; text?: string; type?: string },
   options?: SendChatMessageOptions
 ): Promise<string> => {
+  const duplicateKey = [
+    'send_message',
+    chatId,
+    senderId,
+    text.trim(),
+    replyTo?.messageId ?? '',
+    options?.storyReply?.storyId ?? '',
+  ].join(':');
+
+  return runOnceByKey(
+    duplicateKey,
+    async () => {
   const messageData: any = {
     chatId,
     senderId,
@@ -256,57 +315,79 @@ export const sendMessage = async (
     participants: options?.participantsForSendGuard,
   });
 
+  const sendTrace = await startPerformanceTrace('send_message');
+  sendTrace.putAttribute('message_type', 'text');
+
   const lastPreview = {
     text: text.substring(0, 100),
     senderId,
     createdAt: now,
   };
-  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const otherIds = resolveRecipientUserIds(senderId, options);
   const useParticipantBatch = otherIds.length > 0;
 
-  let messageId: string;
-  if (Platform.OS !== 'web' && hasNativeFirestore) {
-    if (useParticipantBatch) {
-      messageId = await addMessageAndUpdateChatNativeBatch(
-        chatId,
-        cleanedMessageData,
-        lastPreview,
-        otherIds
-      );
-    } else {
-      messageId = await addMessageNative(chatId, cleanedMessageData);
+  try {
+  const messageId = await withNetworkSafety(
+    async () => {
+      if (Platform.OS !== 'web' && hasNativeFirestore) {
+        if (useParticipantBatch) {
+          return addMessageAndUpdateChatNativeBatch(
+            chatId,
+            cleanedMessageData,
+            lastPreview,
+            otherIds
+          );
+        }
+        const id = await addMessageNative(chatId, cleanedMessageData);
+        await Promise.all([
+          updateChatLastMessageNative(chatId, lastPreview),
+          incrementUnreadForOtherParticipants(chatId, senderId),
+        ]);
+        return id;
+      }
+      if (useParticipantBatch) {
+        return addWebMessageAndUpdateChatBatch(
+          chatId,
+          cleanedMessageData,
+          lastPreview,
+          senderId,
+          otherIds
+        );
+      }
+      const messagesRef = collection(db, 'chats', chatId, 'messages');
+      const docRef = await addDoc(messagesRef, {
+        ...cleanedMessageData,
+        createdAt: serverTimestamp(),
+      });
+      const chatRef = doc(db, 'chats', chatId);
       await Promise.all([
-        updateChatLastMessageNative(chatId, lastPreview),
+        updateDoc(chatRef, {
+          lastMessage: lastPreview,
+          lastMessageAt: serverTimestamp(),
+          lastSenderId: senderId,
+          updatedAt: serverTimestamp(),
+        }),
         incrementUnreadForOtherParticipants(chatId, senderId),
       ]);
-    }
-  } else if (useParticipantBatch) {
-    messageId = await addWebMessageAndUpdateChatBatch(
-      chatId,
-      cleanedMessageData,
-      lastPreview,
-      senderId,
-      otherIds
-    );
-  } else {
-    const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const docRef = await addDoc(messagesRef, {
-      ...cleanedMessageData,
-      createdAt: serverTimestamp(),
-    });
-    messageId = docRef.id;
-    const chatRef = doc(db, 'chats', chatId);
-    await Promise.all([
-      updateDoc(chatRef, {
-        lastMessage: lastPreview,
-        lastMessageAt: serverTimestamp(),
-        lastSenderId: senderId,
-        updatedAt: serverTimestamp(),
-      }),
-      incrementUnreadForOtherParticipants(chatId, senderId),
-    ]);
-  }
+      return docRef.id;
+    },
+    { label: 'send_message', timeoutMs: 12000, maxAttempts: 3 }
+  );
+  void trackMessageSent('text');
+  crashlyticsLog(`message_sent chatId=${chatId.slice(0, 8)} type=text`);
+  await sendTrace.stop({ result: 'ok' });
   return messageId;
+  } catch (error) {
+    await sendTrace.stop({ result: 'error' });
+    throw error;
+  }
+    },
+    {
+      debounceMs: 1500,
+      logLabel: 'send_message',
+      blockedLog: 'MSG_DUPLICATE_PREVENTED',
+    }
+  );
 };
 
 // Send a media message (image/video/file/audio)
@@ -332,6 +413,19 @@ export const sendMediaMessage = async (
   },
   options?: SendChatMessageOptions
 ): Promise<string> => {
+  const duplicateKey = [
+    'send_media',
+    chatId,
+    senderId,
+    type,
+    fileUri,
+    fileName ?? '',
+    replyTo?.messageId ?? '',
+  ].join(':');
+
+  return runOnceByKey(
+    duplicateKey,
+    async () => {
   const stamp = Date.now();
   const fileExtension = (() => {
     if (type === 'audio') return 'm4a';
@@ -387,7 +481,14 @@ export const sendMediaMessage = async (
     return getDownloadURL(storageRef);
   };
 
-  const uploadFile = Platform.OS !== 'web' ? uploadNative : uploadWeb;
+  const rawUploadFile = Platform.OS !== 'web' ? uploadNative : uploadWeb;
+  const uploadFile = (uri: string, path: string) =>
+    withNetworkSafety(() => rawUploadFile(uri, path), {
+      label: `upload_${type}`,
+      timeoutMs: 45000,
+      maxAttempts: 3,
+      initialDelayMs: 800,
+    });
 
   await assertChatSendAllowed(chatId, senderId, {
     participants: options?.participantsForSendGuard,
@@ -462,9 +563,13 @@ export const sendMediaMessage = async (
     createdAt: now,
   };
 
-  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const otherIds = resolveRecipientUserIds(senderId, options);
   const useParticipantBatch = otherIds.length > 0;
 
+  const sendTrace = await startPerformanceTrace('send_message');
+  sendTrace.putAttribute('message_type', type);
+
+  try {
   let messageId: string;
   if (Platform.OS !== 'web' && hasNativeFirestore) {
     if (useParticipantBatch) {
@@ -507,7 +612,29 @@ export const sendMediaMessage = async (
       incrementUnreadForOtherParticipants(chatId, senderId),
     ]);
   }
+  if (type === 'image') {
+    void trackImageSent();
+    crashlyticsLog(`message_sent chatId=${chatId.slice(0, 8)} type=image`);
+  } else if (type === 'audio') {
+    void trackVoiceMessageSent();
+    crashlyticsLog(`message_sent chatId=${chatId.slice(0, 8)} type=voice`);
+  } else {
+    void trackMessageSent(type === 'video' ? 'video' : type === 'document' ? 'document' : 'text');
+    crashlyticsLog(`message_sent chatId=${chatId.slice(0, 8)} type=${type}`);
+  }
+  await sendTrace.stop({ result: 'ok' });
   return messageId;
+  } catch (error) {
+    await sendTrace.stop({ result: 'error' });
+    throw error;
+  }
+    },
+    {
+      debounceMs: 2500,
+      logLabel: 'send_media',
+      blockedLog: 'MSG_DUPLICATE_PREVENTED',
+    }
+  );
 };
 
 export type SendLocationMessageOptions = SendChatMessageOptions & {
@@ -528,6 +655,19 @@ export const sendLocationMessage = async (
   longitude: number,
   options?: SendLocationMessageOptions
 ): Promise<string> => {
+  const duplicateKey = [
+    'send_location',
+    chatId,
+    senderId,
+    latitude.toFixed(6),
+    longitude.toFixed(6),
+    options?.isLive ? 'live' : 'static',
+    options?.replyTo?.messageId ?? '',
+  ].join(':');
+
+  return runOnceByKey(
+    duplicateKey,
+    async () => {
   const previewUrl = buildStaticMapPreviewUrl(latitude, longitude, 640, 360, { showMarker: false });
   const isLive = !!options?.isLive;
   const durationMs =
@@ -582,7 +722,7 @@ export const sendLocationMessage = async (
     type: 'location',
   };
 
-  const otherIds = (options?.recipientUserIds ?? []).filter((id) => id && id !== senderId);
+  const otherIds = resolveRecipientUserIds(senderId, options);
   const useParticipantBatch = otherIds.length > 0;
 
   let messageId: string;
@@ -644,6 +784,13 @@ export const sendLocationMessage = async (
   }
 
   return messageId;
+    },
+    {
+      debounceMs: 2500,
+      logLabel: 'send_location',
+      blockedLog: 'MSG_DUPLICATE_PREVENTED',
+    }
+  );
 };
 
 async function setLiveLocationSession(
@@ -740,18 +887,27 @@ export const setTypingIndicator = async (chatId: string, userId: string, isTypin
 };
 
 // Mark messages as read - resets unread badge when user opens chat
-export const markMessagesAsRead = async (chatId: string, userId: string) => {
-  // Reset unread count (required for badge) - use native on RN for auth compatibility
+export const markMessagesAsRead = async (
+  chatId: string,
+  userId: string,
+  opts?: { lastReadMessageId?: string }
+) => {
+  const now = new Date().toISOString();
+  const readFields: Record<string, unknown> = {
+    [`unreadCount.${userId}`]: 0,
+    [`readState.${userId}.lastReadAt`]: now,
+  };
+  if (opts?.lastReadMessageId) {
+    readFields[`readState.${userId}.lastReadMessageId`] = opts.lastReadMessageId;
+  }
+
   if (Platform.OS !== 'web' && hasNativeFirestore) {
-    await markMessagesAsReadNative(chatId, userId);
+    await markMessagesAsReadNative(chatId, userId, opts);
     return;
   }
 
-  // Reset unread count atomically using field path — does not overwrite other participants' counts.
   const chatRef = doc(db, 'chats', chatId);
-  await updateDoc(chatRef, {
-    [`unreadCount.${userId}`]: 0,
-  });
+  await updateDoc(chatRef, readFields);
 };
 
 const MARK_ALL_READ_CHUNK = 450;
@@ -767,6 +923,14 @@ export async function markAllChatsReadForUser(userId: string, chats: Chat[]): Pr
   if (chatIds.length === 0) return;
 
   useChatStore.getState().bulkResetUnreadForUser(userId, chatIds);
+
+  const { syncAndroidUnreadTotalFromChats } = await import('@/lib/unread/unreadTotals');
+  const { clearAndroidChatNotifications } = await import('@/lib/chatNotificationBridge');
+  await syncAndroidUnreadTotalFromChats(useChatStore.getState().chats, userId);
+
+  if (Platform.OS === 'android') {
+    await Promise.all(chatIds.map((id) => clearAndroidChatNotifications(id)));
+  }
 
   if (Platform.OS !== 'web' && hasNativeFirestore) {
     await markManyChatsReadNative(userId, chatIds);
@@ -924,15 +1088,18 @@ export const getUser = async (userId: string): Promise<User | null> => {
   if (Platform.OS !== 'web' && hasNativeFirestore) {
     const data = await getUserDocNative(userId);
     if (!data) return null;
-    const displayName = data.displayName || data.name || '';
-    const firstName = data.firstName || (displayName ? displayName.split(' ')[0] || '' : '');
-    const lastName = data.lastName || (displayName ? displayName.split(' ').slice(1).join(' ') || '' : '');
+    const displayNameRaw = coerceDisplayString(data.displayName || data.name);
+    const firstName = sanitizeProfileName(data.firstName || displayNameRaw.split(/\s+/)[0] || '');
+    const lastName = sanitizeProfileName(
+      data.lastName || displayNameRaw.split(/\s+/).slice(1).join(' ') || ''
+    );
     return {
       uid: data.id || userId,
       phoneNumber: data.phoneNumber || data.phone || '',
       firstName,
       lastName,
-      username: data.username || '',
+      displayName: displayNameRaw || undefined,
+      username: coerceDisplayString(data.username),
       avatar: data.avatar,
       bio: data.bio,
       createdAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || new Date().toISOString(),
@@ -945,15 +1112,18 @@ export const getUser = async (userId: string): Promise<User | null> => {
   const userDoc = await getDoc(userRef);
   if (userDoc.exists()) {
     const data = userDoc.data();
-    const displayName = data.displayName || data.name || '';
-    const firstName = data.firstName || (displayName ? displayName.split(' ')[0] || '' : '');
-    const lastName = data.lastName || (displayName ? displayName.split(' ').slice(1).join(' ') || '' : '');
+    const displayNameRaw = coerceDisplayString(data.displayName || data.name);
+    const firstName = sanitizeProfileName(data.firstName || displayNameRaw.split(/\s+/)[0] || '');
+    const lastName = sanitizeProfileName(
+      data.lastName || displayNameRaw.split(/\s+/).slice(1).join(' ') || ''
+    );
     return {
       uid: userDoc.id,
       phoneNumber: data.phoneNumber || data.phone || '', // Support legacy 'phone' field
       firstName,
       lastName,
-      username: data.username || '',
+      displayName: displayNameRaw || undefined,
+      username: coerceDisplayString(data.username),
       avatar: data.avatar,
       bio: data.bio,
       createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt || new Date().toISOString(),

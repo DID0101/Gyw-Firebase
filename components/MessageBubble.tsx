@@ -2,7 +2,8 @@ import { bumpChatPerfRender } from '@/lib/chatOpenPerf';
 import { CHAT_DELETED_FOR_EVERYONE_TEXT } from '@/lib/constants/chatMessages';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Dimensions, Image as RNImage, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, Image as RNImage, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { isLowTierAndroid } from '@/lib/perf/deviceProfile';
 import { Image as ExpoImage } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
 import clsx from 'clsx';
@@ -14,13 +15,16 @@ import LocationMessageBubble from './LocationMessageBubble';
 import MessageStatusIndicator from './MessageStatusIndicator';
 import PreviewAvatar from './PreviewAvatar';
 import { GYW_AI_DISPLAY_NAME, GYW_AI_SYSTEM_ID } from '@/lib/constants/gywAi';
+import { resolveMessageSenderLabel, safePreviewText } from '@/lib/chatDisplayText';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const LOW_TIER_MEDIA = Platform.OS === 'android' && isLowTierAndroid();
 // Bubble max = 72% of screen — comfortable on phones from 320px to 428px wide
-const BUBBLE_MAX_WIDTH = Math.min(SCREEN_WIDTH * 0.72, 320);
-// Image fills the bubble minus a small inset
-const IMAGE_WIDTH = Math.min(SCREEN_WIDTH * 0.62, 260);
+const BUBBLE_MAX_WIDTH = Math.min(SCREEN_WIDTH * 0.72, LOW_TIER_MEDIA ? 280 : 320);
+// Image fills the bubble minus a small inset (smaller decode on API ≤29)
+const IMAGE_WIDTH = Math.min(SCREEN_WIDTH * (LOW_TIER_MEDIA ? 0.58 : 0.62), LOW_TIER_MEDIA ? 220 : 260);
 const IMAGE_HEIGHT = Math.round(IMAGE_WIDTH * 0.75);
+const LIST_IMAGE_PRIORITY = LOW_TIER_MEDIA ? ('low' as const) : ('normal' as const);
 const AUDIO_WIDTH = Math.min(SCREEN_WIDTH * 0.65, 280);
 
 interface MessageBubbleProps {
@@ -40,6 +44,8 @@ interface MessageBubbleProps {
   showTail?: boolean;
   showSenderName?: boolean;
   showAvatar?: boolean;
+  /** senderId → phone for local contact name resolution in groups */
+  participantPhones?: Record<string, string | null | undefined>;
 }
 
 function areReactionMapsEqual(
@@ -94,6 +100,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
   showTail = true,
   showSenderName = true,
   showAvatar = false,
+  participantPhones,
 }) => {
   if (__DEV__) bumpChatPerfRender('MessageBubble');
 
@@ -123,9 +130,25 @@ const MessageBubble = memo<MessageBubbleProps>(({
 
   if (!message) return null;
 
+  const senderLabel = isAiMessage
+    ? GYW_AI_DISPLAY_NAME
+    : resolveMessageSenderLabel(
+        {
+          senderName: message.senderName,
+          phoneNumber: participantPhones?.[message.senderId],
+        },
+        'Unknown'
+      );
+  const messageBodyText = safePreviewText(message.text, 10000);
+  const replySenderLabel = resolveMessageSenderLabel(
+    { senderName: message.replyTo?.senderName },
+    'Unknown'
+  );
+  const replyBodyText = safePreviewText(message.replyTo?.text, 500);
+
   // ── Lightweight system line (member_removed, etc.) ──────────────────────
   if (message.type === 'system') {
-    const label = (message.text ?? '').trim();
+    const label = messageBodyText;
     return (
       <View className="items-center my-1.5 px-6" accessibilityRole="text">
         <Text
@@ -152,7 +175,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
             color={isDark ? '#9ca3af' : '#6b7280'}
           />
           <Text className={clsx('text-xs', isDark ? 'text-gray-300' : 'text-gray-600')}>
-            {message.text}
+            {messageBodyText}
           </Text>
         </View>
       </View>
@@ -167,7 +190,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
     !isDeletedEveryone &&
     !!message.fileUrl &&
     (message.type === 'document' || message.type === 'file') &&
-    !(message.text && message.text.trim()) &&
+    !messageBodyText &&
     !message.imageUrl &&
     !message.videoUrl &&
     !message.audioUrl;
@@ -176,7 +199,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
     !isDeletedEveryone &&
     message.type === 'location' &&
     !!message.previewUrl &&
-    !(message.text && message.text.trim());
+    !messageBodyText;
 
   const liveLocationExpired =
     !!message.isLive &&
@@ -207,16 +230,17 @@ const MessageBubble = memo<MessageBubbleProps>(({
         showTail ? 'mb-1' : 'mb-0.5'
       )}
       accessibilityRole="button"
-      accessibilityLabel={message.deleted ? 'Deleted message' : message.text || 'Media message'}
+      accessibilityLabel={message.deleted ? 'Deleted message' : messageBodyText || 'Media message'}
     >
       {/* Receiver avatar in group chats */}
       {!isMyMessage && showAvatar && (isGroupChat || isAiMessage) ? (
         <View className="mr-1.5 self-end mb-0.5">
           <PreviewAvatar
-            name={isAiMessage ? GYW_AI_DISPLAY_NAME : message.senderName}
+            name={senderLabel}
             image={isAiMessage ? aiAvatarUri : message.senderAvatar}
             size={30}
             fontSize={12}
+            imagePriority={LIST_IMAGE_PRIORITY}
           />
         </View>
       ) : !isMyMessage && (isGroupChat || isAiMessage) ? (
@@ -247,7 +271,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
             style={{ fontSize: 12, fontWeight: '600', marginBottom: 2 }}
             className={textSecondaryColor}
           >
-            {isAiMessage ? GYW_AI_DISPLAY_NAME : message.senderName}
+            {senderLabel}
           </Text>
         )}
 
@@ -274,7 +298,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
               }}
               numberOfLines={1}
             >
-              {message.replyTo.senderName}
+              {replySenderLabel}
             </Text>
             <Text
               style={{
@@ -283,7 +307,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
               }}
               numberOfLines={2}
             >
-              {message.replyTo.text
+              {replyBodyText
                 || (message.replyTo.type === 'image' ? '📷 Photo'
                 : message.replyTo.type === 'video' ? '🎥 Video'
                 : message.replyTo.type === 'document' || message.replyTo.type === 'file' ? '📎 Document'
@@ -314,6 +338,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
                 source={{ uri: message.storyReply.thumbnailUrl || message.storyReply.mediaUrl }}
                 style={{ width: 40, height: 52, borderRadius: 6 }}
                 contentFit="cover"
+                priority={LIST_IMAGE_PRIORITY}
               />
             ) : (
               <View
@@ -376,7 +401,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
               {CHAT_DELETED_FOR_EVERYONE_TEXT}
             </Text>
           </View>
-        ) : message.text ? (
+        ) : messageBodyText ? (
           <Text
             style={{
               fontSize: 15,
@@ -384,7 +409,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
               color: isMyMessage ? '#ffffff' : (isAiMessage ? (isDark ? '#e0e7ff' : '#111827') : (isDark ? '#f3f4f6' : '#111827')),
             }}
           >
-            {message.text}
+            {messageBodyText}
           </Text>
         ) : null}
 
@@ -393,7 +418,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
           <Pressable
             onPress={() => onMediaPress(message.imageUrl!, 'image')}
             style={{
-              marginTop: message.text ? 6 : 0,
+              marginTop: messageBodyText ? 6 : 0,
               borderRadius: 10,
               overflow: 'hidden',
               width: IMAGE_WIDTH,
@@ -405,7 +430,8 @@ const MessageBubble = memo<MessageBubbleProps>(({
               source={{ uri: message.imageUrl }}
               style={{ width: IMAGE_WIDTH, height: imageDisplayHeight }}
               contentFit="cover"
-              transition={200}
+              transition={LOW_TIER_MEDIA ? 0 : 200}
+              priority={LIST_IMAGE_PRIORITY}
               cachePolicy="disk"
               recyclingKey={message.id}
               placeholder={message.blurhash ? { blurhash: message.blurhash } : { color: '#374151' }}
@@ -418,7 +444,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
           <Pressable
             onPress={() => onMediaPress(message.videoUrl!, 'video')}
             style={{
-              marginTop: message.text ? 6 : 0,
+              marginTop: messageBodyText ? 6 : 0,
               borderRadius: 10,
               overflow: 'hidden',
               width: IMAGE_WIDTH,
@@ -431,6 +457,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
                 source={{ uri: message.videoThumbnailUrl }}
                 style={{ width: IMAGE_WIDTH, height: IMAGE_HEIGHT, position: 'absolute' }}
                 contentFit="cover"
+                priority={LIST_IMAGE_PRIORITY}
                 cachePolicy="disk"
                 recyclingKey={`thumb-${message.id}`}
               />
@@ -472,7 +499,7 @@ const MessageBubble = memo<MessageBubbleProps>(({
         )}
 
         {!isDeletedEveryone && message.type === 'location' && message.previewUrl && (
-          <View style={{ marginTop: message.text ? 6 : 0 }}>
+          <View style={{ marginTop: messageBodyText ? 6 : 0 }}>
             <LocationMessageBubble
               message={message}
               isMyMessage={isMyMessage}

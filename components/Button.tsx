@@ -1,10 +1,14 @@
 import clsx from 'clsx';
+import { useRef, useState } from 'react';
 import { Text, TouchableOpacity } from 'react-native';
 
 import { useThemeClassName } from '@/lib/themeUtils';
 
-interface ButtonProps extends React.ComponentProps<typeof TouchableOpacity> {
-  onPress?: () => void;
+type TouchableOpacityPressEvent = Parameters<NonNullable<React.ComponentProps<typeof TouchableOpacity>['onPress']>>[0];
+type TouchableOpacityProps = Omit<React.ComponentProps<typeof TouchableOpacity>, 'onPress'>;
+
+interface ButtonProps extends TouchableOpacityProps {
+  onPress?: (event: TouchableOpacityPressEvent) => void | Promise<void>;
   children: React.ReactNode;
   className?: string;
   variant?: 'plain' | 'default' | 'text';
@@ -19,14 +23,38 @@ const Button = ({
 }: ButtonProps) => {
   const textColorClassName = useThemeClassName('text-black', 'text-white');
   const bgClassName = useThemeClassName('bg-[#FF5722]', 'bg-[#FF5722]');
+  const [pressPending, setPressPending] = useState(false);
+  const pressLockedRef = useRef(false);
+  const disabled = !!otherProps.disabled || pressPending;
+
+  const handlePress = async (event: TouchableOpacityPressEvent) => {
+    if (!onPress || pressLockedRef.current || otherProps.disabled) {
+      if (__DEV__ && pressLockedRef.current) console.log('SAFE_ACTION_BLOCKED', { key: 'button_press' });
+      return;
+    }
+    pressLockedRef.current = true;
+    try {
+      const result = onPress(event);
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        setPressPending(true);
+        await result;
+      }
+    } finally {
+      setPressPending(false);
+      setTimeout(() => {
+        pressLockedRef.current = false;
+      }, 450);
+    }
+  };
   
   if (variant === 'plain')
     return (
       <TouchableOpacity
         className={clsx('w-fit h-fit', className)}
-        onPress={onPress}
-        activeOpacity={0.7}
         {...otherProps}
+        onPress={handlePress}
+        activeOpacity={0.7}
+        disabled={disabled}
       >
         {children}
       </TouchableOpacity>
@@ -38,12 +66,13 @@ const Button = ({
         variant === 'default' &&
           clsx('rounded-[13px] justify-center items-center px-4 py-4 w-full', bgClassName),
         variant === 'text' && clsx('bg-transparent justify-center items-center px-3 py-2', className),
-        otherProps.disabled && 'opacity-50',
+        disabled && 'opacity-50',
         variant !== 'text' && className
       )}
-      onPress={onPress}
-      activeOpacity={variant === 'text' ? 0.7 : undefined}
       {...otherProps}
+      onPress={handlePress}
+      activeOpacity={variant === 'text' ? 0.7 : undefined}
+      disabled={disabled}
     >
       <Text
         className={clsx(

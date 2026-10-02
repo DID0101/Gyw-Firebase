@@ -25,6 +25,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/contexts/AuthContext';
 import Avatar from '@/components/Avatar';
 import Button from '@/components/Button';
+import StoryViewerAdSlide from '@/components/stories/StoryViewerAdSlide';
+import { useStoryViewerAds } from '@/lib/hooks/useStoryViewerAds';
 import { BlockedPeerSendError } from '@/lib/chatSendGuards';
 import {
   getStory,
@@ -40,6 +42,7 @@ import {
 } from '@/lib/services/storyService';
 import { getOrCreateDirectChat, sendMessage } from '@/lib/services/chatService';
 import { useUsersData } from '@/lib/hooks/useUsersData';
+import { findViewerItemIndexByStoryId } from '@/lib/stories/storyViewerFeed';
 import { useStoryStore } from '@/store/storyStore';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -95,9 +98,16 @@ const StoryViewer = () => {
   const { t } = useTranslation();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
-  const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
+  const [currentItemKey, setCurrentItemKey] = useState('');
   const [stories, setStories] = useState<Story[]>([]);
-  const [currentStory, setCurrentStory] = useState<Story | null>(null);
+  const { viewerItems } = useStoryViewerAds(stories);
+  const currentIndex = useMemo(() => {
+    const idx = viewerItems.findIndex((item) => item.key === currentItemKey);
+    return idx >= 0 ? idx : 0;
+  }, [viewerItems, currentItemKey]);
+  const currentItem = viewerItems[currentIndex] ?? null;
+  const currentStory = currentItem?.type === 'story' ? currentItem.story : null;
+  const isAdSlide = currentItem?.type === 'ad';
   const [videoUri, setVideoUri] = useState<string>('');
   const [likeState, setLikeState] = useState({ liked: false, likeCount: 0, capped: false });
   const [likeOptimistic, setLikeOptimistic] = useState<boolean | null>(null);
@@ -130,23 +140,20 @@ const StoryViewer = () => {
         if (userId) {
           const userStories = await getUserStories(userId);
           setStories(userStories);
-          
-          // Find current story index
-          const index = userStories.findIndex((s) => s.id === storyId);
-          if (index >= 0) {
-            setCurrentStoryIndex(index);
-            setCurrentStory(userStories[index]);
+
+          const initialKey = `story-${storyId}`;
+          const hasStory = userStories.some((s) => s.id === storyId);
+          if (hasStory) {
+            setCurrentItemKey(initialKey);
           } else if (userStories.length > 0) {
-            setCurrentStoryIndex(0);
-            setCurrentStory(userStories[0]);
+            setCurrentItemKey(`story-${userStories[0].id}`);
           }
         } else {
           // Fallback: load single story
           const story = await getStory(storyId);
           if (story) {
             setStories([story]);
-            setCurrentStory(story);
-            setCurrentStoryIndex(0);
+            setCurrentItemKey(`story-${story.id}`);
           }
         }
       } catch (error) {
@@ -232,6 +239,16 @@ const StoryViewer = () => {
     };
   }, [currentStory?.id, isStoryOwner]);
 
+  useEffect(() => {
+    if (!currentItemKey || viewerItems.length === 0) return;
+    if (viewerItems.some((item) => item.key === currentItemKey)) return;
+    const storyIdx = findViewerItemIndexByStoryId(viewerItems, storyId);
+    const fallback = viewerItems[Math.min(currentIndex, viewerItems.length - 1)];
+    setCurrentItemKey(
+      storyIdx >= 0 ? viewerItems[storyIdx].key : fallback?.key ?? '',
+    );
+  }, [viewerItems, currentItemKey, storyId, currentIndex]);
+
   const narrativePaused = useMemo(
     () => paused || showReplyModal || engagementOpen,
     [paused, showReplyModal, engagementOpen]
@@ -254,22 +271,21 @@ const StoryViewer = () => {
     []
   );
 
-  // Preload next story
+  // Preload next story media
   useEffect(() => {
-    if (stories.length > 0 && currentStoryIndex < stories.length - 1) {
-      const nextStory = stories[currentStoryIndex + 1];
-      setPreloadedNextStory(nextStory);
-      
-      // Preload next story image (React Native Image component preloads automatically when rendered)
-      if (nextStory.mediaType === 'image') {
-        nextStoryImageRef.current = nextStory.mediaUrl;
-        // Image will be preloaded when it's rendered in the UI
+    if (viewerItems.length > 0 && currentIndex < viewerItems.length - 1) {
+      const nextItem = viewerItems[currentIndex + 1];
+      if (nextItem.type === 'story' && nextItem.story.mediaType === 'image') {
+        nextStoryImageRef.current = nextItem.story.mediaUrl;
+      } else {
+        nextStoryImageRef.current = null;
       }
+      setPreloadedNextStory(nextItem.type === 'story' ? nextItem.story : null);
     } else {
       setPreloadedNextStory(null);
       nextStoryImageRef.current = null;
     }
-  }, [stories, currentStoryIndex]);
+  }, [viewerItems, currentIndex]);
 
   // Configure video player when URI or paused state changes
   useEffect(() => {
@@ -336,50 +352,44 @@ const StoryViewer = () => {
   }, [currentStory?.id, currentStory?.mediaType, currentStory?.mediaUrl, player]);
 
   const handleNextStory = useCallback(() => {
-    if (currentStoryIndex < stories.length - 1) {
+    if (currentIndex < viewerItems.length - 1) {
       setProgress(0);
-      const nextIndex = currentStoryIndex + 1;
-      setCurrentStoryIndex(nextIndex);
-      setCurrentStory(stories[nextIndex]);
+      setCurrentItemKey(viewerItems[currentIndex + 1].key);
       if (player) {
         player.pause();
         player.currentTime = 0;
-        // Video will be loaded via the useEffect hook
       }
+    } else if (router.canGoBack()) {
+      router.back();
     } else {
-      // Close viewer (modal - use dismiss)
-      if (router.canGoBack()) {
-        router.back();
-      } else {
-        router.dismiss();
-      }
+      router.dismiss();
     }
-  }, [currentStoryIndex, stories, router, player]);
+  }, [currentIndex, viewerItems, router, player]);
 
   const handlePreviousStory = useCallback(() => {
-    if (currentStoryIndex > 0) {
+    if (currentIndex > 0) {
       setProgress(0);
-      const prevIndex = currentStoryIndex - 1;
-      setCurrentStoryIndex(prevIndex);
-      setCurrentStory(stories[prevIndex]);
+      setCurrentItemKey(viewerItems[currentIndex - 1].key);
       if (player) {
         player.pause();
         player.currentTime = 0;
-        // Video will be loaded via the useEffect hook
       }
     }
-  }, [currentStoryIndex, stories, player]);
+  }, [currentIndex, viewerItems, player]);
 
-  // Progress bar for images (avoid calling handleNextStory inside setState updater to prevent setState-during-render warning)
+  const usesTimedProgress =
+    isAdSlide || currentStory?.mediaType === 'image';
+
+  // Progress bar for image stories and sponsored slides
   useEffect(() => {
-    if (currentStory?.mediaType === 'image' && !narrativePaused) {
+    if (usesTimedProgress && !narrativePaused) {
       progressIntervalRef.current = setInterval(() => {
         setProgress((prev) => {
           if (prev >= 100) {
             setTimeout(handleNextStory, 0);
             return 0;
           }
-          return prev + 2; // Update every 100ms (5s total)
+          return prev + 2;
         });
       }, 100);
     } else {
@@ -393,7 +403,7 @@ const StoryViewer = () => {
         clearInterval(progressIntervalRef.current);
       }
     };
-  }, [currentStory, narrativePaused, handleNextStory]);
+  }, [usesTimedProgress, narrativePaused, handleNextStory, currentItem?.key]);
 
   // Handle tap navigation (left/right) - must be after handleNextStory/handlePreviousStory
   const handleTap = useCallback((event: any) => {
@@ -562,7 +572,7 @@ const StoryViewer = () => {
     : 'Unknown';
   const storyOwnerImage = storyOwner?.avatar;
 
-  if (!currentStory) {
+  if (!currentItem) {
     return (
       <View className="flex-1 bg-black items-center justify-center">
         <ActivityIndicator size="large" color="white" />
@@ -573,22 +583,22 @@ const StoryViewer = () => {
   return (
     <View className="flex-1 bg-black">
       {/* Progress bars */}
-      {stories.length > 1 && (
+      {viewerItems.length > 1 && (
         <View 
           className="absolute top-0 left-0 right-0 z-20 flex-row gap-1 px-2 pt-safe"
           style={{ paddingTop: insets.top + 8 }}
         >
-          {stories.map((story, index) => (
+          {viewerItems.map((item, index) => (
             <View
-              key={story.id}
+              key={item.key}
               className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden"
             >
               <View
                 className="h-full bg-white rounded-full"
                 style={{
-                  width: index < currentStoryIndex 
+                  width: index < currentIndex 
                     ? '100%' 
-                    : index === currentStoryIndex 
+                    : index === currentIndex 
                       ? `${progress}%` 
                       : '0%',
                 }}
@@ -601,55 +611,71 @@ const StoryViewer = () => {
       {/* Header */}
       <View 
         className="absolute top-0 left-0 right-0 z-10 flex-row items-center justify-between px-4"
-        style={{ paddingTop: insets.top + (stories.length > 1 ? 40 : 12) }}
+        style={{ paddingTop: insets.top + (viewerItems.length > 1 ? 40 : 12) }}
       >
-        <View className="flex-row items-center gap-3 flex-1 min-w-0">
-          <Avatar
-            imageUrl={storyOwnerImage}
-            size={32}
-            fontSize={14}
-            name={storyOwnerName}
-          />
-          <View className="flex-1 min-w-0">
-            <Text className="text-white font-semibold text-base" numberOfLines={1}>
-              {storyOwnerName}
-            </Text>
-            <Text className="text-white/70 text-xs" numberOfLines={1}>
-              {formatTime(currentStory.createdAt)}
-            </Text>
-            {isStoryOwner && (
-              <>
-                <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-1">
-                  <TouchableOpacity
-                    onPress={() => {
-                      setEngagementTab('views');
-                      setEngagementOpen(true);
-                    }}
-                    hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-                  >
-                    <Text className="text-white/90 text-xs font-medium">
-                      {t('stories.viewsCount', { count: viewCountLabel })}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setEngagementTab('likes');
-                      setEngagementOpen(true);
-                    }}
-                    hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-                  >
-                    <Text className="text-white/90 text-xs font-medium">
-                      {t('stories.likesCount', { count: likeCountLabel })}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <Text className="text-white/50 text-[10px] mt-0.5" numberOfLines={1}>
-                  {t('stories.swipeUpForActivity')}
-                </Text>
-              </>
-            )}
+        {isAdSlide ? (
+          <View className="flex-row items-center gap-3 flex-1 min-w-0">
+            <View className="w-8 h-8 rounded-full bg-white/15 items-center justify-center">
+              <Feather name="volume-2" size={16} color="white" />
+            </View>
+            <View className="flex-1 min-w-0">
+              <Text className="text-white font-semibold text-base" numberOfLines={1}>
+                {t('stories.sponsored')}
+              </Text>
+              <Text className="text-white/70 text-xs" numberOfLines={1}>
+                {t('stories.adStoryHint')}
+              </Text>
+            </View>
           </View>
-        </View>
+        ) : (
+          <View className="flex-row items-center gap-3 flex-1 min-w-0">
+            <Avatar
+              imageUrl={storyOwnerImage}
+              size={32}
+              fontSize={14}
+              name={storyOwnerName}
+            />
+            <View className="flex-1 min-w-0">
+              <Text className="text-white font-semibold text-base" numberOfLines={1}>
+                {storyOwnerName}
+              </Text>
+              <Text className="text-white/70 text-xs" numberOfLines={1}>
+                {currentStory ? formatTime(currentStory.createdAt) : ''}
+              </Text>
+              {isStoryOwner && currentStory && (
+                <>
+                  <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-1">
+                    <TouchableOpacity
+                      onPress={() => {
+                        setEngagementTab('views');
+                        setEngagementOpen(true);
+                      }}
+                      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                    >
+                      <Text className="text-white/90 text-xs font-medium">
+                        {t('stories.viewsCount', { count: viewCountLabel })}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setEngagementTab('likes');
+                        setEngagementOpen(true);
+                      }}
+                      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                    >
+                      <Text className="text-white/90 text-xs font-medium">
+                        {t('stories.likesCount', { count: likeCountLabel })}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text className="text-white/50 text-[10px] mt-0.5" numberOfLines={1}>
+                    {t('stories.swipeUpForActivity')}
+                  </Text>
+                </>
+              )}
+            </View>
+          </View>
+        )}
         <TouchableOpacity
           onPress={() => (router.canGoBack() ? router.back() : router.dismiss())}
           className="w-8 h-8 items-center justify-center shrink-0"
@@ -664,9 +690,18 @@ const StoryViewer = () => {
         onPress={handleTap}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
-        {...(isStoryOwner ? ownerSwipePan.panHandlers : {})}
+        {...(isStoryOwner && !isAdSlide ? ownerSwipePan.panHandlers : {})}
       >
-        {currentStory.mediaType === 'image' ? (
+        {isAdSlide && currentItem.type === 'ad' ? (
+          <StoryViewerAdSlide
+            nativeAd={currentItem.nativeAd}
+            slotIndex={currentItem.slotIndex}
+            width={SCREEN_WIDTH}
+            height={SCREEN_HEIGHT}
+            topInset={insets.top}
+            onSkip={handleNextStory}
+          />
+        ) : currentStory?.mediaType === 'image' ? (
           <Image
             source={{ uri: currentStory.mediaUrl }}
             style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
@@ -685,6 +720,7 @@ const StoryViewer = () => {
       </Pressable>
 
       {/* Bottom Actions */}
+      {!isAdSlide && currentStory ? (
       <View 
         className="absolute bottom-0 left-0 right-0 z-20 flex-row items-center justify-center gap-6 px-4 py-6"
         style={{ paddingBottom: insets.bottom + 24 }}
@@ -720,8 +756,7 @@ const StoryViewer = () => {
           <Text className="text-white/70 text-xs mt-2">{t('stories.reply')}</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Owner: viewers + likers (bottom sheet) */}
+      ) : null}
       <Modal
         visible={engagementOpen}
         transparent

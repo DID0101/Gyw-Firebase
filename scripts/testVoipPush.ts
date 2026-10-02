@@ -170,7 +170,7 @@ async function sendVoipPush(opts: VoipSendOptions): Promise<void> {
       console.error('');
       console.error('Common reasons:');
       console.error('  BadDeviceToken    → Token is invalid or for the wrong environment');
-      console.error('  BadTopic          → bundleId doesn't match the VoIP cert');
+      console.error("  BadTopic          → bundleId doesn't match the VoIP cert");
       console.error('  DeviceTokenNotForTopic → Using wrong cert type (need VoIP cert)');
       console.error('  Unregistered      → Device uninstalled the app');
       process.exit(1);

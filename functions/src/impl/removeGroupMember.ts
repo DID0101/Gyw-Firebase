@@ -88,7 +88,7 @@ export async function handleRemoveGroupMember(
       [`removedMembers.${targetUserId}`]: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    tx.update(chatRef, updatePayload);
+    tx.update(chatRef, updatePayload as admin.firestore.DocumentData);
 
     tx.set(msgRef, {
       chatId,

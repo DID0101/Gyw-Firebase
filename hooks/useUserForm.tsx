@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { sanitizeBioText, sanitizeProfileName, sanitizeUsernameBase } from '@/lib/unicodeText';
+
 interface InitialValues {
   firstName?: string;
   lastName?: string;
@@ -36,7 +38,7 @@ const useUserForm = (initialValues = defaultValues) => {
   const [bio, setBio] = useState(initialValues.bio || '');
 
   const onChangeUsername = (text: string) => {
-    setUsername(text);
+    setUsername(sanitizeUsernameBase(text));
     if (!usernameNumber) {
       const randomNumber = String(Math.floor(Math.random() * 99) + 1).padStart(
         2,
@@ -62,15 +64,15 @@ const useUserForm = (initialValues = defaultValues) => {
   };
 
   const onChangeFirstName = (text: string) => {
-    setFirstName(text);
+    setFirstName(sanitizeProfileName(text));
   };
 
   const onChangeLastName = (text: string) => {
-    setLastName(text);
+    setLastName(sanitizeProfileName(text));
   };
 
   const onChangeBio = (text: string) => {
-    setBio(text);
+    setBio(sanitizeBioText(text));
   };
 
   const onChangePhoneNumber = (text: string) => {

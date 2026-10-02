@@ -24,18 +24,111 @@ const {
   withDangerousMod,
   withAppBuildGradle,
   withMainApplication,
+  withMainActivity,
 } = require('@expo/config-plugins');
 
 /** Injected once after `super.onCreate()` so TelecomManager has a PhoneAccount before any FCM arrives. */
 const PHONE_ACCOUNT_MARKER = 'GYW_REGISTER_TELECOM_PHONE_ACCOUNT';
+const INCOMING_CALL_PACKAGE_MARKER = 'GYW_INCOMING_CALL_PACKAGE';
+const INCOMING_CALL_THEME_MARKER = 'GYW_INCOMING_CALL_THEME_RES';
+const MAIN_ACTIVITY_ACCEPT_TRACE_MARKER = 'GYW_MAIN_ACTIVITY_ACCEPT_TRACE';
 
 const RNFB_MSG_SERVICE = 'io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService';
 const RNFB_MSG_RECEIVER = 'io.invertase.firebase.messaging.ReactNativeFirebaseMessagingReceiver';
 
-/** Must stay aligned with @react-native-firebase/app `sdkVersions.android.firebase` (BOM). */
-const FIREBASE_BOM = '34.8.0';
+const { FIREBASE_BOM } = require('./firebaseSdkVersions');
+
+function patchMainActivityAcceptTrace(config) {
+  return withMainActivity(config, (cfg) => {
+    let contents = cfg.modResults.contents;
+    if (contents.includes(MAIN_ACTIVITY_ACCEPT_TRACE_MARKER)) {
+      return cfg;
+    }
+
+    const isKotlin =
+      cfg.modResults.language === 'kotlin' ||
+      contents.includes('class MainActivity : ReactActivity()');
+
+    if (!contents.includes('android.util.Log')) {
+      if (isKotlin) {
+        contents = contents.replace(/^package .+\n/m, (m) => `${m}import android.util.Log\n`);
+      } else {
+        contents = contents.replace(/^package .+;\r?\n/m, (m) => `${m}\nimport android.util.Log;\n`);
+      }
+    }
+    if (isKotlin && !contents.includes('import android.content.Intent')) {
+      contents = contents.replace(/^package .+\n/m, (m) => `${m}import android.content.Intent\n`);
+    } else if (!isKotlin && !contents.includes('import android.content.Intent;')) {
+      contents = contents.replace(/^package .+;\r?\n/m, (m) => `${m}\nimport android.content.Intent;\n`);
+    }
+
+    const logOnCreate = isKotlin
+      ? `
+    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}
+    run {
+      val i = intent
+      Log.w("MainActivity", "MAIN_ACTIVITY_ONCREATE action=" + (i?.action ?: "") + " data=" + (i?.dataString ?: "") + " callId=" + (i?.getStringExtra("callId") ?: ""))
+    }`
+      : `
+    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}
+    {
+      Intent i = getIntent();
+      Log.w("MainActivity", "MAIN_ACTIVITY_ONCREATE action=" + (i != null ? i.getAction() : "") + " data=" + (i != null && i.getData() != null ? i.getData().toString() : "") + " callId=" + (i != null ? i.getStringExtra("callId") : ""));
+    }`;
+
+    if (contents.includes('super.onCreate(null)')) {
+      contents = contents.replace('super.onCreate(null)', `${logOnCreate}\n    super.onCreate(null)`);
+    } else if (contents.includes('super.onCreate(savedInstanceState)')) {
+      contents = contents.replace(
+        'super.onCreate(savedInstanceState)',
+        `${logOnCreate}\n    super.onCreate(savedInstanceState)`,
+      );
+    } else {
+      console.warn('[withAndroidIncomingCall] Could not inject MainActivity onCreate accept trace');
+      return cfg;
+    }
+
+    const onNewIntentLog = isKotlin
+      ? `setIntent(intent)\n    Log.w("MainActivity", "MAIN_ACTIVITY_ONNEWINTENT action=" + (intent.action ?: "") + " data=" + (intent.dataString ?: "") + " callId=" + (intent.getStringExtra("callId") ?: ""))`
+      : `setIntent(intent);\n    Log.w("MainActivity", "MAIN_ACTIVITY_ONNEWINTENT action=" + (intent != null ? intent.getAction() : "") + " data=" + (intent != null && intent.getData() != null ? intent.getData().toString() : "") + " callId=" + (intent != null ? intent.getStringExtra("callId") : ""));`;
+
+    if (contents.includes('fun onNewIntent(') || contents.includes('void onNewIntent(')) {
+      if (!contents.includes('MAIN_ACTIVITY_ONNEWINTENT')) {
+        contents = contents.replace(
+          /(override fun onNewIntent\([^)]*\)[^{]*\{)/,
+          `$1\n    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}\n    ${onNewIntentLog}\n`,
+        );
+        contents = contents.replace(
+          /(protected void onNewIntent\([^)]*\)[^{]*\{)/,
+          `$1\n    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}\n    ${onNewIntentLog}\n`,
+        );
+      }
+    } else if (!contents.includes('MAIN_ACTIVITY_ONNEWINTENT')) {
+      const onNewIntentBlock = isKotlin
+        ? `
+  override fun onNewIntent(intent: Intent) {
+    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}
+    ${onNewIntentLog}
+    super.onNewIntent(intent)
+  }`
+        : `
+  @Override
+  protected void onNewIntent(Intent intent) {
+    // ${MAIN_ACTIVITY_ACCEPT_TRACE_MARKER}
+    ${onNewIntentLog}
+    super.onNewIntent(intent);
+  }`;
+
+      contents = contents.replace(/\n}\s*$/, `${onNewIntentBlock}\n}\n`);
+    }
+
+    cfg.modResults.contents = contents;
+    return cfg;
+  });
+}
 
 module.exports = function withAndroidIncomingCall(config) {
+  config = patchMainActivityAcceptTrace(config);
   config = withDangerousMod(config, [
     'android',
     async (cfg) => {
@@ -59,17 +152,32 @@ module.exports = function withAndroidIncomingCall(config) {
         'GywIncomingCallAlerts.java',
         'GywIncomingCallNotifier.java',
         'GywIncomingCallService.java',
+        'IncomingCallUiLauncher.java',
+        'IncomingCallModule.kt',
+        'IncomingCallPackage.kt',
         'IncomingCallBridgeModule.kt',
-        'IncomingCallBridgePackage.kt',
+        'ContactNameCache.kt',
+        'CallLatencyTrace.kt',
+        'CallerProfileCache.kt',
+        'IncomingCallMetadata.kt',
+        'IncomingCallAvatarLoader.kt',
+        'IncomingCallUiTheme.kt',
         'ChatNotificationBridgeModule.kt',
         'IncomingCallActivity.kt',
+        'IncomingCallFcmHandler.kt',
+        'IncomingCallReceiver.kt',
         'IncomingCallActionHandler.java',
+        'NativeCallStateUpdater.java',
         'GywMessageNotifier.java',
         'GywMessageNotificationActionReceiver.java',
         // New Telecom + Headless files
         'CallConnectionService.kt',
         'HeadlessCallTask.kt',
         'IncomingCallGuard.kt',
+        'OemPermissionDiagnostics.kt',
+        'IncomingCallPathConfig.java',
+        'IncomingCallProcessState.java',
+        'IncomingCallDiagnostics.java',
       ];
       for (const f of files) {
         const srcPath = path.join(srcDir, f);
@@ -80,6 +188,88 @@ module.exports = function withAndroidIncomingCall(config) {
         text = text.replace(/^package com\.gyw1\.chat$/m, `package ${androidPackage}`);
         fs.writeFileSync(path.join(destDir, f), text);
       }
+
+      const resRoot = path.join(platformRoot, 'app', 'src', 'main', 'res');
+      const drawableSrc = path.join(projectRoot, 'plugins', 'android-native', 'res', 'drawable');
+      if (fs.existsSync(drawableSrc)) {
+        const drawableDest = path.join(resRoot, 'drawable');
+        fs.mkdirSync(drawableDest, { recursive: true });
+        for (const name of fs.readdirSync(drawableSrc)) {
+          if (name.endsWith('.xml')) {
+            fs.copyFileSync(
+              path.join(drawableSrc, name),
+              path.join(drawableDest, name)
+            );
+          }
+        }
+      }
+
+      // ── res/values: incoming-call theme + background color ─────────────────
+      const valuesDir = path.join(resRoot, 'values');
+      fs.mkdirSync(valuesDir, { recursive: true });
+      const colorsPath = path.join(valuesDir, 'colors.xml');
+      const colorsMarker = '<!-- gyw-incoming-call-colors -->';
+      let colorsXml = fs.existsSync(colorsPath)
+        ? fs.readFileSync(colorsPath, 'utf8')
+        : '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n';
+      if (
+        !colorsXml.includes(colorsMarker) &&
+        !colorsXml.includes('name="call_background"')
+      ) {
+        if (!colorsXml.includes('</resources>')) {
+          colorsXml = '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n';
+        }
+        colorsXml = colorsXml.replace(
+          '</resources>',
+          `  ${colorsMarker}\n  <color name="call_background">#0D1B2A</color>\n</resources>`
+        );
+        fs.writeFileSync(colorsPath, colorsXml);
+      }
+
+      const stylesPath = path.join(valuesDir, 'styles.xml');
+      const stylesMarker = '<!-- gyw-incoming-call-theme -->';
+      let stylesXml = fs.existsSync(stylesPath)
+        ? fs.readFileSync(stylesPath, 'utf8')
+        : '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n';
+      if (
+        !stylesXml.includes(stylesMarker) &&
+        !stylesXml.includes('Theme.App.IncomingCall')
+      ) {
+        if (!stylesXml.includes('</resources>')) {
+          stylesXml = '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n';
+        }
+        stylesXml = stylesXml.replace(
+          '</resources>',
+          `  ${stylesMarker}\n  <style name="Theme.App.IncomingCall" parent="Theme.AppCompat.NoActionBar">\n    <item name="android:windowBackground">@color/call_background</item>\n    <item name="android:statusBarColor">@android:color/transparent</item>\n    <item name="android:windowTranslucentStatus">true</item>\n  </style>\n</resources>`
+        );
+        fs.writeFileSync(stylesPath, stylesXml);
+      }
+
+      const rawDestDir = path.join(resRoot, 'raw');
+      fs.mkdirSync(rawDestDir, { recursive: true });
+
+      const ringtoneSrc = path.join(projectRoot, 'assets', 'sounds', 'ringtone.wav');
+      if (fs.existsSync(ringtoneSrc)) {
+        fs.copyFileSync(ringtoneSrc, path.join(rawDestDir, 'ringtone.wav'));
+        console.log('[withAndroidIncomingCall] copied ringtone.wav → res/raw/ringtone.wav');
+      } else {
+        console.warn(
+          '[withAndroidIncomingCall] assets/sounds/ringtone.wav missing — incoming calls will use system default ringtone'
+        );
+      }
+
+      const messageSoundSrc = path.join(projectRoot, 'assets', 'sounds', 'message_sound.wav');
+      if (fs.existsSync(messageSoundSrc)) {
+        fs.copyFileSync(messageSoundSrc, path.join(rawDestDir, 'message_sound.wav'));
+        console.log(
+          '[withAndroidIncomingCall] copied message_sound.wav → res/raw/message_sound.wav'
+        );
+      } else {
+        console.warn(
+          '[withAndroidIncomingCall] assets/sounds/message_sound.wav missing — chat notifications will use system default sound'
+        );
+      }
+
       return cfg;
     },
   ]);
@@ -95,29 +285,42 @@ module.exports = function withAndroidIncomingCall(config) {
         `dependencies {
     // ${fcmMarker}: GywFirebaseMessagingService needs FCM classes on app compile classpath
     implementation platform("com.google.firebase:firebase-bom:${FIREBASE_BOM}")
-    implementation "com.google.firebase:firebase-messaging"`
+    implementation "com.google.firebase:firebase-messaging"
+    implementation "com.google.firebase:firebase-auth"
+    implementation "com.google.firebase:firebase-firestore"`
       );
     }
+    for (const dep of [
+      'implementation "com.google.firebase:firebase-auth"',
+      'implementation "com.google.firebase:firebase-firestore"',
+    ]) {
+      if (!contents.includes(dep)) {
+        contents = contents.replace(
+          /implementation "com\.google\.firebase:firebase-messaging"\s*/,
+          (m) => `${m}    ${dep}\n`
+        );
+      }
+    }
 
-    // ── compileSdk / targetSdk 35 ────────────────────────────────────────────
+    // ── compileSdk / targetSdk 36 ────────────────────────────────────────────
     // FOREGROUND_SERVICE_TYPE_PHONE_CALL + USE_FULL_SCREEN_INTENT API 34+ paths
-    // require compileSdk ≥ 34.  35 is the current stable target.
-    const compileSdkMarker = 'gyw-compile-sdk-35';
+    // require compileSdk ≥ 34.  Play requires targetSdk 36 from Aug 31, 2026.
+    const compileSdkMarker = 'gyw-compile-sdk-36';
     if (!contents.includes(compileSdkMarker)) {
-      // Replace compileSdkVersion / compileSdk if below 34
+      // Replace compileSdkVersion / compileSdk if below 36
       contents = contents.replace(
         /compileSdkVersion\s+\d+/g,
-        'compileSdkVersion 35'
+        'compileSdkVersion 36'
       ).replace(
         /compileSdk\s+=?\s*\d+/g,
-        `compileSdk = 35 // ${compileSdkMarker}`
+        `compileSdk = 36 // ${compileSdkMarker}`
       );
       contents = contents.replace(
         /targetSdkVersion\s+\d+/g,
-        'targetSdkVersion 35'
+        'targetSdkVersion 36'
       ).replace(
         /targetSdk\s+=?\s*\d+/g,
-        'targetSdk = 35'
+        'targetSdk = 36'
       );
     }
 
@@ -152,6 +355,7 @@ module.exports = function withAndroidIncomingCall(config) {
       'android.permission.VIBRATE',                            // required for notification vibration on some API levels
       'android.permission.POST_NOTIFICATIONS',                  // Android 13+: heads-up + full-screen intent eligibility
       'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS', // battery exemption dialog in MainActivity
+      'android.permission.RECEIVE_BOOT_COMPLETED',
     ];
     for (const perm of newPerms) {
       if (!permissions.some((p) => p.$?.['android:name'] === perm)) {
@@ -168,12 +372,6 @@ module.exports = function withAndroidIncomingCall(config) {
       );
     }
 
-    const deadReceivers = ['.IncomingCallReceiver'];
-    if (app.receiver) {
-      app.receiver = app.receiver.filter(
-        (r) => !deadReceivers.includes(r.$?.['android:name'])
-      );
-    }
 
     // Drop legacy GywFcmCallReceiver if present (c2dm path is unreliable for FCM data).
     if (app.receiver) {
@@ -232,6 +430,27 @@ module.exports = function withAndroidIncomingCall(config) {
     if (!app.receiver.some((r) => r.$?.['android:name'] === RNFB_MSG_RECEIVER && r.$?.['tools:node'] === 'remove')) {
       app.receiver.push({
         $: { 'android:name': RNFB_MSG_RECEIVER, 'tools:node': 'remove' },
+      });
+    }
+
+    const incomingDeclineReceiverRel = '.IncomingCallReceiver';
+    if (
+      !app.receiver.some(
+        (r) =>
+          r.$?.['android:name'] === incomingDeclineReceiverRel ||
+          String(r.$?.['android:name'] || '').endsWith('IncomingCallReceiver')
+      )
+    ) {
+      app.receiver.push({
+        $: {
+          'android:name': incomingDeclineReceiverRel,
+          'android:exported': 'false',
+        },
+        'intent-filter': [
+          {
+            action: [{ $: { 'android:name': 'ACTION_DECLINE_CALL' } }],
+          },
+        ],
       });
     }
 
@@ -313,59 +532,57 @@ module.exports = function withAndroidIncomingCall(config) {
       });
     }
 
-    // ── MainActivity: showWhenLocked + turnScreenOn ──────────────────────────
-    // ── IncomingCallActivity: full-screen intent target (lock screen) ─────────
+    // MainActivity must NOT use showWhenLocked/turnScreenOn — breaks Firebase RecaptchaActivity
+    // Keystore on Tecno/Oppo/Xiaomi (encryption key error). Lock-screen flags belong on IncomingCallActivity only.
     const activities = app.activity || [];
-    const mainActivity = activities.find(
-      (a) => a.$?.['android:name'] === '.MainActivity'
-    );
-    if (mainActivity) {
-      mainActivity.$['android:showWhenLocked'] = 'true';
-      mainActivity.$['android:turnScreenOn'] = 'true';
-    }
 
     const incomingActivityRel = '.IncomingCallActivity';
-    if (!activities.some((a) => a.$?.['android:name'] === incomingActivityRel)) {
-      activities.push({
-        $: {
-          'android:name': incomingActivityRel,
-          'android:exported': 'true',
-          'android:theme': '@style/Theme.AppCompat.Light.NoActionBar',
-          'android:showOnLockScreen': 'true',
-          'android:turnScreenOn': 'true',
-          'android:excludeFromRecents': 'true',
-          'android:launchMode': 'singleTop',
-        },
-      });
+    let incomingActivity = activities.find((a) => a.$?.['android:name'] === incomingActivityRel);
+    if (!incomingActivity) {
+      incomingActivity = { $: { 'android:name': incomingActivityRel } };
+      activities.push(incomingActivity);
     }
+    incomingActivity.$['android:exported'] = 'true';
+    incomingActivity.$['android:theme'] = '@style/Theme.App.IncomingCall';
+    incomingActivity.$['android:showWhenLocked'] = 'true';
+    incomingActivity.$['android:showOnLockScreen'] = 'true';
+    incomingActivity.$['android:turnScreenOn'] = 'true';
+    incomingActivity.$['android:excludeFromRecents'] = 'true';
+    incomingActivity.$['android:launchMode'] = 'singleTask';
+    incomingActivity.$['android:taskAffinity'] = `${androidPackage}.incomingcall`;
     app.activity = activities;
 
     return cfg;
   });
 
-  // ── Application.onCreate: register self-managed PhoneAccount for CallKeep / Telecom ──
+  // ── Application.onCreate: PhoneAccount + IncomingCallPackage ───────────────
   config = withMainApplication(config, (cfg) => {
     const androidPackage = cfg.android?.package ?? 'com.gyw1.chat';
     let contents = cfg.modResults.contents;
-    if (contents.includes(PHONE_ACCOUNT_MARKER)) {
-      cfg.modResults.contents = contents;
-      return cfg;
-    }
-
-    const importLine =
-      cfg.modResults.language === 'kotlin'
-        ? `import ${androidPackage}.CallConnectionService`
-        : `import ${androidPackage}.CallConnectionService;`;
+    const isKotlin = cfg.modResults.language === 'kotlin';
 
     if (!contents.includes('CallConnectionService')) {
-      if (cfg.modResults.language === 'kotlin') {
+      const importLine = isKotlin
+        ? `import ${androidPackage}.CallConnectionService\nimport ${androidPackage}.IncomingCallPackage`
+        : `import ${androidPackage}.CallConnectionService;\nimport ${androidPackage}.IncomingCallPackage;`;
+      if (isKotlin) {
         contents = contents.replace(/^package .+\n/m, (m) => `${m}\n${importLine}\n`);
       } else {
         contents = contents.replace(/^package .+;\r?\n/m, (m) => `${m}\n${importLine}\n`);
       }
+    } else if (!contents.includes('IncomingCallPackage')) {
+      const pkgImport = isKotlin
+        ? `import ${androidPackage}.IncomingCallPackage`
+        : `import ${androidPackage}.IncomingCallPackage;`;
+      if (isKotlin) {
+        contents = contents.replace(/^package .+\n/m, (m) => `${m}\n${pkgImport}\n`);
+      } else {
+        contents = contents.replace(/^package .+;\r?\n/m, (m) => `${m}\n${pkgImport}\n`);
+      }
     }
 
-    const kotlinBlock = `
+    if (!contents.includes(PHONE_ACCOUNT_MARKER)) {
+      const kotlinBlock = `
     // ${PHONE_ACCOUNT_MARKER}
     try {
       if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -373,8 +590,7 @@ module.exports = function withAndroidIncomingCall(config) {
       }
     } catch (_: Throwable) { }
 `;
-
-    const javaBlock = `
+      const javaBlock = `
     // ${PHONE_ACCOUNT_MARKER}
     try {
       if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -382,11 +598,46 @@ module.exports = function withAndroidIncomingCall(config) {
       }
     } catch (Throwable ignored) { }
 `;
+      if (isKotlin) {
+        contents = contents.replace(/super\.onCreate\(\)\s*\n/, `super.onCreate()${kotlinBlock}\n`);
+      } else {
+        contents = contents.replace(/super\.onCreate\(\);\s*\r?\n/, `super.onCreate();${javaBlock}\n`);
+      }
+    }
 
-    if (cfg.modResults.language === 'kotlin') {
-      contents = contents.replace(/super\.onCreate\(\)\s*\n/, `super.onCreate()${kotlinBlock}\n`);
-    } else {
-      contents = contents.replace(/super\.onCreate\(\);\s*\r?\n/, `super.onCreate();${javaBlock}\n`);
+    if (!contents.includes(INCOMING_CALL_PACKAGE_MARKER)) {
+      if (isKotlin) {
+        if (contents.includes('PackageList(this).packages.apply')) {
+          contents = contents.replace(
+            /PackageList\(this\)\.packages\.apply\s*\{/,
+            `$&\n              // ${INCOMING_CALL_PACKAGE_MARKER}\n              add(IncomingCallPackage())`
+          );
+        } else if (
+          /val packages = PackageList\(this\)\.packages/.test(contents) &&
+          !contents.includes('add(IncomingCallPackage())')
+        ) {
+          contents = contents.replace(
+            /(val packages = PackageList\(this\)\.packages\s*\n)/,
+            `$1            // ${INCOMING_CALL_PACKAGE_MARKER}\n            packages.add(IncomingCallPackage())\n`
+          );
+        } else if (contents.includes('override fun getPackages()')) {
+          contents = contents.replace(
+            /override fun getPackages\(\): List<ReactPackage>\s*\{/,
+            `$&\n    // ${INCOMING_CALL_PACKAGE_MARKER}\n    val packages = PackageList(this).packages\n    packages.add(IncomingCallPackage())\n    return packages`
+          );
+        }
+      } else {
+        contents = contents.replace(
+          /new PackageList\(this\)\.getPackages\(\)/,
+          `new PackageList(this).getPackages() /* ${INCOMING_CALL_PACKAGE_MARKER} patched below */`
+        );
+        if (!contents.includes('packages.add(new IncomingCallPackage())')) {
+          contents = contents.replace(
+            /List<ReactPackage> packages = new PackageList\(this\)\.getPackages\(\);/,
+            `List<ReactPackage> packages = new PackageList(this).getPackages();\n    // ${INCOMING_CALL_PACKAGE_MARKER}\n    packages.add(new IncomingCallPackage());`
+          );
+        }
+      }
     }
 
     cfg.modResults.contents = contents;

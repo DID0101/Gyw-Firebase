@@ -6,6 +6,11 @@ import { useTranslation } from 'react-i18next';
 
 import { HapticTab } from '@/components/HapticTab';
 import { useTheme } from '@/contexts/ThemeContext';
+import { storiesPerfPrefetchTabPress } from '@/lib/perf/storiesPerfTrace';
+import {
+  prefetchStoriesOnTabPress,
+  releaseStoriesPrefetchHold,
+} from '@/lib/hooks/useStories';
 
 const TabsLayout = () => {
   const { t } = useTranslation();
@@ -66,6 +71,15 @@ const TabsLayout = () => {
       />
       <Tabs.Screen
         name="stories"
+        listeners={{
+          tabPress: () => {
+            storiesPerfPrefetchTabPress();
+            prefetchStoriesOnTabPress();
+          },
+          blur: () => {
+            releaseStoriesPrefetchHold();
+          },
+        }}
         options={{
           title: t('stories.title'),
           tabBarIcon: ({ color }) => (

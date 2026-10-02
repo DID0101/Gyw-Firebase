@@ -53,6 +53,29 @@ jest.mock('@react-native-firebase/messaging', () => {
   };
 });
 
+// ── @react-native-firebase/analytics / crashlytics / perf ───────────────
+const noopFirebaseMonitoring = () => ({
+  getAnalytics: jest.fn(),
+  getCrashlytics: jest.fn(),
+  getPerformance: jest.fn(),
+  logEvent: jest.fn().mockResolvedValue(undefined),
+  logAppOpen: jest.fn().mockResolvedValue(undefined),
+  setUserId: jest.fn().mockResolvedValue(undefined),
+  setAnalyticsCollectionEnabled: jest.fn().mockResolvedValue(undefined),
+  setCrashlyticsCollectionEnabled: jest.fn().mockResolvedValue(null),
+  log: jest.fn(),
+  recordError: jest.fn(),
+  trace: jest.fn(() => ({
+    start: jest.fn().mockResolvedValue(null),
+    stop: jest.fn().mockResolvedValue(null),
+    putAttribute: jest.fn(),
+  })),
+});
+
+jest.mock('@react-native-firebase/analytics', () => noopFirebaseMonitoring());
+jest.mock('@react-native-firebase/crashlytics', () => noopFirebaseMonitoring());
+jest.mock('@react-native-firebase/perf', () => noopFirebaseMonitoring());
+
 // ── react-native-incall-manager ──────────────────────────────────────────
 jest.mock('react-native-incall-manager', () => ({
   default: {

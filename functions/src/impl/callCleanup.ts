@@ -29,6 +29,7 @@
  */
 
 import * as admin from "firebase-admin";
+import { cancelCallNotification, sendCallEndedDismissFcm } from "./callPushHandler";
 import * as functions from "firebase-functions/v1";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getDb } from "./adminApp";
@@ -186,6 +187,11 @@ export async function handleOnCallTerminal(
 
   functions.logger.info(`${tag} callHistory written for both parties`);
 
+  // ── Notify the other party immediately (caller must stop ringing on decline/cancel) ──
+  await sendTerminalCancelPush(after, newStatus, tag).catch((err) => {
+    functions.logger.warn(`${tag} terminal cancel push failed (non-fatal)`, { err });
+  });
+
   // ── Schedule signaling subcollection deletion (fire-and-forget) ──────────
   // Run async so a signaling-delete failure doesn't fail the trigger and
   // doesn't re-trigger the callHistory write on retry.
@@ -194,7 +200,110 @@ export async function handleOnCallTerminal(
   });
 }
 
-// ── 2. deleteStaleCallDocs ────────────────────────────────────────────────────
+// ── 2. cleanupStaleCalls — ringing docs older than 45s → missed ───────────────
+
+const STALE_RING_MS = 45_000;
+
+/**
+ * Marks calls stuck in `ringing` for more than 45 seconds as `missed`.
+ * Schedule: every 1 minute (registered as `cleanupStaleCalls` in index.ts).
+ */
+export async function handleCleanupStaleCalls(): Promise<null> {
+  const db = getDb();
+  const cutoffMs = Date.now() - STALE_RING_MS;
+  const tag = "[cleanupStaleCalls]";
+
+  const snap = await db
+    .collection("calls")
+    .where("status", "==", "ringing")
+    .limit(400)
+    .get();
+
+  let batch = db.batch();
+  let ops = 0;
+  let updated = 0;
+
+  for (const doc of snap.docs) {
+    const created = doc.data().createdAt as Timestamp | undefined;
+    if (!created || typeof created.toMillis !== "function") continue;
+    if (created.toMillis() >= cutoffMs) continue;
+    batch.update(doc.ref, {
+      status: "missed",
+      endedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      missedReason: "server_stale_ring_45s",
+    });
+    ops++;
+    updated++;
+    if (ops >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+
+  if (ops > 0) await batch.commit();
+
+  if (updated > 0) {
+    functions.logger.info(`${tag} marked missed`, { updated });
+  } else {
+    functions.logger.debug(`${tag} no stale ringing calls`);
+  }
+  return null;
+}
+
+// ── 3. onCallEnded — dismiss FCM to caller + callee on terminal status ────────
+
+const DISMISS_STATUSES = new Set([
+  "ended",
+  "cancelled",
+  "canceled",
+  "missed",
+  "declined",
+  "rejected",
+]);
+
+/**
+ * When call status transitions to a terminal dismiss state, send silent
+ * `call_ended` FCM to both parties (clears native incoming UI).
+ */
+export async function handleOnCallEndedDismiss(
+  change: functions.Change<functions.firestore.DocumentSnapshot>,
+  context: functions.EventContext
+): Promise<void> {
+  const before = change.before.data() as CallDocData | undefined;
+  const after = change.after.data() as CallDocData | undefined;
+
+  if (!before || !after) return;
+  if (before.status === after.status) return;
+
+  const newStatus = after.status as CallStatus;
+  if (!DISMISS_STATUSES.has(newStatus)) return;
+
+  const callId = context.params.callId as string;
+  const tag = `[onCallEnded/${callId}]`;
+
+  functions.logger.info(`${tag} status ${before.status}→${newStatus} — dismiss FCM`);
+
+  const db = getDb();
+  const uids = [after.callerId, after.calleeId].filter(Boolean);
+  const tokenFetches = uids.map((uid) => db.collection("userTokens").doc(uid).get());
+  const tokenDocs = await Promise.all(tokenFetches);
+
+  const tasks: Promise<void>[] = [];
+  tokenDocs.forEach((doc, i) => {
+    if (!doc.exists) return;
+    const uid = uids[i];
+    const { fcmToken } = (doc.data() ?? {}) as UserTokenDoc;
+    if (fcmToken) {
+      tasks.push(sendCallEndedDismissFcm(fcmToken, callId, uid));
+    }
+  });
+
+  await Promise.all(tasks);
+}
+
+// ── 4. deleteStaleCallDocs ────────────────────────────────────────────────────
 
 /**
  * Hard-deletes call documents whose `deleteAfter` field is in the past.
@@ -245,7 +354,7 @@ export async function handleDeleteStaleCallDocs(): Promise<null> {
   return null;
 }
 
-// ── 3. deleteStaleDeviceTokens ────────────────────────────────────────────────
+// ── 5. deleteStaleDeviceTokens ────────────────────────────────────────────────
 
 /**
  * Removes device token records that haven't been active in 30 days.
@@ -294,6 +403,54 @@ export async function handleDeleteStaleDeviceTokens(): Promise<null> {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+interface UserTokenDoc {
+  fcmToken?: string;
+  voipToken?: string;
+}
+
+/**
+ * When a call becomes terminal (declined, canceled, etc.), push the other party so
+ * their device stops ringing even if Firestore listeners are slow or disconnected.
+ */
+async function sendTerminalCancelPush(
+  after: CallDocData,
+  newStatus: CallStatus,
+  tag: string
+): Promise<void> {
+  const callId = after.callId;
+  const endedBy = after.endedBy;
+  let otherUid: string | undefined;
+  if (endedBy === after.callerId) {
+    otherUid = after.calleeId;
+  } else if (endedBy === after.calleeId) {
+    otherUid = after.callerId;
+  } else if (newStatus === "declined" || newStatus === "rejected" || newStatus === "missed") {
+    otherUid = after.callerId;
+  } else {
+    otherUid = after.calleeId;
+  }
+
+  if (!otherUid) {
+    functions.logger.warn(`${tag} terminal cancel push skipped — no otherUid`);
+    return;
+  }
+
+  const tokenDoc = await getDb().collection("userTokens").doc(otherUid).get();
+  if (!tokenDoc.exists) return;
+
+  const { fcmToken, voipToken } = (tokenDoc.data() ?? {}) as UserTokenDoc;
+
+  functions.logger.info(`${tag} CALL_DB_TERMINAL_PUSH to=${otherUid} status=${newStatus}`);
+
+  if (fcmToken) {
+    await cancelCallNotification(fcmToken, callId, otherUid);
+    functions.logger.info(`${tag} CALLER_TERMINAL_FCM_SENT callId=${callId}`);
+  }
+  if (voipToken) {
+    functions.logger.info(`${tag} terminal VoIP cancel skipped in callCleanup callId=${callId}`);
+  }
+}
 
 /**
  * Recursively deletes all messages inside callSignaling/{callId}/messages.

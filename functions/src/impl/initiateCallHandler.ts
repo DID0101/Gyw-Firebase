@@ -19,6 +19,10 @@ import * as admin from "firebase-admin";
 import * as functions from "firebase-functions/v1";
 import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "./adminApp";
+import {
+  cancelCallNotification,
+  sendIncomingCallFcm,
+} from "./callPushHandler";
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -77,6 +81,12 @@ interface CallDoc {
   updatedAt:    admin.firestore.FieldValue;
   /** Logical TTL field — markStaleRingingCallsMissed cleans docs past this time */
   expiresAt:    admin.firestore.Timestamp;
+  deferIncomingPush?: boolean;
+  incomingPushSent?: boolean;
+  callerOfferReady?: boolean;
+  callerOfferSdp?: string;
+  chatId?: string | null;
+  isRandom?: boolean;
 }
 
 /** Internal push payload shared between FCM and APNs paths */
@@ -133,16 +143,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Returns true for permanent FCM/APNs errors that must not be retried. */
-function isFcmTerminal(err: unknown): boolean {
-  const code = (err as any)?.errorInfo?.code as string | undefined;
-  return [
-    "messaging/registration-token-not-registered",
-    "messaging/invalid-registration-token",
-    "messaging/invalid-argument",
-  ].includes(code ?? "");
-}
-
 // ── initiateCall handler ──────────────────────────────────────────────────────
 
 export async function handleInitiateCall(
@@ -172,21 +172,22 @@ export async function handleInitiateCall(
 
   const db = getDb();
 
-  // ── Check callee exists ───────────────────────────────────────────────────
-  const calleeDoc = await db.collection("users").doc(calleeId).get();
+  // ── Idempotency first (single read) ───────────────────────────────────────
+  const existingCall = await db.collection("calls").doc(roomId).get();
+  if (existingCall.exists && existingCall.data()?.status === "ringing") {
+    return { success: true, roomId };
+  }
+
+  // ── Callee profile + tokens in parallel ───────────────────────────────────
+  const [calleeDoc, tokenDoc] = await Promise.all([
+    db.collection("users").doc(calleeId).get(),
+    db.collection("userTokens").doc(calleeId).get(),
+  ]);
+
   if (!calleeDoc.exists) {
     throw new functions.https.HttpsError("not-found", `User ${calleeId} not found`);
   }
 
-  // ── Prevent duplicate ringing calls for the same room ────────────────────
-  const existingCall = await db.collection("calls").doc(roomId).get();
-  if (existingCall.exists && existingCall.data()?.status === "ringing") {
-    // Idempotent — caller tapped "call" twice
-    return { success: true, roomId };
-  }
-
-  // ── Fetch callee tokens ───────────────────────────────────────────────────
-  const tokenDoc = await db.collection("userTokens").doc(calleeId).get();
   const { fcmToken, voipToken } = (tokenDoc.data() ?? {}) as UserTokenDoc;
 
   if (!fcmToken && !voipToken) {
@@ -203,12 +204,13 @@ export async function handleInitiateCall(
   const callDocData: CallDoc = {
     callerId,
     calleeId,
-    receiverId: calleeId,  // alias — client screens read receiverId; new code should use calleeId
+    receiverId: calleeId,
     type: callType,
     callType,
     callerName:   callerName   ?? "",
     callerAvatar: callerAvatar ?? "",
     status:       "ringing",
+    deferIncomingPush: true,
     createdAt:    FieldValue.serverTimestamp(),
     updatedAt:    FieldValue.serverTimestamp(),
     expiresAt,
@@ -219,36 +221,129 @@ export async function handleInitiateCall(
     baseDelayMs: 200,
   });
 
-  functions.logger.info("[initiateCall] Call doc written", { roomId, callerId, calleeId, callType });
+  functions.logger.info("[initiateCall] Call doc written (push deferred)", {
+    roomId,
+    callerId,
+    calleeId,
+    callType,
+  });
 
-  // ── Push (fire-and-forget — write already committed) ─────────────────────
+  return { success: true, roomId };
+}
+
+// ── notifyIncomingCall — send FCM/VoIP after caller offer is ready ───────────
+
+export async function handleNotifyIncomingCall(
+  data: { roomId: string },
+  context: functions.https.CallableContext
+): Promise<{ success: true }> {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Must be signed in");
+  }
+
+  const { roomId } = data ?? {};
+  if (!roomId) {
+    throw new functions.https.HttpsError("invalid-argument", "roomId is required");
+  }
+
+  const db = getDb();
+  const callRef = db.collection("calls").doc(roomId);
+  const callDoc = await callRef.get();
+  if (!callDoc.exists) {
+    throw new functions.https.HttpsError("not-found", "Call not found");
+  }
+
+  const callData = callDoc.data()!;
+  if (context.auth.uid !== callData.callerId) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "Only the caller can notify the callee"
+    );
+  }
+  if (callData.status !== "ringing") {
+    return { success: true };
+  }
+  if (callData.incomingPushSent === true) {
+    functions.logger.info("[notifyIncomingCall] skip — push already sent", { roomId });
+    return { success: true };
+  }
+
+  const calleeId = callData.calleeId ?? callData.receiverId;
+  const tokenDoc = await db.collection("userTokens").doc(calleeId).get();
+  const { fcmToken, voipToken } = (tokenDoc.data() ?? {}) as UserTokenDoc;
+
+  const callerDoc = await db.collection("users").doc(callData.callerId).get();
+  const callerData = callerDoc.data() ?? {};
+  const callerPhone =
+    typeof callerData.phoneNumber === "string" ? (callerData.phoneNumber as string).trim() : "";
+
+  let callerName = String(callData.callerName ?? "").trim();
+  if (!callerName) {
+    const first = typeof callerData.firstName === "string" ? callerData.firstName.trim() : "";
+    const last = typeof callerData.lastName === "string" ? callerData.lastName.trim() : "";
+    callerName = [first, last].filter(Boolean).join(" ").trim();
+  }
+  if (!callerName && typeof callerData.displayName === "string") {
+    callerName = callerData.displayName.trim();
+  }
+  if (!callerName && typeof callerData.username === "string") {
+    callerName = callerData.username.trim();
+  }
+  if (!callerName && callerPhone) {
+    callerName = callerPhone;
+  }
+  if (!callerName) {
+    callerName = "Unknown Caller";
+  }
+
+  let callerAvatar = String(callData.callerAvatar ?? "").trim();
+  if (!callerAvatar) {
+    callerAvatar =
+      (typeof callerData.avatar === "string" ? callerData.avatar : "") ||
+      (typeof callerData.photoURL === "string" ? callerData.photoURL : "");
+  }
+
   const payload: PushCallPayload = {
     type:         "INCOMING_CALL",
     callId:       roomId,
-    callerId,
-    callerName:   callerName   ?? "",
-    callerAvatar: callerAvatar ?? "",
-    callType,
+    callerId:     callData.callerId,
+    callerName,
+    callerAvatar,
+    callType:     callData.callType === "video" ? "video" : "audio",
   };
 
   const pushTasks: Promise<void>[] = [];
-
   if (fcmToken) {
-    pushTasks.push(sendAndroidFCM(fcmToken, payload, calleeId));
+    pushTasks.push(
+      sendIncomingCallFcm(
+        fcmToken,
+        {
+          callId: roomId,
+          callType: payload.callType,
+          callerUid: callData.callerId,
+          callerName: payload.callerName,
+          callerPhone,
+          callerPhotoURL: payload.callerAvatar,
+          timestamp: Date.now(),
+        },
+        calleeId
+      )
+    );
   }
   if (voipToken) {
     pushTasks.push(sendIosVoIPPush(voipToken, payload, calleeId));
   }
 
-  // allSettled — a push failure must not roll back the call doc
-  const results = await Promise.allSettled(pushTasks);
-  results.forEach((r, i) => {
-    if (r.status === "rejected") {
-      functions.logger.error(`[initiateCall] push task ${i} rejected`, { reason: r.reason });
-    }
+  const fcmSentAt = Date.now();
+  await Promise.allSettled(pushTasks);
+  await callRef.update({
+    incomingPushSent: true,
+    incomingPushSentAt: fcmSentAt,
+    updatedAt: FieldValue.serverTimestamp(),
   });
 
-  return { success: true, roomId };
+  functions.logger.info("[notifyIncomingCall] FCM_SENT", { roomId, calleeId, fcmSentAt });
+  return { success: true };
 }
 
 // ── endCall handler ───────────────────────────────────────────────────────────
@@ -327,7 +422,9 @@ export async function handleEndCall(
   };
 
   const cancelTasks: Promise<void>[] = [];
-  if (fcmToken)  cancelTasks.push(sendAndroidFCM(fcmToken, cancelPayload, otherUid));
+  if (fcmToken) {
+    cancelTasks.push(cancelCallNotification(fcmToken, roomId, otherUid));
+  }
   if (voipToken) cancelTasks.push(sendIosVoIPPush(voipToken, cancelPayload, otherUid));
 
   await Promise.allSettled(cancelTasks);
@@ -423,56 +520,6 @@ export async function handleTransitionCallState(
   await callRef.update(update);
   functions.logger.info("[transitionCallState] updated", { roomId, from: current, to: next, by: uid });
   return { success: true, status: next };
-}
-
-// ── Android: FCM data-only high-priority ─────────────────────────────────────
-
-async function sendAndroidFCM(
-  token:      string,
-  p:          PushCallPayload,
-  receiverId: string
-): Promise<void> {
-  const message: admin.messaging.Message = {
-    token,
-    // No top-level `notification` — keeps this as a data-only message so
-    // GywFirebaseMessagingService (or CallFirebaseMessagingService) handles it
-    // even when the app is killed, without the OS showing a default banner.
-    data: {
-      type:         p.type,
-      callId:       p.callId,
-      callerId:     p.callerId,
-      callerName:   p.callerName,
-      callerAvatar: p.callerAvatar,
-      callType:     p.callType,
-    },
-    android: {
-      priority: "high",
-      ttl:      30_000, // 30s — call is irrelevant after that
-    },
-  };
-
-  await withRetry(
-    () => admin.messaging().send(message),
-    {
-      maxAttempts: 3,
-      baseDelayMs: 300,
-      isTerminal:  isFcmTerminal,
-    }
-  )
-    .then((messageId) => {
-      functions.logger.info("[callPush] Android FCM sent", { messageId, callId: p.callId });
-    })
-    .catch(async (err: any) => {
-      functions.logger.error("[callPush] Android FCM failed (all retries)", {
-        error:  err?.message,
-        code:   err?.errorInfo?.code,
-        callId: p.callId,
-      });
-      // Stale token — evict so next call doesn't attempt it
-      if (isFcmTerminal(err)) {
-        await evictToken(receiverId, "fcmToken");
-      }
-    });
 }
 
 // ── iOS: APNs VoIP push via node-apn ─────────────────────────────────────────

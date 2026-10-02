@@ -194,7 +194,7 @@ export async function handleLeaveGroup(
         type: "system",
       },
       lastSenderId: uid,
-    } as Record<string, unknown>);
+    });
 
     tx.set(msgRef, {
       chatId,
@@ -292,7 +292,7 @@ export async function handleAddGroupMembers(
         type: "system",
       },
       lastSenderId: actorUid,
-    } as Record<string, unknown>);
+    });
 
     tx.set(msgRef, {
       chatId,
@@ -417,7 +417,7 @@ export async function handleUpdateGroupInfo(
       });
     }
 
-    tx.update(chatRef, patch);
+    tx.update(chatRef, patch as admin.firestore.DocumentData);
   });
 
   return { ok: true };

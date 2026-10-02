@@ -368,9 +368,11 @@ export interface CallSignaling {
   callId:     string;
   from:       string;
   to:         string;
-  type:       'offer' | 'answer' | 'ice-candidate' | 'hangup';
+  type:       'offer' | 'answer' | 'ice-candidate' | 'ice-candidates-batch' | 'hangup';
   sdp?:       RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
+  /** Batched ICE payloads (single Firestore write). */
+  candidates?: RTCIceCandidateInit[];
   timestamp:  string;
 }
 

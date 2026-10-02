@@ -138,10 +138,19 @@ export async function handleGywAiReply(request: CallableRequest): Promise<{
     throw new functionsV1.https.HttpsError("invalid-argument", "text is required");
   }
 
+  functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_REQUEST]", {
+    callable: "gywAiReplyV1",
+    uid,
+    chatId,
+    textLength: userText.length,
+    textPreview: userText.slice(0, 80),
+    contextLimit,
+  });
+
   const resolved = resolveAiApiKeysWithSources();
   if (!keySourceLogged) {
     keySourceLogged = true;
-    functionsV1.logger.info("[gywAiReply] AI key sources resolved", {
+    functionsV1.logger.info("[PROD_DEBUG][GYW_AI_KEY_SOURCE]", {
       geminiKeySource: resolved.geminiSource,
       geminiHasKey: !!resolved.geminiKey,
     });
@@ -216,7 +225,7 @@ export async function handleGywAiReply(request: CallableRequest): Promise<{
     } catch (e: any) {
       // Convert provider errors into a stable callable error (avoid generic INTERNAL on client).
       const diag = classifyGeminiError(e);
-      functionsV1.logger.error("[gywAiReply] Gemini call failed", {
+      functionsV1.logger.error("[PROD_DEBUG][GYW_AI_PROVIDER_ERROR]", {
         chatId,
         uid,
         reason: diag.reason,
@@ -269,6 +278,14 @@ export async function handleGywAiReply(request: CallableRequest): Promise<{
       },
       { merge: true }
     );
+
+    functionsV1.logger.info("[PROD_DEBUG][GYW_AI_FUNCTION_RESPONSE]", {
+      callable: "gywAiReplyV1",
+      uid,
+      chatId,
+      messageId: msgRef.id,
+      textLength: replyText.length,
+    });
 
     return { ok: true, messageId: msgRef.id, text: replyText };
   } finally {

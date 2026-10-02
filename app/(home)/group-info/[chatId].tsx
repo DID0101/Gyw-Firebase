@@ -22,6 +22,7 @@ import {
   type ChatMediaGalleryCursor,
 } from '@/lib/services/userProfileGallery';
 import type { Chat } from '@/lib/types/chat';
+import { getAvatarInitial } from '@/lib/unicodeText';
 import { useChatMetaStore } from '@/store/chatMetaStore';
 import { useChatStore } from '@/store/chatStore';
 import Feather from '@expo/vector-icons/Feather';
@@ -475,7 +476,7 @@ export default function GroupInfoScreen() {
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                 <Text style={{ fontSize: 36, fontWeight: '700', color: isDark ? '#e5e7eb' : '#374151' }}>
-                  {displayName.charAt(0).toUpperCase()}
+                  {getAvatarInitial(displayName)}
                 </Text>
               </View>
             )}

@@ -42,7 +42,7 @@ public final class GywMessageNotifier {
   private static final String TAG = "GywMsgNotify";
 
   /** Keep in sync with {@code CHAT_MESSAGES_ANDROID_CHANNEL_ID} in lib/notifications/constants.ts */
-  public static final String CHANNEL_ID = "chat_messages";
+  public static final String CHANNEL_ID = "chat_messages_v2";
 
   public static final String CHANNEL_ID_QUIET = "chat_messages_quiet";
 
@@ -90,7 +90,7 @@ public final class GywMessageNotifier {
     try {
       nm.cancel(notifTag(chatId), notifId(chatId));
       resetUnread(context.getApplicationContext(), chatId);
-      Log.d(TAG, "MSG_NOTIFY cleared chatId=" + chatId);
+      Log.d(TAG, "NOTIFICATION_REMOVED chatId=" + chatId);
       postGroupSummary(context.getApplicationContext(), nm);
     } catch (Exception e) {
       Log.w(TAG, "cancelForChat: " + e.getMessage());
@@ -125,21 +125,16 @@ public final class GywMessageNotifier {
       Log.d(TAG, "MSG_NOTIFY chatId=" + chatId + " call_ui_active=true lower_priority=true");
     }
 
-    String senderName = firstNonEmpty(data.get("senderName"), data.get("sender_name"), "Message");
+    String senderPhone = firstNonEmpty(data.get("senderPhone"), data.get("sender_phone"), "");
+    String profileSenderName = firstNonEmpty(data.get("senderName"), data.get("sender_name"), "Message");
+    String senderName = ContactNameCache.resolveDisplayName(senderPhone, profileSenderName);
     String text = firstNonEmpty(data.get("text"), data.get("body"), "");
     String senderId = firstNonEmpty(data.get("senderId"), data.get("sender_id"), "");
     String avatarUrl = firstNonEmpty(data.get("avatar"), data.get("senderAvatar"), data.get("sender_avatar"));
     long when = parseLongMs(firstNonEmpty(data.get("sentAt"), data.get("timestamp"), ""));
     if (when <= 0) when = System.currentTimeMillis();
 
-    int unreadInChat = incrementUnread(app, chatId);
-    String unreadCountStr = data.get("unreadCount");
-    if (unreadCountStr != null && !unreadCountStr.isEmpty()) {
-      try {
-        unreadInChat = Math.max(unreadInChat, Integer.parseInt(unreadCountStr));
-      } catch (NumberFormatException ignored) {
-      }
-    }
+    int unreadInChat = resolveUnreadInChat(app, chatId, data.get("unreadCount"));
     int unreadTotal =
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("chat_unread_total", -1);
 
@@ -214,13 +209,7 @@ public final class GywMessageNotifier {
       smallIcon = android.R.drawable.stat_notify_chat;
     }
 
-    Bitmap largeIcon = null;
-    if (!TextUtils.isEmpty(avatarUrl)) {
-      largeIcon = downloadBitmapSmall(avatarUrl);
-    }
-    if (largeIcon == null) {
-      largeIcon = letterBitmap(app, senderName);
-    }
+    Bitmap largeIcon = letterBitmap(app, senderName);
 
     NotificationCompat.Builder b =
         new NotificationCompat.Builder(app, channel)
@@ -256,8 +245,19 @@ public final class GywMessageNotifier {
           return;
         }
       }
-      nm.notify(notifTag(chatId), notifId(chatId), b.build());
-      Log.d(TAG, "MSG_NOTIFY_SHOWN chatId=" + chatId);
+      int msgNotifId = notifId(chatId);
+      nm.notify(notifTag(chatId), msgNotifId, b.build());
+      Log.d(
+          TAG,
+          "MESSAGE_NOTIFICATION_ID="
+              + msgNotifId
+              + " tag="
+              + notifTag(chatId)
+              + " channel="
+              + channel
+              + " category="
+              + Notification.CATEGORY_MESSAGE);
+      Log.d(TAG, "NOTIFICATION_POSTED chatId=" + chatId + " messageId=" + messageId);
       Log.d(
           TAG,
           "MSG_NOTIFY chatId="
@@ -267,9 +267,36 @@ public final class GywMessageNotifier {
               + " unread_in_chat="
               + unreadInChat);
       postGroupSummary(app, nm);
+      if (!TextUtils.isEmpty(avatarUrl)) {
+        scheduleAvatarLargeIconUpdate(
+            app, nm, notifTag(chatId), msgNotifId, b, avatarUrl, senderName);
+      }
     } catch (Exception e) {
       Log.e(TAG, "MSG_NOTIFY post failed: " + e.getMessage());
     }
+  }
+
+  /** Post letter icon first; swap to remote avatar when download finishes (non-blocking). */
+  private static void scheduleAvatarLargeIconUpdate(
+      Context app,
+      NotificationManager nm,
+      String tag,
+      int notifId,
+      NotificationCompat.Builder template,
+      String avatarUrl,
+      String senderName) {
+    new Thread(
+            () -> {
+              Bitmap downloaded = downloadBitmapSmall(avatarUrl);
+              if (downloaded == null) return;
+              try {
+                nm.notify(tag, notifId, template.setLargeIcon(downloaded).build());
+              } catch (Exception e) {
+                Log.w(TAG, "MSG_NOTIFY avatar update failed: " + e.getMessage());
+              }
+            },
+            "gyw-msg-avatar")
+        .start();
   }
 
   private static void postGroupSummary(Context app, NotificationManager nm) {
@@ -378,19 +405,32 @@ public final class GywMessageNotifier {
     return false;
   }
 
-  private static int incrementUnread(Context app, String chatId) {
-    android.content.SharedPreferences p = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    String key = PREF_UNREAD_PREFIX + chatId;
-    int v = p.getInt(key, 0) + 1;
-    p.edit().putInt(key, v).apply();
-    return v;
+  /**
+   * Authoritative per-chat unread for notification badge: FCM {@code unreadCount} from Firestore,
+   * never local increment (avoids stale "A and B" after read).
+   */
+  private static int resolveUnreadInChat(Context app, String chatId, @Nullable String unreadCountStr) {
+    int unread = 1;
+    if (unreadCountStr != null && !unreadCountStr.isEmpty()) {
+      try {
+        unread = Math.max(1, Integer.parseInt(unreadCountStr.trim()));
+      } catch (NumberFormatException ignored) {
+      }
+    }
+    setUnread(app, chatId, unread);
+    return unread;
+  }
+
+  private static void setUnread(Context app, String chatId, int count) {
+    app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .putInt(PREF_UNREAD_PREFIX + chatId, Math.max(0, count))
+        .apply();
+    Log.d(TAG, "UNREAD_COUNT_UPDATED chatId=" + chatId + " count=" + count);
   }
 
   private static void resetUnread(Context app, String chatId) {
-    app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .edit()
-        .putInt(PREF_UNREAD_PREFIX + chatId, 0)
-        .apply();
+    setUnread(app, chatId, 0);
   }
 
   private static void ensureChannels(Context app) {
@@ -398,7 +438,7 @@ public final class GywMessageNotifier {
     NotificationManager nm = app.getSystemService(NotificationManager.class);
     if (nm == null) return;
 
-    Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+    Uri sound = messageNotificationSound(app);
     AudioAttributes attrs =
         new AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
@@ -422,6 +462,21 @@ public final class GywMessageNotifier {
     quiet.enableVibration(false);
     quiet.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
     nm.createNotificationChannel(quiet);
+  }
+
+  /** {@code res/raw/message_sound.wav} from assets/sounds/message_sound.wav — else system default. */
+  private static Uri messageNotificationSound(Context context) {
+    int resId =
+        context.getResources().getIdentifier("message_sound", "raw", context.getPackageName());
+    if (resId != 0) {
+      Uri uri =
+          Uri.parse("android.resource://" + context.getPackageName() + "/" + resId);
+      Log.d(TAG, "Using app message sound: " + uri);
+      return uri;
+    }
+    Uri fallback = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+    Log.w(TAG, "res/raw/message_sound missing — using system default notification sound");
+    return fallback;
   }
 
   static Intent chatDeepLinkIntent(String pkg, String chatId, boolean markRead, boolean fromReply) {

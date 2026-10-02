@@ -129,6 +129,14 @@ export interface Chat {
   createdAt: string;
   updatedAt: string;
   unreadCount?: Record<string, number>; // userId -> unread count
+  /** Per-user read cursor (authoritative for unread when present). */
+  readState?: Record<
+    string,
+    {
+      lastReadAt: string;
+      lastReadMessageId?: string;
+    }
+  >;
   name?: string; // For group chats
   avatar?: string; // For group chats
   /** Group: optional topic / rules text. */
@@ -143,6 +151,8 @@ export interface User {
   phoneNumber: string; // Primary identifier, required
   firstName: string;
   lastName: string;
+  /** Firebase Auth / profile display name (may include emojis). */
+  displayName?: string;
   username: string; // Unique, searchable
   avatar?: string;
   bio?: string; // Optional bio

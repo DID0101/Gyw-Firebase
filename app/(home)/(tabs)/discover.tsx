@@ -22,13 +22,15 @@ import {
   startQueueHeartbeat,
   tryMatch,
 } from '@/lib/services/randomMatchService';
+import { useProductionScreenTrace } from '@/lib/hooks/useProductionScreenTrace';
 
 type DiscoverState = 'idle' | 'searching' | 'disconnected';
 
 const DiscoverScreen = () => {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  useProductionScreenTrace('DiscoverTab', { lang: i18n.language });
   const { colorScheme, isDark } = useTheme();
   const textColor = useThemeClassName('text-black', 'text-white');
   const textSecondaryColor = useThemeClassName('text-gray-600', 'text-gray-400');
@@ -134,9 +136,9 @@ const DiscoverScreen = () => {
       while (!matched && Date.now() - startTime < SEARCH_DURATION_MS && isMountedRef.current && queueDocIdRef.current) {
         const result = await tryMatch(user.uid, qid);
         if (!isMountedRef.current) return;
-        if (result.matched) {
+        if (result.matched && result.callId) {
           matched = true;
-          // Session listener will navigate both users; do not navigate here
+          navigateToCall(result.callId);
           break;
         }
         if (Date.now() - startTime < SEARCH_DURATION_MS && queueDocIdRef.current) {

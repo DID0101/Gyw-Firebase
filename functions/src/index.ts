@@ -36,13 +36,14 @@ export const messagePush = functions
     );
   });
 
-export const markStaleRingingCallsMissed = functions
+/** Ends calls stuck in `ringing` for >45s (server-side missed). */
+export const cleanupStaleCalls = functions
   .region("us-central1")
-  .pubsub.schedule("every 2 minutes")
+  .pubsub.schedule("every 1 minutes")
   .timeZone("Etc/UTC")
   .onRun(async () => {
-    const { handleMarkStaleRingingCallsMissed } = require("./impl/handlers") as typeof import("./impl/handlers");
-    return handleMarkStaleRingingCallsMissed();
+    const { handleCleanupStaleCalls } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
+    return handleCleanupStaleCalls();
   });
 
 // ── onCallTerminal — writes callHistory for both parties ─────────────────────
@@ -52,6 +53,15 @@ export const onCallTerminal = functions
   .onUpdate(async (change, context) => {
     const { handleOnCallTerminal } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
     return handleOnCallTerminal(change, context);
+  });
+
+// ── onCallEnded — silent FCM dismiss to caller + callee ──────────────────────
+export const onCallEnded = functions
+  .region("us-central1")
+  .firestore.document("calls/{callId}")
+  .onUpdate(async (change, context) => {
+    const { handleOnCallEndedDismiss } = require("./impl/callCleanup") as typeof import("./impl/callCleanup");
+    return handleOnCallEndedDismiss(change, context);
   });
 
 // ── deleteStaleCallDocs — hard-delete calls past their TTL ───────────────────
@@ -111,6 +121,14 @@ export const initiateCall = functions
   .https.onCall(async (data, context) => {
     const { handleInitiateCall } = require("./impl/initiateCallHandler") as typeof import("./impl/initiateCallHandler");
     return handleInitiateCall(data, context);
+  });
+
+export const notifyIncomingCall = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 15, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleNotifyIncomingCall } = require("./impl/initiateCallHandler") as typeof import("./impl/initiateCallHandler");
+    return handleNotifyIncomingCall(data, context);
   });
 
 export const endCall = functions
@@ -204,4 +222,46 @@ export const gywAiHealthV1 = functions
     const { resolveGeminiApiKey } = require("./impl/gywAi/handler") as typeof import("./impl/gywAi/handler");
     const hasKey = !!resolveGeminiApiKey();
     return { ok: true, hasKey };
+  });
+
+// ── Phone login (server fallback when client Play Integrity / reCAPTCHA fail) ─
+export const sendPhoneLoginOtp = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 30, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleSendPhoneLoginOtp } = require("./impl/phoneLoginHandler") as typeof import("./impl/phoneLoginHandler");
+    return handleSendPhoneLoginOtp(data, context);
+  });
+
+export const verifyPhoneLoginOtp = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 30, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleVerifyPhoneLoginOtp } = require("./impl/phoneLoginHandler") as typeof import("./impl/phoneLoginHandler");
+    return handleVerifyPhoneLoginOtp(data, context);
+  });
+
+export const checkPhoneRegistration = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 15, memory: "256MB" })
+  .https.onCall(async (data) => {
+    const { handleCheckPhoneRegistration } = require("./impl/phoneRegistrationCheck") as typeof import("./impl/phoneRegistrationCheck");
+    return handleCheckPhoneRegistration(data);
+  });
+
+export const checkUsernameAvailable = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 15, memory: "256MB" })
+  .https.onCall(async (data) => {
+    const { handleCheckUsernameAvailable } = require("./impl/usernameCheck") as typeof import("./impl/usernameCheck");
+    return handleCheckUsernameAvailable(data);
+  });
+
+/** Dev-only: custom-token login when Play Integrity / reCAPTCHA fail on device builds. */
+export const devPhoneLogin = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 30, memory: "256MB" })
+  .https.onCall(async (data, context) => {
+    const { handleDevPhoneLogin } = require("./impl/devPhoneLoginHandler") as typeof import("./impl/devPhoneLoginHandler");
+    return handleDevPhoneLogin(data, context);
   });

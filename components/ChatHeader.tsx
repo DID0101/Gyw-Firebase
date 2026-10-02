@@ -4,7 +4,9 @@ import { View, Text, Pressable } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Ionicons } from '@expo/vector-icons';
 import { Chat, User } from '@/lib/types/chat';
+import { coerceDisplayString } from '@/lib/unicodeText';
 import PreviewAvatar from './PreviewAvatar';
+import OfflineFeatureGate from './OfflineFeatureGate';
 
 interface ChatHeaderProps {
   chat: Chat | null;
@@ -46,6 +48,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
   } = (props ?? ({} as any)) as ChatHeaderProps;
 
   const { t } = useTranslation();
+  const safeTitle = coerceDisplayString(displayName, 'Chat');
   const memberLine =
     chat?.type === 'group'
       ? t('groups.memberCount', { count: chat.participants?.length ?? 0 })
@@ -85,7 +88,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
 
         <View style={{ position: 'relative', marginLeft: 2 }}>
           <PreviewAvatar
-            name={displayName}
+            name={safeTitle}
             image={displayAvatar}
             size={40}
             fontSize={16}
@@ -116,7 +119,7 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
             }}
             numberOfLines={1}
           >
-            {displayName}
+            {safeTitle}
           </Text>
           {chat?.type === 'direct' && lastSeenText ? (
             <Text
@@ -136,43 +139,47 @@ const ChatHeader = memo<ChatHeaderProps>((props: ChatHeaderProps | undefined) =>
         </View>
       </View>
 
-      {/* Right: call buttons */}
+      {/* Right: call buttons — gated when offline */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-        <Pressable
-          onPress={creatingCall ? undefined : onVideoCall}
-          disabled={creatingCall}
-          style={({ pressed }) => ({
-            width: 44,
-            height: 44,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 22,
-            opacity: pressed || creatingCall ? 0.5 : 1,
-          })}
-          hitSlop={4}
-          android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
-          accessibilityLabel={t('calls.videoCall')}
-        >
-          <Feather name="video" size={22} color={creatingCall ? '#9ca3af' : iconColor} />
-        </Pressable>
-        <Pressable
-          onPress={creatingCall ? undefined : onAudioCall}
-          disabled={creatingCall}
-          style={({ pressed }) => ({
-            width: 44,
-            height: 44,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 22,
-            opacity: pressed || creatingCall ? 0.5 : 1,
-            marginRight: 4,
-          })}
-          hitSlop={4}
-          android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
-          accessibilityLabel={t('calls.audioCall')}
-        >
-          <Feather name="phone" size={21} color={creatingCall ? '#9ca3af' : iconColor} />
-        </Pressable>
+        <OfflineFeatureGate feature="videoCall">
+          <Pressable
+            onPress={creatingCall ? undefined : onVideoCall}
+            disabled={creatingCall}
+            style={({ pressed }) => ({
+              width: 44,
+              height: 44,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 22,
+              opacity: pressed || creatingCall ? 0.5 : 1,
+            })}
+            hitSlop={4}
+            android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
+            accessibilityLabel={t('calls.videoCall')}
+          >
+            <Feather name="video" size={22} color={creatingCall ? '#9ca3af' : iconColor} />
+          </Pressable>
+        </OfflineFeatureGate>
+        <OfflineFeatureGate feature="voiceCall">
+          <Pressable
+            onPress={creatingCall ? undefined : onAudioCall}
+            disabled={creatingCall}
+            style={({ pressed }) => ({
+              width: 44,
+              height: 44,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 22,
+              opacity: pressed || creatingCall ? 0.5 : 1,
+              marginRight: 4,
+            })}
+            hitSlop={4}
+            android_ripple={{ color: 'rgba(0,0,0,0.1)', borderless: true, radius: 22 }}
+            accessibilityLabel={t('calls.audioCall')}
+          >
+            <Feather name="phone" size={21} color={creatingCall ? '#9ca3af' : iconColor} />
+          </Pressable>
+        </OfflineFeatureGate>
       </View>
     </View>
   );

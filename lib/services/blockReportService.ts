@@ -1,13 +1,10 @@
-import { arrayUnion, collection, addDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { setPeerBlocked } from '@/lib/services/userBlockService';
 
-/** Block a user (e.g. from Discover). They won't be matched with you again. */
+/** Block a user (e.g. from a call). Uses users/{uid}/blockedUsers/{peerId} — same as profile block. */
 export async function blockUser(myUserId: string, blockUserId: string): Promise<void> {
-  const userRef = doc(db, 'users', myUserId);
-  await updateDoc(userRef, {
-    blockedUsers: arrayUnion(blockUserId),
-    updatedAt: new Date().toISOString(),
-  });
+  await setPeerBlocked(myUserId, blockUserId, true);
 }
 
 /** Report a user (e.g. from a random call). */

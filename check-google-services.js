@@ -56,6 +56,8 @@ try {
         exitCode = 1;
       } else {
         console.log('  ✅ SHA-1 data present for primary Android app.');
+        console.log('  ⚠️  Also add SHA-256 in Firebase Console (not shown in google-services.json).');
+        console.log('     Run: .\\scripts\\print-firebase-sha.ps1');
       }
     }
     console.log('');

@@ -22,6 +22,9 @@
 
 import { Platform } from 'react-native';
 
+import { waitForAuthToken } from '@/lib/auth/waitForAuthToken';
+import { getRnAuth } from '@/lib/rnFirebase';
+
 // ── Cleanup refs ──────────────────────────────────────────────────────────
 let _unsubTokenRefresh: (() => void) | null = null;
 let _unsubVoipRegister: (() => void) | null = null;
@@ -32,6 +35,22 @@ export async function registerPushTokens(userId: string): Promise<void> {
   if (!userId || Platform.OS === 'web') return;
 
   try {
+    const tokenReady = await waitForAuthToken(12_000);
+    if (!tokenReady) {
+      if (__DEV__) {
+        console.warn('[fcmTokenService] auth token not ready — skipping push token registration');
+      }
+      return;
+    }
+
+    const currentUid = getRnAuth()?.currentUser?.uid ?? null;
+    if (currentUid !== userId) {
+      if (__DEV__) {
+        console.warn('[fcmTokenService] uid mismatch — skip register', { expected: userId, current: currentUid });
+      }
+      return;
+    }
+
     // Lazy-require so the module is never loaded on web
     const messagingModule = require('@react-native-firebase/messaging').default as
       typeof import('@react-native-firebase/messaging').default;

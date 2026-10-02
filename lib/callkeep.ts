@@ -29,6 +29,15 @@ import { Platform } from 'react-native';
 import type { Router } from 'expo-router';
 import { useCallManagerStore } from '@/store/callManagerStore';
 
+/**
+ * Must match IncomingCallPathConfig.java on Android.
+ * Hybrid mode: notification-first when killed/locked; fullscreen activity when app is usable.
+ */
+export const HYBRID_INCOMING_CALL_MODE = true;
+/** @deprecated Native ONLY_TELECOM_MODE_ENABLED is false in hybrid production. */
+export const ONLY_TELECOM_MODE_ENABLED = false;
+export const SINGLE_CONNECTION_SERVICE_MODE = true;
+
 // Lazy-load so the web / Expo-Go bundler never pulls in the native module.
 let RNCallKeep: any = null;
 
@@ -198,6 +207,18 @@ export async function setupCallKeep(
 ): Promise<void> {
   if (Platform.OS === 'web' || !RNCallKeep) return;
 
+  if (Platform.OS === 'android' && SINGLE_CONNECTION_SERVICE_MODE) {
+    if (__DEV__) {
+      console.log(
+        '[callkeep] setup SKIPPED SINGLE_CONNECTION_SERVICE_MODE=true — GYW CallConnectionService only',
+      );
+    }
+    _router = router;
+    _onAnswer = onAnswerCall ?? null;
+    _onEnd = onEndCall ?? null;
+    return;
+  }
+
   _router   = router;
   _onAnswer = onAnswerCall ?? null;
   _onEnd    = onEndCall    ?? null;
@@ -266,6 +287,10 @@ export function teardownCallKeep(): void {
  */
 export function ensureCallKeepNativeReady(): void {
   if (Platform.OS !== 'android' || !RNCallKeep) return;
+  if (SINGLE_CONNECTION_SERVICE_MODE) {
+    if (__DEV__) console.log('[callkeep] ensureCallKeepNativeReady SKIPPED — SINGLE_CONNECTION_SERVICE_MODE');
+    return;
+  }
   try {
     RNCallKeep.setup({ ios: IOS_OPTIONS, android: ANDROID_OPTIONS });
   } catch (_) {}

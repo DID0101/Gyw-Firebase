@@ -69,6 +69,7 @@
     "wrongPhone": "Wrong phone number?",
     "pleaseEnterEmail": "Please enter your email address",
     "pleaseEnterPhone": "Please enter your phone number",
+    "enterPhoneNumber": "Enter your phone number with country code",
     "phoneNumberExample": " (e.g., +1234567890)",
     "verificationRequired": "Verification required. Please check your email or phone for a code.",
     "additionalVerificationRequired": "Additional verification required. Please check your email or phone.",
@@ -101,7 +102,9 @@
     "sessionExpired": "Session expired. Please start over.",
     "missingProfileData": "Missing profile data. Please start sign up again.",
     "invalidPhoneFormat": "Invalid phone number format.",
-    "codeExpired": "Code expired. Please request a new code."
+    "codeExpired": "Code expired. Please request a new code.",
+    "accountNotRegistered": "No account found for this phone number. Please sign up first.",
+    "accountAlreadyExists": "An account already exists for this phone number. Please sign in."
   },
   "welcome": {
     "title1": "Take privacy with you.",
@@ -119,7 +122,10 @@
     "deleteAccountWarning": "This will permanently delete your account and all associated data.",
     "errorDeletingAccount": "An error occurred while deleting your account. Please try again or contact support.",
     "errorUpdatingProfile": "Failed to upload image",
-    "uploading": "Uploading..."
+    "uploading": "Uploading...",
+    "blockedAccounts": "Blocked accounts",
+    "blockedAccountsHint": "People you blocked cannot message you. Their chats are hidden from your list.",
+    "blockedAccountsEmpty": "You have not blocked anyone."
   },
   "chats": {
     "title": "Chats",
@@ -203,6 +209,7 @@
     "connected": "Connected",
     "callEnded": "Call ended",
     "failedToInitiate": "Failed to initiate call",
+    "devServerUnreachable": "Cannot reach the development server (Metro). On your PC run \"npx expo start\", keep the phone on the same Wi‑Fi or USB with adb reverse, then reload the app.",
     "incomingVideoCall": "Incoming video call",
     "incomingAudioCall": "Incoming voice call",
     "busyLine": "They're on another call.",
@@ -241,6 +248,8 @@
     "story": "story",
     "stories": "stories",
     "unknown": "Unknown",
+    "sponsored": "Sponsored",
+    "adStoryHint": "Swipe or tap to continue",
     "takePhotoVideo": "Take a photo or video",
     "selectFromGallery": "Select from your gallery",
     "like": "Like",
@@ -381,6 +390,7 @@
     "pdfLoadError": "Could not load this PDF. Check your connection and try again.",
     "media": "Media",
     "noMessagesYet": "No messages yet",
+    "noMessagesOffline": "No messages available offline",
     "callRejected": "call â€¢ Rejected",
     "callDuration": "call â€¢",
     "call": "Call",

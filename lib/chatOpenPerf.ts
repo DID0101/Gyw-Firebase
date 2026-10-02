@@ -25,6 +25,11 @@ type ChatOpenMark = {
   messageListenerStartAt?: number;
   /** First applyMessages / snapshot merged into store. */
   messageFirstSnapshotAt?: number;
+  /** Messages were already in store (disk/memory) at screen enter. */
+  cacheHitAt?: number;
+  /** warmChat fetch finished (ms from tap). */
+  warmCompleteAt?: number;
+  warmDurationMs?: number;
   /** Message listener scheduled (start of rAF chain). */
   messageListenerScheduledAt?: number;
   /** Two rAFs complete + startChatMessageListener called. */
@@ -203,6 +208,27 @@ export function markMessageListenerNativeStart(chatId: string) {
   );
 }
 
+export function markChatCacheHit(chatId: string, messageCount: number) {
+  if (!chatId) return;
+  const m = get(chatId);
+  if (m.cacheHitAt) return;
+  m.cacheHitAt = nowMs();
+  log(
+    `CHAT_PERF_CACHE_HIT chatId=${chatId} count=${messageCount} t=${m.cacheHitAt.toFixed(1)} TAP_TO_CACHE_HIT=${delta(m.tapAt, m.cacheHitAt)}ms`
+  );
+}
+
+export function markChatWarmComplete(chatId: string, warmedMs: number, count: number) {
+  if (!chatId) return;
+  const m = get(chatId);
+  if (m.warmCompleteAt) return;
+  m.warmCompleteAt = nowMs();
+  m.warmDurationMs = warmedMs;
+  log(
+    `CHAT_PERF_WARM_DONE chatId=${chatId} count=${count} warmMs=${Math.round(warmedMs)} t=${m.warmCompleteAt.toFixed(1)} TAP_TO_WARM=${delta(m.tapAt, m.warmCompleteAt)}ms`
+  );
+}
+
 export function markMessageFirstSnapshot(chatId: string, count: number) {
   if (!chatId) return;
   const m = get(chatId);
@@ -276,6 +302,8 @@ export function markChatReady(chatId: string) {
       `firstLayout→afterInteractions=${delta(m.firstLayoutAt, m.afterInteractionsAt)}ms ` +
       `firstLayout→listLayout=${delta(m.firstLayoutAt, m.flatListLayoutAt)}ms ` +
       `listLayout→listContent=${delta(m.flatListLayoutAt, m.flatListContentSizedAt)}ms ` +
+      `tap→cacheHit=${delta(tap, m.cacheHitAt)}ms ` +
+      `warmMs=${m.warmDurationMs ?? -1} ` +
       `tap→firstMsgSnapshot=${delta(tap, m.messageFirstSnapshotAt)}ms ` +
       `listenerStart→firstSnapshot=${delta(m.messageListenerStartAt, m.messageFirstSnapshotAt)}ms ` +
       `tap→chatDoc=${delta(tap, m.chatDocFirstSnapshotAt)}ms ` +

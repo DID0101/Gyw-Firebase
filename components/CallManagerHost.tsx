@@ -1,9 +1,13 @@
 import { useCallManager } from '@/lib/hooks/useCallManager';
 
 /**
- * Mount once under authenticated `(home)` so CallKeep + foreground FCM stay registered
- * for the whole session. Avoids mounting `useCallManager` inside `call/incoming`, which
- * caused teardown/remount churn and duplicate native subscriptions when that screen opened.
+ * Mount once under authenticated `(home)`.
+ *
+ * Incoming navigation: `useCallManager` → `openIncomingCallScreen`.
+ * Android: store only (native IncomingCallActivity). iOS: JS incoming route.
+ *
+ * __DEV__ logs: `[CALL] navigating…` / `dismissing…` in openIncomingCall +
+ * useCallManager; mount/unmount in `app/(home)/call/incoming.tsx`.
  */
 export function CallManagerHost() {
   useCallManager();

@@ -164,15 +164,22 @@ service cloud.firestore {
       }
     }
 
+    // Legacy client docs used receiverId before calleeId was canonical.
+    function _callCalleeUidFrom(data) {
+      return data.calleeId != null ? data.calleeId : data.receiverId;
+    }
+
+    function _callIsParticipantData(data) {
+      return uid() == data.callerId || uid() == _callCalleeUidFrom(data);
+    }
+
     // ── calls/{callId} ──────────────────────────────────────────────────────
 
     match /calls/{callId} {
 
-      // ── Read — caller or callee only ─────────────────────────────────────
+      // ── Read — participant when doc exists; allow listen while doc is being created ──
       allow read: if isSignedIn()
-        && resource != null
-        && (uid() == resource.data.callerId
-            || uid() == resource.data.calleeId);
+        && (resource == null || _callIsParticipantData(resource.data));
 
       // ── Create — caller only; status must start as "ringing" ─────────────
       allow create: if isSignedIn()
@@ -186,17 +193,18 @@ service cloud.firestore {
              'status', 'createdAt', 'updatedAt', 'expiresAt', 'deleteAfter'
            ]);
 
-      // ── Update — state-machine transitions ───────────────────────────────
+      // ── Update — state-machine transitions OR caller offer metadata while ringing ──
       allow update: if isSignedIn()
         && resource != null
-        && _callImmutableFieldsPreserved()
-        && _callValidTransition();
+        && (
+          (_callImmutableFieldsPreserved() && _callValidTransition())
+          || _callCallerOfferMetadataUpdate()
+        );
 
       // ── Delete — caller or callee (soft-delete via status is preferred) ──
       allow delete: if isSignedIn()
         && resource != null
-        && (uid() == resource.data.callerId
-            || uid() == resource.data.calleeId);
+        && _callIsParticipantData(resource.data);
     }
 
     // ── State-machine helper functions ────────────────────────────────────
@@ -206,7 +214,7 @@ service cloud.firestore {
     }
 
     function _callIsCallee() {
-      return uid() == resource.data.calleeId;
+      return uid() == _callCalleeUidFrom(resource.data);
     }
 
     function _callIsParticipant() {
@@ -221,6 +229,14 @@ service cloud.firestore {
         'createdAt', 'expiresAt', 'deleteAfter'
       ];
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(immutable);
+    }
+
+    function _callCallerOfferMetadataUpdate() {
+      return _callIsCaller()
+        && resource.data.status == 'ringing'
+        && request.resource.data.status == 'ringing'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['callerOfferReady', 'callerOfferSdp', 'updatedAt', 'deferIncomingPush', 'incomingPushSent']);
     }
 
     function _callValidTransition() {
@@ -250,8 +266,9 @@ service cloud.firestore {
 
       function _signalingCallParticipant() {
         return exists(/databases/$(database)/documents/calls/$(callId))
-          && (uid() == get(/databases/$(database)/documents/calls/$(callId)).data.callerId
-              || uid() == get(/databases/$(database)/documents/calls/$(callId)).data.calleeId);
+          && _callIsParticipantData(
+               get(/databases/$(database)/documents/calls/$(callId)).data
+             );
       }
 
       allow read: if isSignedIn() && _signalingCallParticipant();
@@ -368,8 +385,11 @@ service cloud.firestore {
     // ── randomQueue/{queueId} ───────────────────────────────────────────────
 
     match /randomQueue/{queueId} {
-      allow create, update, delete: if isSignedIn() && uid() == queueId;
-      allow read:                   if isSignedIn() && uid() == queueId;
+      allow create: if isSignedIn()
+        && uid() == queueId
+        && request.resource.data.userId == uid();
+      allow update, delete: if isSignedIn() && uid() == queueId;
+      allow read: if isSignedIn() && uid() == queueId;
     }
 
   }
